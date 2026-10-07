@@ -20,6 +20,7 @@ paths = [
   '''(?:^|/)app/test/bridge\.test\.js$''',
   '''(?:^|/)app/test/spaces\.test\.js$''',
   '''(?:^|/)relay/test/spaces\.test\.js$''',
+  '''(?:^|/)relay/test/space-tunnel\.test\.js$''',
 ]
 
 [[rules]]

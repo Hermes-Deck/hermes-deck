@@ -20,6 +20,7 @@ const { Installer, runFile } = require("./installer");
 const { PINS } = require("./pins");
 const { Driver, killProcess } = require("./driver");
 const { DriverChannel } = require("./channel");
+const { raiseWindow } = require("./foreground");
 const { OP } = require("./wire");
 const { checkArgv, GRANT_VERBS, INFO_VERBS, scrubInfo } = require("./protocol");
 const G = require("./grant");
@@ -36,7 +37,7 @@ const SUPPORTED = IS_WIN || IS_MAC;
 const HOTKEY = IS_MAC ? "Control+Alt+Command+S" : "Control+Alt+Shift+S";
 const HOTKEY_LABEL = IS_MAC ? "⌃⌥⌘S" : "Ctrl+Alt+Shift+S";
 const FRONTMOST_HOTKEY = "Control+Alt+P";
-const FRAME_RE = /^[A-Za-z0-9._-]{1,64}\/[A-Za-z0-9._:-]{1,128}\/\d{1,9}\.(?:jpe?g|png)$/;
+const FRAME_RE = /^[A-Za-z0-9._-]{1,64}\/[A-Za-z0-9._:-]{1,128}\/\d{1,16}\.(?:jpe?g|png)$/; // events.py writes millisecond timestamps
 const PICKER_IDLE_MS = 5 * 60 * 1000; // the consent sheet's window lister stops after this
 const STOP_TEXT = {
   get button() { return i18nText("U0142"); },
@@ -252,7 +253,8 @@ function stopLink() {
 }
 
 function makeChannel() {
-  const ch = new DriverChannel({ hello, gate, runner, kill: (p) => (p.pid ? killProcess(p, process.platform) : p.kill()) });
+  const ch = new DriverChannel({ hello, gate, runner, grant: () => S.grant, raise: IS_WIN ? raiseWindow : null,
+    kill: (p) => (p.pid ? killProcess(p, process.platform) : p.kill()) });
   ch.on("status", (s) => {
     setLink(s);
     reportDriver();
@@ -275,14 +277,14 @@ function reportDriver() {
 }
 
 // ---------------------------------------------------------------- relay HTTP (frames, lease, stop)
-async function relayFetch(method, p, body) {
+async function relayFetch(method, p, body, { timeoutMs = 8000 } = {}) {
   const r = relayCfg();
   if (!r) throw new Error(i18nText("U0112"));
   return fetch(`${r.http}${p}`, {
     method,
     headers: { authorization: `Bearer ${r.token}`, ...(body ? { "content-type": "application/json" } : {}) },
     body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(8000),
+    signal: AbortSignal.timeout(Math.min(930_000, Math.max(1000, timeoutMs))),
   });
 }
 
@@ -408,12 +410,19 @@ async function listWindows() {
     records,
     { ownIds, ownPids }
   );
+  if (IS_WIN) {
+    const names = new Map();
+    await Promise.all(list.filter(w => w.pid && !w.blocked).map(async w => {
+      if (!names.has(w.pid)) names.set(w.pid, executablePath(w.pid).then(exe => path.win32.basename(exe || "")).catch(() => ""));
+      w.executableName = await names.get(w.pid);
+    }));
+  }
   S.picker = { list, at: Date.now() };
   if (!sources.length && IS_MAC) note = note || i18nText("U0164");
   return { windows: list.map(publicWindow), note };
 }
 
-const publicWindow = (w) => ({ sourceId: w.sourceId, title: w.title, app: w.app, thumb: w.thumb, matched: !!w.matched, blocked: w.blocked || null, livePreview: IS_WIN && !S.fixture });
+const publicWindow = (w) => ({ sourceId: w.sourceId, title: w.title, app: w.app, executable: path.win32.basename(w.executable || w.executableName || ""), thumb: w.thumb, matched: !!w.matched, blocked: w.blocked || null, livePreview: IS_WIN && !S.fixture });
 
 async function previewWindow(sourceId) {
   const w = S.picker.list.find(x => x.sourceId === sourceId);

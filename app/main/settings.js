@@ -43,12 +43,32 @@ const DEFAULTS = {
   composer: { busySend: "queue" },
   // agent spaces (main/spaces.js): the control level the Bot screen opens the agents' desktop with
   spaces: { defaultLevel: "watch" },
+  // agent spaces phase 2 (main/desktops.js): this computer hosts agents' own desktops in Docker. host is the user's
+  // switch (off on a new install; it changes only through the desktops:host IPC, after the consent sheet); the rest
+  // are this computer's limits for them. homeWarnGB is a warning in Settings, not a cap (volumes have none).
+  desktops: { host: false, limit: 3, memory: "1.5g", cpus: 2, idleMin: 20, homeWarnGB: 10 },
   // updates (main/update-check.js): auto = check on start and every 6 h; repo/branch override the build's own
   // ("" = where it was built from, main); token: a GitHub token when neither GH_TOKEN nor the gh CLI has one
   updates: { auto: true, repo: "", branch: "main", token: "", fromSource: false },
 };
 const BUSY_SEND = ["queue", "steer"];
 const SPACE_LEVELS = ["watch", "together", "full"]; // agent spaces: main/space-view-logic.js LEVELS
+// agent desktops (main/desktops.js): each field's rule. memory is Docker's --memory in gigabytes ("1.5g").
+const intIn = (lo, hi) => (v) => Number.isInteger(v) && v >= lo && v <= hi;
+const DESKTOP_RULES = {
+  limit: intIn(0, 16),
+  memory: (v) => typeof v === "string" && /^\d+(\.\d+)?g$/.test(v) && Number(v.slice(0, -1)) >= 0.5 && Number(v.slice(0, -1)) <= 8,
+  cpus: intIn(1, 8),
+  idleMin: intIn(5, 240),
+  homeWarnGB: intIn(1, 1000),
+};
+/** A saved desktops object, field by field: anything invalid falls back to its default; host is true only if true. */
+function normalizeDesktops(v) {
+  const o = v && typeof v === "object" && !Array.isArray(v) ? v : {};
+  const out = { host: o.host === true };
+  for (const [k, ok] of Object.entries(DESKTOP_RULES)) out[k] = ok(o[k]) ? o[k] : DEFAULTS.desktops[k];
+  return out;
+}
 const DESKTOP_FLAGS = ["notifications", "sound", "pet", "closeToTray", "autostart", "petMotion", "taskbarBadge"];
 const PET_SKINS = require("../renderer/pets/catalog").IDS;
 const PET_SIZES = [0.75, 1, 1.25, 1.5]; // Küçük / Orta / Büyük / Çok büyük (pet-model.js scales by it)
@@ -152,6 +172,7 @@ class Settings {
     if (!PET_SIZES.includes(d.desktop.petSize)) d.desktop.petSize = DEFAULTS.desktop.petSize;
     if (!d.composer || !BUSY_SEND.includes(d.composer.busySend)) d.composer = clone(DEFAULTS.composer);
     if (!d.spaces || !SPACE_LEVELS.includes(d.spaces.defaultLevel)) d.spaces = clone(DEFAULTS.spaces);
+    d.desktops = normalizeDesktops(raw.desktops);
     return this;
   }
 
@@ -207,6 +228,7 @@ class Settings {
       wallpaper: wallpaper.normalize(d.wallpaper),
       composer: { busySend: BUSY_SEND.includes(d.composer && d.composer.busySend) ? d.composer.busySend : "queue" },
       spaces: { defaultLevel: SPACE_LEVELS.includes(d.spaces && d.spaces.defaultLevel) ? d.spaces.defaultLevel : "watch" },
+      desktops: normalizeDesktops(d.desktops),
       botscreen: { agents: Array.isArray(d.botscreen.agents) ? [...d.botscreen.agents] : [], hasDeviceToken: !!d.botscreen.deviceToken, deviceKeyUnreadable: !!this.unreadableSecrets["botscreen.deviceToken"] },
       plainSecrets: this.plainSecrets || this.weakStorage(),
     };
@@ -236,6 +258,15 @@ class Settings {
       if (t.length < 16 || t.length > 512 || /\s/.test(t)) throw new Error(i18nText("U0290"));
       b.deviceToken = t;
     }
+    this.save();
+  }
+
+  /**
+   * "Host agent desktops on this device": changed only by the desktops:host IPC (main/desktops.js), which the renderer
+   * calls after its consent sheet. Never through the generic settings:save (update() refuses `host`), never from the relay.
+   */
+  updateDesktopsHost(on) {
+    this.data.desktops = { ...normalizeDesktops(this.data.desktops), host: on === true };
     this.save();
   }
 
@@ -287,6 +318,13 @@ class Settings {
         (patch.composer.busySend !== undefined && !BUSY_SEND.includes(patch.composer.busySend)))) throw new Error(i18nText("set.busySendInvalid"));
     if (patch.spaces !== undefined && (!patch.spaces || typeof patch.spaces !== "object" || Array.isArray(patch.spaces) ||
         (patch.spaces.defaultLevel !== undefined && !SPACE_LEVELS.includes(patch.spaces.defaultLevel)))) throw new Error(i18nText("space.levelInvalid"));
+    if (patch.desktops !== undefined) {
+      const k = patch.desktops;
+      // host is not here on purpose: it changes only through updateDesktopsHost (the desktops:host IPC)
+      const ok = k && typeof k === "object" && !Array.isArray(k) && Object.keys(k).length > 0 &&
+        Object.entries(k).every(([f, v]) => Object.hasOwn(DESKTOP_RULES, f) && DESKTOP_RULES[f](v));
+      if (!ok) throw new Error(i18nText("set.desktopsInvalid"));
+    }
     if (patch.relay) {
       if (typeof patch.relay.url === "string") d.relay.url = normalizeRelayUrl(patch.relay.url);
       if (typeof patch.relay.token === "string" && patch.relay.token.trim()) d.relay.token = patch.relay.token.trim();
@@ -362,6 +400,7 @@ class Settings {
     }
     if (patch.composer && patch.composer.busySend !== undefined) d.composer = { ...d.composer, busySend: patch.composer.busySend };
     if (patch.spaces && patch.spaces.defaultLevel !== undefined) d.spaces = { ...d.spaces, defaultLevel: patch.spaces.defaultLevel };
+    if (patch.desktops !== undefined) d.desktops = { ...normalizeDesktops(d.desktops), ...patch.desktops };
     this.save();
   }
 
@@ -399,4 +438,4 @@ function normalizeRelayUrl(v) {
   return `${u.protocol}//${u.host}`;
 }
 
-module.exports = { Settings, normalizeRelayUrl, PET_SIZES, THEMES };
+module.exports = { Settings, normalizeRelayUrl, PET_SIZES, THEMES, normalizeDesktops };

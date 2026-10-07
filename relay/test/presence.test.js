@@ -270,3 +270,69 @@ test("a refused device pin says why: the device is offline, its switch is off, o
   hb({ browser: false, desktop: true }, { desktop: false });
   assert.deepEqual(p.setPin("p:aurora", "desktop", { kind: "device", id: "a1b2c3d4" }), { ok: false, code: "device", why: "driver" });
 });
+
+test("a heartbeat's desktops field makes the device a desktop host; bad values are dropped", () => {
+  const { Presence } = require("../src/presence");
+  const p = new Presence({});
+  const ws = {};
+  p.connect(ws);
+  p.heartbeat(ws, { t: "heartbeat", device: { id: "a1b2c3d4", name: "pc" }, idleSec: 0, hosting: { browser: false, desktop: false }, desktops: { ready: true, limit: 3, running: 1 } });
+  assert.deepEqual(p.desktopHosts(), [{ id: "a1b2c3d4", name: "pc", ready: true, limit: 3, running: 1 }]);
+  p.heartbeat(ws, { t: "heartbeat", device: { id: "a1b2c3d4", name: "pc" }, idleSec: 0, desktops: { ready: "yes", limit: 999, running: -1 } });
+  assert.deepEqual(p.desktopHosts(), [{ id: "a1b2c3d4", name: "pc", ready: false, limit: 16, running: 0 }]);
+});
+
+test("desktop hosts: only fresh devices whose heartbeat carries a desktops object (a locked one still hosts)", () => {
+  const c = clock();
+  const p = new Presence({ now: c.now });
+  const [a, b, d] = [{}, {}, {}];
+  for (const ws of [a, b, d]) p.connect(ws);
+  p.heartbeat(a, beat(PC, { desktops: { ready: true, limit: 2, running: 0 } }));
+  p.heartbeat(b, beat(MAC, { locked: true, desktops: { ready: true, limit: 2, running: 0 } })); // locked: still a host (I2)
+  p.heartbeat(d, beat("0a0b0c0d", { desktops: "lots" })); // not an object: not a host
+  assert.deepEqual(p.desktopHosts().map((h) => h.id).sort(), [PC, MAC].sort());
+  assert.deepEqual(parseHeartbeat(beat(PC, { desktops: { ready: true, limit: 2.5, running: "1" } }), 0).desktops, { ready: true, limit: 0, running: 0 }); // non-integers clamp to the low end
+  assert.equal(parseHeartbeat(beat(PC), 0).desktops, null);
+  c.add(31); // its heartbeat went stale
+  assert.deepEqual(p.desktopHosts(), []);
+});
+
+test("desktop hosts: an asleep computer hosts no desktops", () => {
+  const p = new Presence({});
+  const ws = {};
+  p.connect(ws);
+  p.heartbeat(ws, beat(PC, { asleep: true, desktops: { ready: true, limit: 2, running: 0 } }));
+  assert.deepEqual(p.desktopHosts(), []);
+  p.heartbeat(ws, beat(PC, { desktops: { ready: true, limit: 2, running: 0 } }));
+  assert.deepEqual(p.desktopHosts().map((h) => h.id), [PC]);
+});
+
+test("desktop hosts: the heartbeat's idleMin (Deck's own idle time) passes through, clamped to 5..240; absent stays absent", () => {
+  const p = new Presence({});
+  const ws = {};
+  p.connect(ws);
+  p.heartbeat(ws, beat(PC, { desktops: { ready: true, limit: 2, running: 0, idleMin: 30 } }));
+  assert.deepEqual(p.desktopHosts(), [{ id: PC, name: p.desktopHosts()[0].name, ready: true, limit: 2, running: 0, idleMin: 30 }]);
+  p.heartbeat(ws, beat(PC, { desktops: { ready: true, limit: 2, running: 0, idleMin: 1 } }));
+  assert.equal(p.desktopHosts()[0].idleMin, 5);
+  p.heartbeat(ws, beat(PC, { desktops: { ready: true, limit: 2, running: 0, idleMin: 9999 } }));
+  assert.equal(p.desktopHosts()[0].idleMin, 240);
+  p.heartbeat(ws, beat(PC, { desktops: { ready: true, limit: 2, running: 0, idleMin: "lots" } }));
+  assert.equal("idleMin" in p.desktopHosts()[0], false);
+});
+
+// ---- final fix wave I2: a locked computer still hosts (containers run regardless of the screen lock) -------------
+
+test("I2 desktop hosts: a locked Deck stays a desktop host; asleep and stale ones are dropped", () => {
+  const c = clock();
+  const p = new Presence({ now: c.now });
+  const ws = {};
+  p.connect(ws);
+  p.heartbeat(ws, beat(PC, { locked: true, desktops: { ready: true, limit: 2, running: 1 } }));
+  assert.deepEqual(p.desktopHosts().map((h) => [h.id, h.running]), [[PC, 1]]);
+  p.heartbeat(ws, beat(PC, { locked: true, asleep: true, desktops: { ready: true, limit: 2, running: 1 } }));
+  assert.deepEqual(p.desktopHosts(), []);
+  p.heartbeat(ws, beat(PC, { locked: true, desktops: { ready: true, limit: 2, running: 1 } }));
+  c.add(31);
+  assert.deepEqual(p.desktopHosts(), []);
+});

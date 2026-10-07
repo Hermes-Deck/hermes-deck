@@ -34,14 +34,14 @@ const SIG_SCRIPT =
   "[pscustomobject]@{ File = $_.Name; Status = [string]$s.Status; Subject = [string]$s.SignerCertificate.Subject } } | ConvertTo-Json -Compress";
 
 /** Runs a program without a shell or a console window. Resolves {code, stdout, stderr}; never rejects. */
-function runFile(cmd, args, { timeout = 20000, env } = {}) {
+function runFile(cmd, args, { timeout = 20000, env, signal } = {}) {
   if (process.platform === "win32" && path.resolve(cmd).toLowerCase() === path.resolve(POWERSHELL).toLowerCase()) {
     // WinPS 5.1 cannot load PowerShell 7 modules inherited from its parent (including Security).
     env = Object.fromEntries(Object.entries(env || process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath"));
     env.PSModulePath = path.join(path.dirname(POWERSHELL), "Modules");
   }
   return new Promise((resolve) => {
-    execFile(cmd, args, { windowsHide: true, timeout, env, maxBuffer: 8 * 1024 * 1024, encoding: "utf8" }, (err, stdout, stderr) => {
+    execFile(cmd, args, { windowsHide: true, timeout, env, signal, maxBuffer: 8 * 1024 * 1024, encoding: "utf8" }, (err, stdout, stderr) => {
       const code = err ? (Number.isInteger(err.code) ? err.code : -1) : 0;
       resolve({ code, stdout: stdout || "", stderr: stderr || (err && !Number.isInteger(err.code) ? String(err.message) : "") });
     });

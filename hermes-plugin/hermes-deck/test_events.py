@@ -188,6 +188,15 @@ def checks():
         route["grant"]["foreground"] = value
         assert pre({"action": "click", "element": 3, "delivery_mode": "foreground"})["action"] == "block"
     route["grant"]["foreground"] = True
+    for args in ({"action": "click", "bring_to_front": True},
+                 {"action": "focus_app", "raise_window": True}):
+        refusal = pre(args)
+        assert refusal["action"] == "block"
+        assert 'use delivery_mode "foreground" on the input action itself' in refusal["message"], refusal
+        assert "Hermes Deck brings the handed window forward" in refusal["message"], refusal
+        route["grant"]["foreground"] = False
+        assert "Retry the same action without delivery_mode" in pre(args)["message"]
+        route["grant"]["foreground"] = True
     assert pre({"action": "click", "element": 3, "delivery_mode": "foreground"}) == {
         "action": "modify", "args": {"pid": 4242, "window_id": 77, "app": "Notepad"}}
     for args in ({"pid": 7}, {"window_id": 78}, {"app": "Chrome"}, {"bring_to_front": True}):
@@ -246,6 +255,12 @@ def checks():
     route.update(device="host", grant=None, deckPid=None)
     assert pre({"action": "capture", "app": "screen"}) is None
     assert pre({"action": "kill_app"})["action"] == "block"
+    # agent spaces phase 2: an agent's own desktop is the whole desktop — no single-window fence; kill_app stays refused
+    route.update(device="space:scout@agent-host", grant=None, deckPid=None)
+    assert pre({"action": "capture", "app": "screen"}) is None
+    assert pre({"action": "click", "x": 5, "y": 5}) is None
+    assert pre({"action": "kill_app"})["action"] == "block"
+    route.update(device="host", grant=None, deckPid=None)         # back to the agent host for the blocks below
     # agent spaces: a read-only action tells the relay so (it looks without taking the shared desktop); input does not
     seen = []
     de._relay_query = lambda identity, timeout=2.0: (seen.append(dict(identity)), json.loads(json.dumps(route)))[1]
@@ -257,8 +272,10 @@ def checks():
     # agent spaces: a busy shared desktop is waited for (each query keeps the agent's place in the relay's queue);
     # past SPACE_WAIT_S the agent gets the relay's own words
     busy = {"t": "route", "ok": False, "busy": True, "error": "The desktop is in use by aurora; you are 1st in line."}
-    answers, slept, real_sleep = [dict(busy), dict(busy), dict(route)], [], de.time.sleep
-    de.time.sleep = slept.append
+    answers, slept, real_sleep, real_monotonic = [dict(busy), dict(busy), dict(route)], [], de.time.sleep, de.time.monotonic
+    clock = [1000.0]                                              # a fake clock: sleeping and slow queries move it
+    de.time.monotonic = lambda: clock[0]
+    de.time.sleep = lambda s: (slept.append(s), clock.__setitem__(0, clock[0] + s))
     try:
         de._relay_query = lambda identity, timeout=2.0: answers.pop(0)
         assert pre({"action": "capture", "app": "screen"}) is None and len(slept) == 2, slept
@@ -271,8 +288,30 @@ def checks():
         # message: the wait stays under that, and the agent is told to retry (the relay keeps its place 15 s)
         assert de.SPACE_WAIT_S < 30, de.SPACE_WAIT_S
         assert "retry" in out["message"].lower(), out
+        # agent spaces phase 2: the relay answers "starting" only after its own 2 s race, so a query must wait
+        # longer than that; and the whole hook, slow queries included, stays inside SPACE_WAIT_S
+        starting = {"t": "route", "ok": False, "busy": True, "error": "Your desktop is starting; retry the same action now."}
+        timeouts = []
+
+        def slow_relay(identity, timeout=2.0):
+            timeouts.append(timeout)
+            if timeout <= 2.0:                                    # the socket would time out before the answer
+                clock[0] += timeout
+                return None
+            clock[0] += 2.05                                      # the relay answers at >= 2000 ms
+            return dict(starting)
+
+        de._relay_query = slow_relay
+        slept.clear()
+        t0 = clock[0]
+        out = pre({"action": "capture", "app": "screen"})
+        assert out["action"] == "block" and "Your desktop is starting" in out["message"], out
+        assert "retry" in out["message"].lower(), out
+        assert clock[0] - t0 <= de.SPACE_WAIT_S, clock[0] - t0     # never past Hermes' hook bound
+        assert de.QUERY_TIMEOUT > 2.0 and timeouts[0] == de.QUERY_TIMEOUT, timeouts
     finally:
         de.time.sleep = real_sleep
+        de.time.monotonic = real_monotonic
         de._relay_query = fake_query
     # a crash inside the fence fails closed; other tools stay untouched; DECK_BOT_SCREEN=0 turns it all off
     de._relay_query = lambda identity, timeout=2.0: 1 / 0

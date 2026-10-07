@@ -24,6 +24,9 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
 
   const busySendOf = (settings) => (settings && settings.composer && BUSY_SEND.includes(settings.composer.busySend) ? settings.composer.busySend : "queue");
   const sectionOf = (id) => (SECTIONS.includes(id) ? id : "general");
+  /** A byte count for people: "1.2 GB", "487 MB"; "?" when unknown. */
+  const sizeText = (b) => (!Number.isFinite(b) || b < 0 ? "?" : b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`);
+  const DOCKER_URL = "https://www.docker.com/products/docker-desktop/";
 
   /**
    * Host version lines for one Settings section ("relay" | "hermes") from main/host-versions.js state():
@@ -390,6 +393,94 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
     };
 
     // This device: what this computer hosts for agents (workspace.js, botscreen.js own their rows)
+    function safetyGroup() {
+      if (!ctx.deck.spaces?.safety) return null;
+      const box = h("div", { class: "sv-safety" });
+      const state = h("p", { class: "sv-block muted", role: "status" }); // lasting: audit locked by the relay, logging paused
+      const note = h("p", { class: "sv-block", role: "status" }, T("safety.loading")); // this edit's outcome
+      const disk = h("div", { class: "sv-snapshot-disk" });
+      let held = null, saving = false;
+      const controls = new Map();
+      const fields = [
+        ["audit", "safety.audit"], ["typedText", "safety.typedText"], ["screenshots", "safety.screenshots"],
+        ["days", "safety.days", 1, 90], ["approvals", "safety.approvals"], ["snapshotKeep", "safety.keep", 1, 100],
+      ];
+      const paint = () => {
+        state.textContent = !held ? "" : held.auditLocked ? T("safety.locked") : held.loggingPaused ? T("safety.loggingPaused") : "";
+        for (const [key, el] of controls) {
+          el.disabled = !held || saving || (key === "audit" && held.auditLocked === true);
+          if (!held) continue;
+          if (el.type === "checkbox") el.checked = held[key] === true;
+          else el.value = String(held[key]);
+        }
+      };
+      const save = async (key, el, min, max) => {
+        if (!held || saving || (key === "audit" && held.auditLocked)) return;
+        const value = el.type === "checkbox" ? el.checked : Number(el.value);
+        if (min && (!Number.isInteger(value) || value < min || value > max)) {
+          note.textContent = T("safety.settingsFailed"); paint(); return;
+        }
+        saving = true;
+        for (const control of controls.values()) control.disabled = true;
+        try {
+          const result = await ctx.deck.spaces.safety({ [key]: value });
+          if (result?.ok === false || !result?.settings) throw new Error();
+          held = result.settings; note.textContent = T("set.saved");
+        } catch { note.textContent = T("safety.settingsFailed"); }
+        finally { saving = false; paint(); }
+      };
+      const rows = fields.map(([key, label, min, max]) => {
+        const id = `s-safety-${key}`;
+        const el = h("input", { id, type: min ? "number" : "checkbox", min, max, step: min ? 1 : null, disabled: true,
+          onchange: (e) => save(key, e.target, min, max) });
+        controls.set(key, el);
+        return row(T(label), el, { id });
+      });
+      async function loadDisk() {
+        if (!ctx.deck.spaces.snapshots) return;
+        // Undo points outlive the routing mode: list every known agent (as the home-host table does) plus any agent
+        // desktop the relay reports, so shared mode still shows and deletes retained archives.
+        const list = await ctx.deck.spaces.list();
+        if (list?.ok === false) throw new Error();
+        const agents = new Map();
+        for (const a of ctx.agents ? ctx.agents() : []) if (a && a.profile && a.profile !== "host") agents.set(a.profile, { id: a.profile, holderName: a.name });
+        for (const r of list.spaces || []) if (r.kind === "agent" && r.id !== "host") agents.set(r.id, { ...agents.get(r.id), ...r, holderName: r.holderName || agents.get(r.id)?.holderName });
+        const rows = await Promise.all([...agents.values()].map(async (agent) => {
+          let bytes = null;
+          try {
+            const r = await ctx.deck.spaces.snapshots(agent.id);
+            if (r?.ok !== false && Number.isFinite(r?.totalBytes) && r.totalBytes >= 0) bytes = r.totalBytes;
+          } catch {}
+          const remove = h("button", { class: "btn mini", type: "button", dataset: { snapshotDelete: agent.id }, disabled: bytes === null ? true : null, onclick: async () => {
+            if (remove.disabled) return;
+            remove.disabled = true;
+            try {
+              if (!(await ask(T("safety.deleteConfirm"), T("safety.delete")))) return;
+              const r = await ctx.deck.spaces.deleteSnapshots(agent.id);
+              if (r?.ok !== true) throw new Error();
+              await loadDisk(); note.textContent = T("set.saved");
+            } catch { note.textContent = T("safety.settingsFailed"); }
+            finally { remove.disabled = false; }
+          } }, T("safety.delete"));
+          return row(h("span", null, agent.holderName || agent.id, h("span", { class: "muted" },
+            T("safety.disk", { size: bytes === null ? T("safety.unavailable") : sizeText(bytes) }))), remove);
+        }));
+        disk.replaceChildren(...rows);
+      }
+      box.appendChild(h("h3", { class: "sv-group-title" }, T("safety.settings")));
+      for (const el of rows) box.appendChild(el);
+      box.appendChild(h("p", { class: "muted sv-block" }, T("safety.privacy")));
+      box.appendChild(state); box.appendChild(note); box.appendChild(disk);
+      ctx.deck.spaces.safety().then((r) => {
+        if (r?.ok === false || !r?.settings) throw new Error();
+        held = r.settings;
+        note.textContent = "";
+        paint();
+      }).catch(() => { note.textContent = T("safety.settingsFailed"); });
+      loadDisk().catch(() => { note.textContent = T("safety.settingsFailed"); });
+      return box;
+    }
+
     BUILDERS.device = (kids) => {
       const ws = ctx.workspaceRows();
       const bs = ctx.botscreenRows();
@@ -399,27 +490,165 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
         const modeNote = h("span", { class: "sv-msg" });
         const mode = h("select", { id: "s-space-mode", disabled: true, dataset: { fk: "space:mode" }, onchange: (e) => ctx.saveCall(async () => {
           const r = await ctx.deck.spaces.mode(e.target.value);
-          if (r && r.ok === false) throw new Error(r.error === "phase 2" ? T("space.mode.later") : r.error);
+          if (r && r.ok === false) throw new Error(r.error === "phase 2" ? T("space.mode.later") : r.error === "no desktop host" ? T("space.noHost") : r.error);
           return ctx.settings(); // the mode lives on the relay; the Deck's settings are unchanged
         }, T("set.saved")) },
           h("option", { value: "shared" }, T("space.mode.shared")),
-          h("option", { value: "agent", disabled: true }, `${T("space.mode.agent")} (${T("space.mode.later")})`));
+          h("option", { value: "agent" }, T("space.mode.agent")),
+          h("option", { value: "overflow" }, T("space.mode.overflow")));
+        // phase 2: no desktop host yet (agent mode needs one), and each agent's home host
+        const noHost = h("p", { class: "muted sv-block", id: "s-space-nohost", hidden: true });
+        const homes = h("div", { id: "s-space-homes" });
         ctx.deck.spaces.list().then((l) => {
           if (l && l.mode) {
             mode.value = l.mode;
             mode.disabled = false;
           } else modeNote.textContent = T("space.none");
+          const hosts = l && Array.isArray(l.hosts) ? l.hosts : null;
+          if (l && ["agent", "overflow"].includes(l.mode) && hosts && !hosts.length) {
+            noHost.hidden = false;
+            noHost.textContent = T("space.noHost");
+          }
+          if (hosts) homes.replaceChildren(...homeRows(hosts, (l && l.homes) || {}));
         }).catch(() => (modeNote.textContent = T("space.none")));
         const lvl = segmented("s-space-level", (st().spaces && st().spaces.defaultLevel) || "watch",
           ["watch", "together", "full"].map((l) => [l, T(`space.level.${l}`), T(`space.levelHelp.${l}`)]),
           (v) => ctx.save({ spaces: { defaultLevel: v } }, T("set.saved")));
         kids.push(group(node("space.mode"),
           row(node("space.mode"), h("span", { class: "sv-inline" }, mode, modeNote), { id: "s-space-mode-row", title: T("space.modeHelp") }),
-          row(node("space.defaultLevel"), lvl, { id: "s-space-level-row" })));
+          noHost,
+          row(node("space.defaultLevel"), lvl, { id: "s-space-level-row" }),
+          homes, safetyGroup()));
       }
+      desktopsGroup(kids);
       if (bs) kids.push(group(node("U0478"), h("div", { class: "sv-legacy", id: "s-device" }, bs),
         ctx.screenTab() ? h("div", { class: "sv-row sv-end" }, h("button", { class: "linkbtn sv-link", type: "button", dataset: { fk: "bs:open" }, onclick: () => { close(); ctx.openScreen(); } }, node("set.openScreen"))) : null));
     };
+
+    /**
+     * Settings > Agent spaces, home host per agent (spec 2026-10-07 section 7): one row per agent, Automatic, the agent
+     * host, or a Deck device; a device that is offline (or gone) is dimmed. The relay validates and stores it.
+     */
+    function homeRows(hosts, homes) {
+      const list = (ctx.agents ? ctx.agents() : []).filter((a) => a && a.profile && a.profile !== "host"); // "host" is the shared space
+      if (!list.length) return [];
+      const label = (x) => (x.id === "agent-host" ? T("space.homeAgentHost") : x.name || x.id);
+      return list.map((a) => {
+        const cur = homes[a.profile] || "auto";
+        const opts = [h("option", { value: "auto", selected: cur === "auto" ? true : null }, T("space.homeAuto"))];
+        // the agent host first (only when it hosts desktops), then the Deck devices
+        const ordered = [...hosts.filter((x) => x.id === "agent-host"), ...hosts.filter((x) => x.id !== "agent-host")];
+        for (const x of ordered)
+          opts.push(h("option", { value: x.id, class: x.ready ? null : "off", selected: cur === x.id ? true : null }, x.ready ? label(x) : T("space.homeOffline", { name: label(x) })));
+        if (cur !== "auto" && !hosts.some((x) => x.id === cur)) // its home is gone from the relay's list: offline
+          opts.push(h("option", { value: cur, class: "off", selected: true }, T("space.homeOffline", { name: cur === "agent-host" ? T("space.homeAgentHost") : cur })));
+        const id = `s-space-home-${a.profile}`;
+        const sel = h("select", { id, dataset: { fk: `space:home:${a.profile}` }, onchange: (e) => ctx.saveCall(async () => {
+          const r = await ctx.deck.spaces.home(a.profile, e.target.value);
+          if (r && r.ok === false) throw new Error(r.error);
+          return ctx.settings(); // the home host lives on the relay; the Deck's settings are unchanged
+        }, T("set.saved")) }, ...opts);
+        sel.value = cur;
+        return row(h("span", null, `${T("space.homeHost")}: ${a.name || a.profile}`), sel, { id, title: T("space.homeHelp") });
+      });
+    }
+
+    // ------------------------------------------------------------ agent desktops (main/desktops.js)
+    // "Host agent desktops on this device": the switch goes through the consent sheet (ctx.confirm) before the main
+    // process saves it and starts the image download. The status line and the running list follow the main process's
+    // pushes in place (no section rebuild every 10 s); the number fields save through the generic settings save.
+    const DK = { st: null, sub: false, status: null, list: null, sw: null };
+    function dkApply(s) {
+      if (!s || typeof s !== "object") return;
+      DK.st = s;
+      dkPaint();
+    }
+    function dkWatch() {
+      if (DK.sub) return;
+      DK.sub = true;
+      if (ctx.deck.desktops.onEvent) ctx.deck.desktops.onEvent(dkApply);
+      Promise.resolve().then(() => ctx.deck.desktops.state()).then(dkApply).catch(() => {});
+    }
+    const ask = (text, ok) => (ctx.confirm ? ctx.confirm({ title: T("desktops.title"), body: text, ok }) : Promise.resolve(window.confirm(text)));
+    /** The Docker state line, with the next step. */
+    function dkStatus() {
+      const s = DK.st;
+      if (!s || s.docker === "unknown") return [T("desktops.checking")];
+      if (s.docker === "missing") return [T("desktops.dockerMissing"), " ", h("button", { class: "linkbtn sv-link", type: "button", dataset: { fk: "dk:docker-link" }, onclick: () => ctx.deck.openExternal(DOCKER_URL) }, node("desktops.dockerLink"))];
+      if (s.docker !== "ready") return [T("desktops.dockerStopped")];
+      if (s.host && s.isolation === false) return [T("desktops.isolation")];
+      if (s.image === "pulling") return [T("desktops.pulling", { pct: (s.pull && s.pull.pct) || 0 })];
+      if (!s.host) return [];
+      if (s.image !== "present") return [s.error ? T("desktops.pullFailed", { e: s.error }) : T("desktops.imageAbsent")];
+      return [T("desktops.ready")];
+    }
+    function dkRows() {
+      const s = DK.st;
+      if (!s || !s.host) return [];
+      const warnGB = (st().desktops && st().desktops.homeWarnGB) || 10;
+      const running = Array.isArray(s.running) ? s.running : [];
+      if (!running.length) return [h("p", { class: "muted sv-block" }, node("desktops.none"))];
+      return running.map((d) => {
+        const over = Number.isFinite(d.homeBytes) && d.homeBytes > warnGB * 1e9;
+        const stop = h("button", { class: "btn mini", type: "button", dataset: { fk: `dk:stop:${d.profile}` }, onclick: () =>
+          ctx.saveCall(async () => { dkApply(await ctx.deck.desktops.stop(d.profile)); return ctx.settings(); }, T("set.saved")) }, node("desktops.stop"));
+        const reset = h("button", { class: "btn mini", type: "button", dataset: { fk: `dk:reset:${d.profile}` }, onclick: async () => {
+          if (!(await ask(T("desktops.resetConfirm", { agent: d.profile }), T("desktops.reset")))) return;
+          ctx.saveCall(async () => { dkApply(await ctx.deck.desktops.reset(d.profile)); return ctx.settings(); }, T("set.saved"));
+        } }, node("desktops.reset"));
+        const facts = `${d.memMB} MB · ${d.cpuPct}% CPU · ${sizeText(d.homeBytes)}`;
+        return h("div", { class: "sv-row", dataset: { dk: d.profile } },
+          h("span", { class: "sv-label" }, d.profile, h("span", { class: "muted" }, facts), over ? h("span", { class: "form-error" }, T("desktops.homeWarn", { gb: warnGB })) : null),
+          h("div", { class: "sv-ctl" }, stop, reset));
+      });
+    }
+    function dkPaint() {
+      if (DK.status) DK.status.replaceChildren(...dkStatus().map((x) => (typeof x === "string" ? h("span", null, x) : x)));
+      if (DK.list) DK.list.replaceChildren(...dkRows());
+      if (DK.sw && DK.st && document.activeElement !== DK.sw) DK.sw.checked = DK.st.host === true;
+    }
+    function desktopsGroup(kids) {
+      if (!ctx.deck.desktops) return;
+      dkWatch();
+      const cur = st().desktops || {};
+      const on = DK.st ? DK.st.host === true : cur.host === true;
+      const sw = switchRow("s-dk-host", node("desktops.host"), on, async (want, e) => {
+        const el = e && e.target;
+        if (want && !(await ask(T("desktops.consent", { size: sizeText(DK.st && DK.st.sizeBytes) }), T("desktops.consentOk")))) {
+          if (el) el.checked = false; // declined: nothing is saved, nothing is downloaded
+          return;
+        }
+        await ctx.saveCall(async () => {
+          const r = await ctx.deck.desktops.host(want);
+          dkApply(r && r.state);
+          return r && r.settings ? r.settings : ctx.settings();
+        }, T("set.saved"));
+        // settled (saved or failed): the switch shows what the main process holds, focused or not
+        const held = () => (DK.st ? DK.st.host === true : !!(st().desktops && st().desktops.host));
+        if (DK.sw) DK.sw.checked = held();
+        Promise.resolve().then(() => ctx.deck.desktops.state()).then((s) => { dkApply(s); if (DK.sw) DK.sw.checked = held(); }).catch(() => {});
+      }, { fk: "dk:host" });
+      DK.sw = sw.querySelector("input");
+      DK.status = h("p", { class: "sv-block sv-dk-status", role: "status" });
+      DK.list = h("div", { class: "sv-dk-list" });
+      const num = (field, label, { min, max, step = 1, value, out = Number }) => {
+        const id = `s-dk-${field}`;
+        const el = input(id, { type: "number", min, max, step, value, dataset: { fk: `dk:${field}` },
+          onchange: (e) => { if (e.target.value !== "") ctx.save({ desktops: { [field]: out(e.target.value) } }, T("set.saved")); } });
+        return row(node(label), el, { id });
+      };
+      const memGB = String(cur.memory || "1.5g").replace(/g$/, "");
+      kids.push(group(node("desktops.title"),
+        sw,
+        DK.status,
+        num("limit", "desktops.limit", { min: 0, max: 16, value: cur.limit ?? 3 }),
+        num("memory", "desktops.memory", { min: 0.5, max: 8, step: 0.5, value: memGB, out: (v) => `${Number(v)}g` }),
+        num("cpus", "desktops.cpus", { min: 1, max: 8, value: cur.cpus ?? 2 }),
+        num("idleMin", "desktops.idle", { min: 5, max: 240, value: cur.idleMin ?? 20 }),
+        num("homeWarnGB", "desktops.homeWarnGB", { min: 1, max: 1000, value: cur.homeWarnGB ?? 10 }),
+        DK.list));
+      dkPaint();
+    }
 
     function keyOf(el) {
       const box = el.closest(".sv-section");
@@ -565,7 +794,7 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
     return { open, close, toggle: (s) => (V.open ? close() : open(s)), isOpen: () => V.open, refresh, notify, section: () => V.section, icon, _builders: BUILDERS };
   }
 
-  const api = { create, SECTIONS, BUSY_SEND, screenTabVisible, tabFor, busySendOf, sectionOf, hostLines, hostBanners };
+  const api = { create, SECTIONS, BUSY_SEND, screenTabVisible, tabFor, busySendOf, sectionOf, hostLines, hostBanners, sizeText, DOCKER_URL };
   if (typeof window !== "undefined") window.DeckSettingsView = Object.freeze(api);
   if (typeof module === "object" && module.exports) module.exports = api; // Node unit tests
 })();

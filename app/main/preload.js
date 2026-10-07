@@ -182,10 +182,28 @@ contextBridge.exposeInMainWorld("deck", {
   // --- agent spaces (main/spaces.js): the agents' own desktop, its viewer and the user's control level ---
   spaces: {
     list: () => ipcRenderer.invoke("spaces:list"),
-    control: (level) => ipcRenderer.invoke("spaces:control", level), // watch | together | full | release
+    audit: (profile, before, limit) => ipcRenderer.invoke("spaces:audit", profile, before, limit),
+    frame: (profile, id) => ipcRenderer.invoke("spaces:frame", profile, id),
+    approvals: () => ipcRenderer.invoke("spaces:approvals"),
+    answer: (id, choice, withoutSnapshot) => ipcRenderer.invoke("spaces:answer", id, choice, withoutSnapshot),
+    snapshots: (profile) => ipcRenderer.invoke("spaces:snapshots", profile),
+    restore: (profile, id) => ipcRenderer.invoke("spaces:restore", profile, id),
+    deleteSnapshots: (profile) => ipcRenderer.invoke("spaces:deleteSnapshots", profile),
+    safety: (patch) => ipcRenderer.invoke("spaces:safety", patch),
+    control: (level, space) => ipcRenderer.invoke("spaces:control", level, space), // watch | together | full | release; space: "host" or a profile
     route: (profile, target) => ipcRenderer.invoke("spaces:route", profile, target), // target: "device" | "space"
     mode: (mode) => ipcRenderer.invoke("spaces:mode", mode),
-    view: (rect, level) => ipcRenderer.invoke("spaces:view", rect, level), // rect: the stage in CSS px, null hides
+    view: (rect, level, space) => ipcRenderer.invoke("spaces:view", rect, level, space), // rect: the stage in CSS px, null hides
+    home: (profile, host) => ipcRenderer.invoke("spaces:home", profile, host), // host: "auto" | "agent-host" | a device id
+    desktop: (profile, action) => ipcRenderer.invoke("spaces:desktop", profile, action), // action: "start" | "stop"
+  },
+  // --- agent desktops on this computer (main/desktops.js), Settings > This device > Agent desktops ---
+  desktops: {
+    state: () => ipcRenderer.invoke("desktops:state"), // {docker, image, pull, host, limit, running, error, isolation, sizeBytes}
+    host: (on) => ipcRenderer.invoke("desktops:host", on), // after the consent sheet; -> {settings, state}
+    stop: (profile) => ipcRenderer.invoke("desktops:stop", profile),
+    reset: (profile) => ipcRenderer.invoke("desktops:reset", profile), // after its confirmation
+    onEvent: listen("desktops"),
   },
   workspace: {
     state: () => ipcRenderer.invoke("ws:state"),

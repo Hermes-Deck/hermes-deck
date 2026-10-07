@@ -1,0 +1,7 @@
+{
+  "repository": "ghcr.io/trycua/linux",
+  "digest": "sha256:b2fe99e18790c8cadd9da70b21431fce3cb6ee78448a6ac99f785bad7c9789ba",
+  "tag": "24.04-slim",
+  "sizeBytes": 486649135,
+  "helper": { "repository": "alpine", "digest": "sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc", "tag": "3.20" }
+}

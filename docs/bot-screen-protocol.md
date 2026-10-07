@@ -106,6 +106,8 @@ The grant object is:
 
 `foreground` is true only when the user checks Foreground control in the local hand-over sheet. Missing or non-boolean values mean false. This allows physical mouse/keyboard input for that window in that grant only; every foreground input names its exact pid and window id. Take control pauses the agent through the existing human lease; Stop, expiry, lock, sleep and quitting end the grant. Administrator applications still require the owner to start Deck as administrator through Windows confirmation.
 
+On Windows, the Deck attempts to raise the granted HWND before forwarding an MCP foreground input call for that exact pid/window. Raising is best effort: failure leaves the call unchanged so the driver can report `foreground_unavailable`. Background input never triggers this helper, and `bring_to_front` remains refused by all three fences. Office windows show a foreground-control note in the confirmation sheet; the checkbox stays off by default.
+
 - **Device tokens:** one per device, issued and revoked on the agent host (`node tools/device-token.js add|list|revoke <name>` in `relay/`). Only hashes are stored, in `relay/devices.json` (gitignored). The relay rechecks live channels every 15 s; a revoked token gets READY `{"ok":false}` and its sessions end.
 - **Binding:** the relay opens a session only over the connection presence.js associates with the routed device id, and only when that connection's HELLO named the same id with a valid token.
 - **One MCP session per Hermes driver session.** Element tokens from `get_window_state` live only inside one driver session, so the relay never splits or reopens a channel. When a channel dies the wrapper exits, and Hermes starts a new session on its next call.

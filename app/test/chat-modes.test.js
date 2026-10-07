@@ -551,3 +551,34 @@ test("spaces.defaultLevel defaults to watch, accepts watch|together|full, reject
   assert.equal(settings(saved()).s.publicView().spaces.defaultLevel, "together");
   assert.equal(settings({ spaces: { defaultLevel: "bogus" } }).s.publicView().spaces.defaultLevel, "watch");
 });
+
+test("desktops settings: defaults, validated limit/memory/cpus/idle/home warning, invalid patches change nothing, host only through updateDesktopsHost", () => {
+  const { s, saved } = settings(null);
+  assert.deepEqual(plain(s.publicView().desktops), { host: false, limit: 3, memory: "1.5g", cpus: 2, idleMin: 20, homeWarnGB: 10 });
+  const bads = [
+    { limit: -1 }, { limit: 17 }, { limit: 2.5 }, { limit: "3" },
+    { cpus: 0 }, { cpus: 9 }, { cpus: 1.5 },
+    { memory: "0.4g" }, { memory: "8.5g" }, { memory: "2gb" }, { memory: "2G" }, { memory: "1024m" }, { memory: 2 },
+    { idleMin: 4 }, { idleMin: 241 }, { idleMin: null },
+    { homeWarnGB: 0 }, { homeWarnGB: "10" },
+    { host: true }, { host: false }, { bogus: 1 }, null, [], "on",
+  ];
+  for (const bad of bads) {
+    const before = plain(s.publicView());
+    assert.throws(() => s.update({ desktops: bad, language: "tr" }), (e) => e.message === I18N.t("set.desktopsInvalid"), JSON.stringify(bad));
+    assert.deepEqual(plain(s.publicView()), before, JSON.stringify(bad));
+  }
+  s.update({ desktops: { limit: 0, memory: "0.5g", cpus: 1, idleMin: 5 } });
+  s.update({ desktops: { limit: 16, memory: "8g", cpus: 8, idleMin: 240, homeWarnGB: 50 } });
+  assert.deepEqual(plain(s.publicView().desktops), { host: false, limit: 16, memory: "8g", cpus: 8, idleMin: 240, homeWarnGB: 50 });
+  s.updateDesktopsHost(true);
+  assert.equal(s.publicView().desktops.host, true);
+  assert.equal(saved().desktops.host, true);
+  assert.deepEqual(plain(settings(saved()).s.publicView().desktops), { host: true, limit: 16, memory: "8g", cpus: 8, idleMin: 240, homeWarnGB: 50 });
+  s.updateDesktopsHost("yes");
+  assert.equal(s.publicView().desktops.host, false, "only true turns it on");
+  // a hand-edited file falls back per field
+  assert.deepEqual(plain(settings({ desktops: { host: "yes", limit: 99, memory: "lots", cpus: 4, idleMin: 1 } }).s.publicView().desktops),
+    { host: false, limit: 3, memory: "1.5g", cpus: 4, idleMin: 20, homeWarnGB: 10 });
+  assert.deepEqual(plain(settings({ desktops: "broken" }).s.publicView().desktops), { host: false, limit: 3, memory: "1.5g", cpus: 2, idleMin: 20, homeWarnGB: 10 });
+});

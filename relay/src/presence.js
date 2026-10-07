@@ -7,6 +7,7 @@
 //   {t:"heartbeat", device:{id, name}, os, idleSec, locked, hosting:{browser, desktop}, driverOk}
 // `hosting` holds the user's per-device switches (all off on a new install). `driverOk` says whether the
 // device can actually host: a boolean for all capabilities, or {capability: boolean}; missing = fine.
+// A computer that hosts agents' own desktops (agent spaces phase 2) adds desktops:{ready, limit, running, idleMin}.
 //
 // activeDevice(cap): the least idle device that meets all four conditions: heartbeat younger than 30 s,
 // not locked, idleSec under 120, and cap's switch on (with a working driver).
@@ -36,6 +37,16 @@ const DEFAULTS = Object.freeze({
   sessionIdleS: 300, // a session with no open connection and no use for this long has ended
 });
 
+/** An integer clamped to [lo, hi]; anything that is not an integer counts as lo. */
+const clampInt = (v, lo, hi) => (Number.isInteger(v) ? Math.min(hi, Math.max(lo, v)) : lo);
+
+/** A Deck's desktop hosting: {ready, limit, running}, plus idleMin (its own idle time, 5..240) when it sends one. */
+function desktopsField(dk) {
+  const out = { ready: dk.ready === true, limit: clampInt(dk.limit, 0, 16), running: clampInt(dk.running, 0, 16) };
+  if (typeof dk.idleMin === "number" && Number.isFinite(dk.idleMin)) out.idleMin = Math.min(240, Math.max(5, Math.round(dk.idleMin)));
+  return out;
+}
+
 /** A validated heartbeat (never trusts shapes or sizes from the wire), or null. */
 function parseHeartbeat(m, now) {
   if (!m || typeof m !== "object") return null;
@@ -51,6 +62,8 @@ function parseHeartbeat(m, now) {
     driverOk = {};
     for (const c of CAPABILITIES) if (typeof m.driverOk[c] === "boolean") driverOk[c] = m.driverOk[c];
   }
+  // agent spaces phase 2: this computer hosts agents' own desktops (its DesktopHost: ready, how many, how many run)
+  const dk = m.desktops && typeof m.desktops === "object" && !Array.isArray(m.desktops) ? m.desktops : null;
   return {
     id,
     name: String(dev.name || "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 64) || id.slice(0, 8),
@@ -60,6 +73,7 @@ function parseHeartbeat(m, now) {
     asleep: m.asleep === true,
     hosting,
     driverOk,
+    desktops: dk ? desktopsField(dk) : null,
     at: now,
   };
 }
@@ -189,6 +203,18 @@ class Presence extends EventEmitter {
   connOf(deviceId) {
     const d = this.devices().get(deviceId);
     return d ? d.conn : null;
+  }
+
+  /**
+   * Deck computers that host agents' own desktops (desktops.js): fresh, awake, with a desktops heartbeat. A locked
+   * screen does not count: containers keep running behind a screen lock (only sleep stops them), so agents keep working.
+   */
+  desktopHosts(now = this.now()) {
+    const out = [];
+    for (const { hb } of this.devices().values()) {
+      if (now - hb.at < this.o.staleMs && !hb.asleep && hb.desktops) out.push({ id: hb.id, name: hb.name, ...hb.desktops });
+    }
+    return out;
   }
 
   // ---- choice --------------------------------------------------------------------------------------

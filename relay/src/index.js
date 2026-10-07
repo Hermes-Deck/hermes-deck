@@ -1,5 +1,6 @@
 "use strict";
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { loadEnvFile, home, readJson, atomicWriteJson, normUsage } = require("./util");
 const { Tailer } = require("./tailer");
@@ -15,8 +16,14 @@ const { FallbackHost, hostName, parseExternalCdp } = require("./browser");
 const { WorkspaceHub } = require("./workspace"); // Workspace tab: host picks, the agent host's browser view
 const { Driver, driverConfig } = require("./driver");
 const wire = require("./driver-wire");
-const { Spaces } = require("./spaces"); // agent spaces: the shared desktop's lock and its viewer
+const { Spaces } = require("./spaces"); // agent spaces: locks, viewers, per-agent desktops
+const { makeSpaceFetch, makeReady } = require("./space-fetch"); // phase 2: HTTP to an agent desktop (MCP, /health)
 const { SpaceLock } = require("./space-lock");
+const { SpaceAudit } = require("./space-audit");
+const { SpaceApprovals } = require("./space-approvals");
+const { compilePatterns } = require("./risky-commands");
+const { Desktops } = require("./desktops"); // agent spaces phase 2: which agent desktop runs where
+const { SpaceTunnel } = require("./space-tunnel"); // phase 2: desktops a Deck computer hosts, over its relay connection
 const { BundleStore } = require("./bundles");
 const { BrowserTransfers } = require("./browser-transfer");
 const { loadIdentity } = require("./browser-bundle");
@@ -31,9 +38,34 @@ const VERSION = compat.VERSION;
 
 const list = (v) => String(v || "").split(",").map((x) => x.trim()).filter(Boolean);
 const on = (v) => /^(1|true|yes|on)$/i.test(String(v || "").trim());
+const GIB = 1024 ** 3;
+const intIn = (v, lo, hi) => {
+  const t = String(v ?? "").trim();
+  const n = Number(t);
+  return t !== "" && Number.isInteger(n) ? Math.min(hi, Math.max(lo, n)) : null;
+};
+
+/**
+ * Agent spaces phase 2 settings: whether the agent host itself hosts agent desktops (DECK_DESKTOPS_HOST=1), how many
+ * at once (DECK_DESKTOPS_LIMIT; default 1, or 0 below 16 GB of RAM), their idle minutes, and whether an agent without
+ * a desktop of its own falls back to the shared one (DECK_SPACES_SHARED_FALLBACK, default 1).
+ */
+function desktopsConfig(env = process.env, mem = os.totalmem()) {
+  const set = intIn(env.DECK_DESKTOPS_LIMIT, 0, 16);
+  const lowMem = set === null && mem < 16 * GIB;
+  return {
+    host: on(env.DECK_DESKTOPS_HOST),
+    limit: set !== null ? set : lowMem ? 0 : 1,
+    lowMem,
+    idleMin: intIn(env.DECK_DESKTOPS_IDLE_MIN, 5, 240) ?? 20,
+    sharedFallback: !/^(0|false|no|off)$/i.test(String(env.DECK_SPACES_SHARED_FALLBACK || "").trim()),
+    // the agents that may have a desktop of their own (spec section 10); unset or empty: every configured agent
+    agents: list(env.DECK_DESKTOPS_AGENTS).length ? list(env.DECK_DESKTOPS_AGENTS) : null,
+  };
+}
 
 /** All settings come from the environment (see .env.example); nothing here is specific to one install. */
-function config(env = process.env) {
+function config(env = process.env, mem = os.totalmem()) {
   return {
     host: env.DECK_RELAY_HOST || "127.0.0.1",
     port: Number(env.DECK_RELAY_PORT || 9330),
@@ -72,10 +104,13 @@ function config(env = process.env) {
     hostName: env.DECK_HOST_NAME || null,
     // Bot screen: computer_use on the user's own devices (driver.js, relay/bin/deck-cua)
     driver: driverConfig(env),
-    // Agent spaces: shared = agents take turns on this machine's desktop (cua-spacesd shows it), agent = one each
-    spaces: /^(shared|agent)$/i.test(String(env.DECK_SPACES || "").trim())
+    // Agent spaces: shared = take turns, agent = one each, overflow = shared first, own desktop when busy.
+    // agent and overflow use the same desktop registry; DECK_SPACES_STICKY_SEC is parsed by driverConfig.
+    spaces: /^(shared|agent|overflow)$/i.test(String(env.DECK_SPACES || "").trim())
       ? { mode: String(env.DECK_SPACES).trim().toLowerCase(), url: env.DECK_SPACESD_URL || "http://127.0.0.1:3211", tokenFile: wire.expandHome(env.DECK_SPACESD_TOKEN_FILE || "~/.cua-spacesd/token") }
       : null,
+    safety: { auditEnv: { DECK_AUDIT: env.DECK_AUDIT, DECK_AUDIT_DAYS: env.DECK_AUDIT_DAYS, DECK_SNAPSHOT_KEEP: env.DECK_SNAPSHOT_KEEP }, riskyPatternsFile: env.DECK_RISKY_PATTERNS_FILE || null },
+    desktops: desktopsConfig(env, mem),
   };
 }
 
@@ -83,9 +118,10 @@ function config(env = process.env) {
  * Deck connections carry device heartbeats (presence.js), CDP tunnel frames (cdp.js), driver frames (driver.js)
  * and Workspace requests (workspace.js: host picks, the agent host's browser view).
  */
-function deckHooks(presence, gateway, driver = null, workspace = null, bundles = null, spaces = null) {
+function deckHooks(presence, gateway, driver = null, workspace = null, bundles = null, spaces = null, spaceTunnel = null) {
   return {
-    maxPayload: gateway || driver ? 64 * 1024 * 1024 : undefined, // tunnelled CDP answers and driver output (screenshots) are large
+    // tunnelled CDP answers, driver output (screenshots) and space tunnel answers ([0xD6], viewer files, MCP) are large
+    maxPayload: gateway || driver || spaces || spaceTunnel ? 64 * 1024 * 1024 : undefined,
     onConnect(ws) {
       presence.connect(ws);
       if (gateway) gateway.addDeck(ws);
@@ -112,6 +148,7 @@ function deckHooks(presence, gateway, driver = null, workspace = null, bundles =
         return !["ping", "resync"].includes(m.t);
       }
       if (isBinary) {
+        if (spaceTunnel && spaceTunnel.onFrame(ws, data)) return true; // agent spaces phase 2: [0xD6] space tunnel frames
         if (driver && driver.onFrame(ws, data)) return true; // bot screen: [0xD5] driver frames
         if (gateway) gateway.onFrame(ws, data);
         return true;
@@ -145,6 +182,7 @@ function deckHooks(presence, gateway, driver = null, workspace = null, bundles =
       presence.disconnect(ws);
       if (gateway) gateway.removeDeck(ws);
       if (driver) driver.removeDeck(ws);
+      if (spaceTunnel) spaceTunnel.removeDeck(ws); // its pending requests fail now, its view sockets close
       if (workspace) workspace.onClose(ws);
     },
     // agent spaces (/spaces*), then the bot screen (POST /desktop/*, GET /cu/*)
@@ -153,11 +191,43 @@ function deckHooks(presence, gateway, driver = null, workspace = null, bundles =
   };
 }
 
+/**
+ * The agent host as a desktop host (DECK_DESKTOPS_HOST=1): app/main/desktop-host.js driving Docker or colima, or null
+ * (with the reason logged) when the source layout lacks it, Docker is not running, or the pinned images are absent
+ * (images are never pulled at an agent's first call: `docker pull` them, then restart the relay).
+ */
+async function agentHostDesktops(cfg, dcfg) {
+  let mod, pin;
+  try {
+    mod = require("../../app/main/desktop-host");
+    pin = require("../../app/main/desktops-pin.json");
+  } catch {
+    console.warn("deck-relay: DECK_DESKTOPS_HOST=1 needs the full Hermes Deck source layout including app/main/desktop-host.js; this machine hosts no agent desktops");
+    return null;
+  }
+  const host = new mod.DesktopHost({ run: dcfg.runner || mod.dockerRunner(), pin, dataDir: path.join(cfg.dataDir, "desktops") });
+  const docker = await host.docker().catch(() => "stopped");
+  if (docker !== "ready") {
+    console.warn(`deck-relay: DECK_DESKTOPS_HOST=1 but Docker (or colima) is ${docker}; this machine hosts no agent desktops until the relay restarts with it running`);
+    return null;
+  }
+  if (!(await host.imagePresent().catch(() => false))) {
+    const imgs = [host.image, host.helperImage].filter(Boolean).join(" and ");
+    console.warn(`deck-relay: DECK_DESKTOPS_HOST=1 but the pinned images are not here; pull ${imgs} with docker pull, then restart the relay`);
+    return null;
+  }
+  if (dcfg.lowMem) console.warn("deck-relay: this machine has less than 16 GB of RAM: it hosts no agent desktops (DECK_DESKTOPS_LIMIT=0) unless DECK_DESKTOPS_LIMIT is set");
+  return host;
+}
+
 /** Start the relay. Returns {server, port, cdpPort, model, fleet, presence, gateway, stop()} (stop saves the checkpoint). */
 async function start(cfg) {
   if (!cfg.token || cfg.token.length < 24) throw new Error("DECK_RELAY_TOKEN missing or shorter than 24 chars");
   if (cfg.mobileDevicesFile && cfg.driver?.tokensFile && path.resolve(cfg.mobileDevicesFile) === path.resolve(cfg.driver.tokensFile)) throw new Error("Mobile and desktop token stores must be separate");
   const agents = readJson(cfg.agentsFile, { profiles: {} });
+  if (cfg.spaces && agents && agents.profiles && Object.prototype.hasOwnProperty.call(agents.profiles, "host")) {
+    console.warn('deck-relay: a Hermes profile named "host" gets no desktop of its own: "host" is the shared desktop\'s id in agent spaces');
+  }
   const cpFile = path.join(cfg.dataDir, "checkpoint.json");
   const cp = readJson(cpFile, null) || { files: {}, roll: {} };
   cp.files = cp.files || {};
@@ -291,12 +361,58 @@ async function start(cfg) {
   const workspace = gateway ? new WorkspaceHub({ presence, fallback, transfers }) : null;
   if (cdpCfg && cdpCfg.fallback && fallback && !fallback.headlessAvailable) console.warn("deck-relay: DECK_FALLBACK_BROWSER is on but no Chrome, Chromium or Edge was found; set DECK_FALLBACK_BROWSER_PATH");
   if (cdpCfg && !fallback) console.warn(`deck-relay: no agent host browser (DECK_FALLBACK_BROWSER=0, no DECK_FALLBACK_BROWSER_CDP); agents get a browser only on a Deck PC${cdpCfg.browserDefault === "host" ? " (DECK_BROWSER_DEFAULT=host has nothing to prefer)" : ""}`);
-  spaces = cfg.spaces ? new Spaces({ mode: cfg.spaces.mode, lock: new SpaceLock(), presence, spacesd: { url: cfg.spaces.url, tokenFile: cfg.spaces.tokenFile }, agentName: (p) => model.agentName(p) }) : null;
-  const driver = cfg.driver ? new Driver({ ...cfg.driver, presence, spaces, agentName: (p) => model.agentName(p) }) : null;
+  // Agent spaces phase 2 (spec 2026-10-07): each agent's own desktop on a desktop host. Deck computers may host
+  // whenever spaces are on (they opt in themselves); the agent host only with DECK_DESKTOPS_HOST=1.
+  const dcfg = { ...desktopsConfig({}, Infinity), ...(cfg.desktops || {}) };
+  const spaceAudit = cfg.spaces ? new SpaceAudit({ dataDir: cfg.dataDir, env: cfg.safety?.auditEnv || {}, known: (profile) => !!spaces?._known(profile) }) : null;
+  const riskyPatterns = cfg.safety?.riskyPatternsFile ? compilePatterns(fs.readFileSync(cfg.safety.riskyPatternsFile, "utf8")) : [];
+  let spaceApprovals = null;
+  let desktops = null;
+  let spaceTunnel = null;
+  let localDesktops = null;
+  if (cfg.spaces) {
+    spaceTunnel = new SpaceTunnel({ presence });
+    localDesktops = dcfg.host ? await agentHostDesktops(cfg, dcfg) : null;
+    const storeFile = path.join(cfg.dataDir, "desktops.json"); // home hosts per agent
+    desktops = new Desktops({
+      local: localDesktops,
+      localLimit: localDesktops ? dcfg.limit : 0,
+      idleMs: dcfg.idleMin * 60_000,
+      presence,
+      remote: spaceTunnel.remote,
+      store: { load: () => readJson(storeFile, null), save: (o) => atomicWriteJson(storeFile, { v: 1, ...o }) },
+      hostName: hostLabel,
+      ready: makeReady({ tunnel: spaceTunnel }), // cua-spacesd's /health, every 500 ms up to 30 s
+      allowed: Array.isArray(dcfg.agents) ? dcfg.agents : null, // DECK_DESKTOPS_AGENTS: others get no desktop (fallback "none")
+      hostGoneMs: presence.o.staleMs, // a Deck host absent this long (heartbeat stale, asleep) has left; a locked one still hosts
+    });
+    desktops.snapshotSettings = () => spaceAudit.settings();
+    spaceApprovals = new SpaceApprovals({ snapshot: (p, reason, host) => desktops.snapshot(p, reason, host) });
+    await desktops.adopt(); // the agent host's desktops still running from before a restart
+  }
+  spaces = cfg.spaces
+    ? new Spaces({
+        mode: cfg.spaces.mode,
+        lock: new SpaceLock(),
+        presence,
+        spacesd: { url: cfg.spaces.url, tokenFile: cfg.spaces.tokenFile },
+        desktops,
+        audit: spaceAudit, approvals: spaceApprovals,
+        local: localDesktops,
+        tunnel: spaceTunnel,
+        profiles: () => Object.keys((model.cfg && model.cfg.profiles) || {}),
+        sharedProfiles: () => driver ? driver.sharedProfiles() : [],
+        agentName: (p) => model.agentName(p),
+      })
+    : null;
+  const spaceFetch = desktops ? makeSpaceFetch({ desktops, local: localDesktops, tunnel: spaceTunnel }) : null;
+  const driver = cfg.driver ? new Driver({ desktops, spaceFetch, sharedFallback: dcfg.sharedFallback, spaceAudit, spaceApprovals, riskyPatterns, ...cfg.driver, presence, spaces, agentName: (p) => model.agentName(p) }) : null;
+
+  if (spaces) spaces.endSpace = (profile) => driver?.endSpace(profile);
 
   const mobile = new MobileRelay({ tokensFile: cfg.mobileDevicesFile || path.join(cfg.dataDir, "mobile-devices.json"), bridgeConfig: cfg.mobileBridge, push: new MobilePushClient(), capabilities: { history: !!history, workspace: !!workspace && !!fallback?.available, desktop: false } });
   const host = { protocol: compat.PROTOCOL, plugins: compat.pluginCache(cfg.hermesRoot || null), update: () => compat.updateStatus(cfg.dataDir) };
-  const srv = createServer({ mobile, host, token: cfg.token, queryToken: !!cfg.queryToken, model, fleet, version: VERSION, hooks: deckHooks(presence, gateway, driver, workspace, bundles, spaces), history, bundles });
+  const srv = createServer({ mobile, host, token: cfg.token, queryToken: !!cfg.queryToken, model, fleet, version: VERSION, hooks: deckHooks(presence, gateway, driver, workspace, bundles, spaces, spaceTunnel), history, bundles });
   broadcast = srv.broadcast;
   if (workspace) workspace.setBroadcast(srv.broadcast);
 
@@ -323,6 +439,12 @@ async function start(cfg) {
     setInterval(saveCheckpoint, 30_000),
     setInterval(() => model.prune(), 600_000),
   ];
+  if (spaceAudit) {
+    spaceAudit.cleanup().catch(() => {});
+    const maintenance = setInterval(() => { spaceAudit.cleanup().catch(() => {}); spaceApprovals?.sweep(); }, 60_000);
+    maintenance.unref?.();
+    timers.push(maintenance);
+  }
   // Workspace tab: end stale routes and tell decks where agent work runs, when that changes
   let lastDevices = "";
   let spaceTick = 9; // first health check on the first tick
@@ -334,12 +456,26 @@ async function start(cfg) {
         spaces.sweep();
         if (++spaceTick % 10 === 0) spaces.health();
       }
+      if (desktops) desktops.syncHosts().catch(() => {}); // a Deck host appeared, came back, or runs other desktops than we know
       const s = JSON.stringify(presence.state());
       if (s === lastDevices) return;
       lastDevices = s;
       broadcast(JSON.parse(s));
     }, 1000)
   );
+  if (desktops) {
+    let sweeping = false; // a sweep can wait on `docker stop`: never two at once
+    timers.push(
+      setInterval(() => {
+        if (sweeping) return;
+        sweeping = true;
+        desktops
+          .sweep()
+          .catch((e) => console.warn(`deck-relay: agent desktops sweep failed (${e.message})`))
+          .finally(() => (sweeping = false));
+      }, 30_000)
+    );
+  }
   fleet.start();
 
   let cdpSrv = null;
@@ -392,7 +528,7 @@ async function start(cfg) {
     }
   }
   mobile.available.desktop = driverUp;
-  return { server: srv.server, port: srv.server.address().port, cdpPort, model, fleet, usage, presence, gateway, workspace, fallback, bundles, transfers, driver: driverUp ? driver : null, stop };
+  return { server: srv.server, port: srv.server.address().port, cdpPort, model, fleet, usage, presence, gateway, workspace, fallback, bundles, transfers, driver: driverUp ? driver : null, desktops, spaceTunnel, stop };
 }
 
 /**
@@ -443,6 +579,7 @@ if (require.main === module && process.argv.includes("--self-check")) {
       console.log(`deck-relay ${VERSION} listening on ${cfg.host}:${port} (${model.sessions.size} sessions loaded)`);
       if (cdpPort) console.log(`deck-relay: agent browsers at http://127.0.0.1:${cdpPort}/agent/<profile> (headless fallback browser ${cfg.cdp.fallback ? "on" : "off"}; external browser ${cfg.cdp.externalCdp ? `attached for ${cfg.cdp.externalAgent}` : "off"}; default ${cfg.cdp.browserDefault})`);
       if (driver) console.log(`deck-relay: bot screen driver socket ${cfg.driver.sockPath} (agent host as fallback: ${cfg.driver.desktopHost ? "on" : "off"})`);
+      if (cfg.spaces) console.log(`deck-relay: agent spaces ${cfg.spaces.mode}; agent desktops on this machine ${cfg.desktops.host ? `on (limit ${cfg.desktops.limit}, idle ${cfg.desktops.idleMin} min)` : "off"}; shared fallback ${cfg.desktops.sharedFallback ? "on" : "off"}`);
       const quit = () => stop().then(() => process.exit(0));
       process.on("SIGTERM", quit);
       process.on("SIGINT", quit);
@@ -453,4 +590,4 @@ if (require.main === module && process.argv.includes("--self-check")) {
     });
 }
 
-module.exports = { config, start, deckHooks, selfCheck, VERSION };
+module.exports = { config, desktopsConfig, start, deckHooks, selfCheck, VERSION };

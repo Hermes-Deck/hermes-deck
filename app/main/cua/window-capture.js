@@ -4,6 +4,13 @@ const path = require("node:path");
 const { readWindow } = require("./frontmost");
 const active = new Map();
 const sameBounds = (a, b) => !!a && !!b && ["x", "y", "width", "height"].every(k => a[k] === b[k]);
+// The window's video frame is either its full rect or its DWM visible frame. On a scaled display (e.g. 150%) DWM
+// rounds the visible frame one pixel differently from the captured video, so sizes may differ by up to 2 px; an exact
+// match wins. This function also runs inside the capture page (embedded with toString), so it stays self-contained.
+function videoSource(g, w, h) {
+  const exact = [g.full, g.visible].find(b => b.width === w && b.height === h);
+  return exact || [g.full, g.visible].find(b => Math.abs(b.width - w) <= 2 && Math.abs(b.height - h) <= 2);
+}
 
 async function captureWindow(target, frame, authorized) {
   const { BrowserWindow, desktopCapturer, nativeImage } = require("electron");
@@ -43,7 +50,7 @@ async function captureWindow(target, frame, authorized) {
         const video=document.querySelector('video');video.srcObject=stream;await video.play();
         await new Promise(resolve=>video.requestVideoFrameCallback(resolve));
         const g=${JSON.stringify(geometry)};
-        const source=[g.full,g.visible].find(b=>b.width===video.videoWidth&&b.height===video.videoHeight);
+        const source=(${videoSource.toString()})(g,video.videoWidth,video.videoHeight);
         if(!source)throw Error('Window video dimensions differ from native bounds');
         const canvas=document.createElement('canvas');canvas.width=g.expected.width;canvas.height=g.expected.height;
         const ctx=canvas.getContext('2d');ctx.fillStyle='black';ctx.fillRect(0,0,canvas.width,canvas.height);
@@ -70,4 +77,4 @@ async function captureWindow(target, frame, authorized) {
   }
 }
 function cancelCaptures() { for (const { win } of active.values()) if (!win.isDestroyed()) win.destroy(); active.clear(); }
-module.exports = { captureWindow, cancelCaptures, sameBounds };
+module.exports = { captureWindow, cancelCaptures, sameBounds, videoSource };

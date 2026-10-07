@@ -6,6 +6,24 @@ const { PassThrough } = require("node:stream");
 const { captureOutput } = require("../main/cua/capture-output");
 const args = { pid: 12, window_id: 34 };
 const meta = { ...args, snapshot_id: "native-snapshot", capture_id: "native-capture", screenshot_width: 320, screenshot_height: 180 };
+test("F9: frame endpoint accepts the writer's millisecond names and rejects unsafe paths", async () => {
+  const fs = require("node:fs"), vm = require("node:vm");
+  const source = fs.readFileSync(require.resolve("../main/cua/index"), "utf8");
+  const fn = source.slice(source.indexOf("async function frame(p)"), source.indexOf("async function lease("));
+  const calls = [];
+  const frame = vm.runInNewContext(source.match(/^const FRAME_RE = .*$/m)[0] + "\n" + fn + "\nframe", {
+    Buffer, S: {}, i18nText: () => "invalid path", relayFetch: async (method, route) => {
+      calls.push([method, route]); return { ok: true, headers: { get: () => "image/png" }, arrayBuffer: async () => Buffer.from("pixels") };
+    },
+  });
+  for (const name of ["1.jpg", "1791456000000.png", "1791456000001.jpeg"])
+    assert.equal(await frame(`agent1/session:1/${name}`), "data:image/png;base64,cGl4ZWxz");
+  for (const path of ["../session/123.png", "agent/../123.png", "agent/session/12345678901234567.png",
+    "agent/session/1.png/extra", "agent/session/%2e%2e.png", "agent\\session\\1.png", "agent/session/1.png?x=1"])
+    await assert.rejects(frame(path), /invalid path/);
+  assert.equal(calls.length, 3);
+  assert.equal(calls[1][1], "/cu/agent1/session%3A1/1791456000000.png");
+});
 function child() { const c = new EventEmitter(); return Object.assign(c, { pid: 123, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill() {} }); }
 function collect(p) { let out = ""; p.stdout.on("data", b => { out += b; }); return () => out; }
 
@@ -75,4 +93,14 @@ test("revoked/failed fresh capture returns an error, never the old GDI image", a
   const out = collect(p); const done = once(p, "close");
   c.stdout.write(JSON.stringify({ ...meta, screenshot_png_b64: "OLD" })); c.emit("close", 0, null); await done;
   assert.match(JSON.parse(out()).error, /window grant ended/); assert.ok(!out().includes("OLD"));
+});
+
+test("window video matches native bounds within DWM rounding (150% scale: video 1262x890, frame 1262x891)", () => {
+  const { videoSource } = require("../main/cua/window-capture");
+  const full = { x: 1755, y: 346, width: 1280, height: 900 };
+  const visible = { x: 1764, y: 346, width: 1262, height: 891 };
+  assert.deepEqual(videoSource({ full, visible }, 1262, 890), visible);
+  assert.deepEqual(videoSource({ full, visible }, 1280, 900), full, "an exact match still wins");
+  assert.equal(videoSource({ full, visible }, 1262, 880), undefined, "a real size change is still refused");
+  assert.equal(videoSource({ full, visible }, 640, 480), undefined);
 });

@@ -80,6 +80,7 @@ function createServer({ token, model, fleet, version, hooks = null, history = nu
     if (mobileAuth && !(req.method === "GET" && (["/snapshot", "/fleet", "/tokens"].includes(url.pathname) || /^\/(session|message|cu)\//.test(url.pathname)) || req.method === "POST" && ["/desktop/lease", "/desktop/stop", "/fleet/quotas/refresh"].includes(url.pathname))) return json(res, 403, { error: "mobile access denied" });
     if (bundles && (url.pathname === "/bundle" || url.pathname.startsWith("/bundle/")) && !req.headers.authorization?.startsWith("Bearer ")) return json(res, 401, { error: "relay bearer required" });
     if (bundles && bundles.onHttp(req, res, url)) return; // D3: opaque envelopes, device-bound access
+    if (url.pathname.startsWith("/spaces/") && !tokenOk(req, token, false)) return json(res, 401, { error: "relay bearer required" });
     if (hooks && hooks.onHttp && hooks.onHttp(req, res, url)) return; // bot screen: lease, stop, frames
     if (req.method === "POST" && url.pathname === "/fleet/quotas/refresh") {
       // On-demand quota refresh (Usage refresh button, phone and desktop). Rate limit and wait live in Fleet.refreshQuotas.

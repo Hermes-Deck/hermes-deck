@@ -1093,14 +1093,40 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       settingsMessage(true, i18nText("U0497"));
     },
     testNotification: (btn) => testNotification(btn),
+    confirm: (o) => confirmSheet(o), // consent / confirmation sheets (agent desktops)
     hermes: (kids) => paneHermesSettings(kids),
     hostVersions: () => hostVer, // main/host-versions.js: relay / plugin versions on the host
     workspaceRows: () => (workspace ? workspace.settingsRows() : null),
     botscreenRows: () => (botscreen ? botscreen.settingsRows() : null),
+    agents: () => agentList(), // Settings > Agent spaces: one home-host row per agent
     screenTab: () => screenTabOn(),
     openScreen: () => { if (layout.panelClosed) togglePanel(); setTab("screen"); },
     onToggle: () => renderGear(),
   });
+  /** A small modal consent / confirmation sheet for Settings: resolves true only on its OK button (Esc, Cancel: false). */
+  function confirmSheet({ title = "", body = "", ok = "" } = {}) {
+    return new Promise((resolve) => {
+      const dialog = h("dialog", { class: "sv-confirm", "aria-labelledby": "sv-confirm-title" });
+      let done = false;
+      const finish = (v) => {
+        if (done) return;
+        done = true;
+        if (dialog.open) dialog.close();
+        dialog.remove();
+        resolve(v);
+      };
+      const cancel = h("button", { class: "btn", type: "button", onclick: () => finish(false) }, i18nNode("U0451"));
+      dialog.append(
+        h("h3", { id: "sv-confirm-title" }, title),
+        h("p", null, body),
+        h("div", { class: "form-actions" }, cancel, h("button", { class: "btn primary", type: "button", onclick: () => finish(true) }, ok || i18nText("set.saved")))
+      );
+      dialog.addEventListener("cancel", (e) => { e.preventDefault(); finish(false); });
+      document.body.append(dialog);
+      dialog.showModal();
+      cancel.focus(); // the safe choice has the focus
+    });
+  }
   function openSettings(section) {
     SV.open(section); // drawn above an open All sessions browser; closing Settings shows it again
   }

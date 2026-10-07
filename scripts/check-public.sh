@@ -36,6 +36,12 @@ allowlist = [
     # Root-home fixtures exercise redaction and refusal of SSH private keys; no account data.
     ('app/test/media-preview.test.js', re.compile(r'/root/\.hermes/attachments\b')),
     ('hermes-plugin/hermes-deck/test_voice_files.py', re.compile(r'/root/\.ssh/id_rsa\b')),
+    # The agent host's own desktop host object (a property named local), not a hostname.
+    ('relay/src/desktops.js', re.compile(r'(?<=this)\.local\b')),
+    ('relay/src/spaces.js', re.compile(r'(?:(?<=this)|(?<=\bo))\.local\b')),
+    ('relay/test/desktops.test.js', re.compile(r'(?<=\br)\.local\b')),
+    # Agent desktop isolation rejects the whole private range; no address of a real network.
+    ('app/main/desktop-host.js', re.compile(r'192\.168\.(?=0\.0/16 )')),
 ]
 paths = subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')
 findings = []

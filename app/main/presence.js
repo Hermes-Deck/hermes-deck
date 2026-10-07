@@ -7,7 +7,9 @@ const { t: i18nText, getLocale: i18nLocale } = require("../renderer/i18n");
 //     friends, so running agent work on a computer is always that computer's owner's choice;
 //   - the heartbeat the relay uses to find the device the user is on, sent every 10 s and at once on
 //     suspend, lock, unlock and resume:
-//       {t:"heartbeat", device:{id, name}, os, idleSec, locked, hosting:{browser, desktop}, driverOk}
+//       {t:"heartbeat", device:{id, name}, os, idleSec, locked, hosting:{browser, desktop}, driverOk, desktops}
+//     desktops (agent spaces phase 2, main/desktops.js): {ready, limit, running, idleMin} while this computer hosts agents'
+//     own desktops, else null. It is not a capability switch here: its switch and consent live in desktops.js.
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -39,6 +41,7 @@ class DevicePresence extends EventEmitter {
     for (const c of CAPABILITIES) this.hosting[c] = !!(d.hosting && d.hosting[c] === true);
     this.capabilities = new Set(); // switches a module on this deck can honour (register())
     this.driverOk = {};
+    this.desktopsField = null; // () => {ready, limit, running, idleMin} | null (main/desktops.js setDesktops)
     this.relay = null;
     this.timer = null;
     this.lockedByEvent = false;
@@ -64,6 +67,20 @@ class DevicePresence extends EventEmitter {
     if (!CAPABILITIES.includes(cap)) throw new Error(`unknown capability ${cap}`);
     this.capabilities.add(cap);
     this.driverOk[cap] = !!driverOk;
+  }
+
+  /** main/desktops.js: the heartbeat's desktops field (null while this computer does not host agent desktops). */
+  setDesktops(fn) {
+    this.desktopsField = typeof fn === "function" ? fn : null;
+  }
+
+  _desktops() {
+    try {
+      const v = this.desktopsField ? this.desktopsField() : null;
+      return v && typeof v === "object" ? { ready: v.ready === true, limit: v.limit, running: v.running, idleMin: v.idleMin } : null;
+    } catch {
+      return null;
+    }
   }
 
   setHosting(cap, on) {
@@ -99,6 +116,7 @@ class DevicePresence extends EventEmitter {
       asleep: this.asleep,
       hosting,
       driverOk: { ...this.driverOk },
+      desktops: this._desktops(),
     };
   }
 

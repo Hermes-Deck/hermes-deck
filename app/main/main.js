@@ -24,6 +24,7 @@ const wallpaper = require("./wallpaper"); // Settings > Appearance: the chat bac
 const { initUpdates } = require("./update-service"); // Settings > General > Updates
 const { HostVersions } = require("./host-versions"); // relay / plugin older than this app, protocol mismatch
 const { initSpaces } = require("./spaces"); // Bot screen: the agents' own desktop (agent spaces)
+const { initDesktops } = require("./desktops"); // agent spaces phase 2: this computer as an agent-desktop host
 const { virtualizingPackage } = require("./launch-context"); // Windows: started inside a packaged app's AppData copy
 const { spawn: spawnDetached } = require("child_process");
 const { BridgeClient, probe: probeBridge, normalizeConfig: normalizeBridgeConfig } = require("./bridge");
@@ -122,6 +123,7 @@ let login = null; // in-flight interactive login
 let tgStatus = { status: "starting" };
 let relayStatus = { status: "starting" };
 let workspace = null; // Workspace tab (main/workspace.js)
+let desktopsHost = null; // Settings > This device > Agent desktops (main/desktops.js)
 const outboundMutations = new Set();
 let quitAttempt = null;
 
@@ -187,12 +189,14 @@ function startRelay() {
   if (workspace) workspace.attachRelay(null); // Workspace tab: drop the old connection's heartbeat + tunnel
   botscreen.attachRelay(null); // Bot ekranı: the old connection's driver channels end
   if (hostVersions) hostVersions.relayGone();
+  if (desktopsHost) desktopsHost.attachRelay(null); // agent desktops: the old connection's [0xD6] tunnel ends
   if (!settings.isConfigured()) return setRelay({ status: "unconfigured" });
   const r = (relay = new RelayClient({ url: settings.data.relay.url, token: settings.data.relay.token }));
   relay.on("status", (s) => relay === r && setRelay(s));
   relay.on("msg", (m) => relay === r && relayMsg(r, m));
   if (workspace) workspace.attachRelay(relay); // Workspace tab: heartbeat + CDP tunnel on this connection
   botscreen.attachRelay(relay); // Bot ekranı: [0xD5] driver frames on this connection
+  if (desktopsHost && !SHOT) desktopsHost.attachRelay(relay); // agent desktops: [0xD6] space tunnel frames on this connection
   relay.start();
 }
 
@@ -723,6 +727,7 @@ ipc.handle("settings:save", async (_e, patch) => {
       (JSON.stringify([d.telegram, d.groupChatId, d.hiddenBots]) !== JSON.stringify([was.telegram, was.groupChatId, was.hiddenBots]) && !login)) await startTelegram();
   if (d.readReceipts !== was.readReceipts && tg && tg.setReadReceipts) tg.setReadReceipts(d.readReceipts !== false); // C5, no reconnect needed
   desktop.applySettings(); // desktop shell: pet on/off, tray menu checkboxes
+  if (desktopsHost && JSON.stringify(d.desktops) !== JSON.stringify(was.desktops)) desktopsHost.settingsChanged(); // the heartbeat's limit
   return settings.publicView();
 });
 ipc.handle("tg:retry", () => {
@@ -1182,7 +1187,11 @@ app.whenReady().then(() => {
   if (!SHOT) initHostVersions(); // Settings › Relay / › Hermes: host versions behind this app
   createWindow();
   // agent spaces: registered before the desktop shell like every channel of the main window
-  initSpaces({ ipc, win, relayCfg: botscreen.relayCfg, relayFetch: botscreen.relayFetch, deviceId: () => device.id, settings, notify: (k, p) => desktop.notify(k, p), send });
+  // the agent desktops this computer runs (desktopsHost, set just below) are viewed on loopback, not through the relay
+  const localDesktops = { port: async (p) => (desktopsHost ? desktopsHost.port(p) : null), token: (p) => (desktopsHost ? desktopsHost.token(p) : null) };
+  initSpaces({ ipc, win, relayCfg: botscreen.relayCfg, relayFetch: botscreen.relayFetch, deviceId: () => device.id, settings, notify: (k, p) => desktop.notify(k, p), send, desktops: localDesktops });
+  // agent desktops on this computer (off until the user turns them on, after the consent sheet); before the desktop shell
+  desktopsHost = initDesktops({ ipc, settings, presence: device, send, dataDir: path.join(app.getPath("userData"), "desktops"), shot: !!SHOT });
   desktop.init({ win, settings, icon: ICON, shot: !!SHOT }); // desktop shell: notifications, pet, tray, close-to-tray
   win.on("close", (e) => { windowClosing = !e.defaultPrevented; }); // registered after close-to-tray
   // Bot ekranı: off until "Masaüstü kontrolü" is on (Settings > Bu cihaz); fixture runs pick a scene with --botscreen=<scene>
@@ -1199,6 +1208,7 @@ app.whenReady().then(() => {
 
 /** The app's own connections and children end; safe to run more than once. */
 function shutdown() {
+  if (desktopsHost) desktopsHost.quit(); // agent desktops here stop (stopped, not removed); once
   if (relay) relay.stop();
   if (bridge) bridge.stop();
   cancelLogin();
@@ -1267,6 +1277,7 @@ app.on("before-quit", (e) => {
       try {
         if (workspace) workspace.host.killAll();
         botscreen.killAll();
+        if (desktopsHost) desktopsHost.quit();
       } finally {
         app.exit(0);
       }

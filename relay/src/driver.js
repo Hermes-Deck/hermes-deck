@@ -13,9 +13,12 @@ const fs = require("fs");
 const net = require("net");
 const path = require("path");
 const { execFile } = require("child_process");
+const { randomUUID } = require("node:crypto");
+const { risky, preview, advance } = require("./risky-commands");
 const wire = require("./driver-wire");
 const devtokens = require("./devtokens");
-const { McpFence, checkCall, filterListing, appsAnswer, fenceGrant, int } = require("./mcpfence");
+const { McpFence, checkCall, checkSpaceCall, lines, toolError, filterListing, appsAnswer, fenceGrant, int } = require("./mcpfence");
+const { McpHttpBridge } = require("./space-mcp");
 const { home } = require("./util");
 
 const CAP = "desktop";
@@ -31,6 +34,39 @@ const FRAME_TYPES = { ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "imag
 // Hermes shows the agent only the last stderr line of a failed driver probe, cut at 200 chars: keep it short.
 const NO_ROUTE =
   "Bot ekranı: no device is available for computer_use (Masaüstü kontrolü off, or the computer is locked or idle) and the agent host is not allowed. Ask the user.";
+// Agent spaces phase 2: the agent's own desktop. A query waits this long for it, then answers "starting" (busy):
+// the plugin's busy loop asks again, and the desktop keeps starting meanwhile (desktops.js shares one start).
+const DESKTOP_WAIT_MS = 2000;
+const HELLO_DESKTOP_MS = 13_000; // deck-cua's hello waits this long for a starting desktop (its own ROUTE_MS is 15 s)
+const STARTING = "Your desktop is starting; retry the same action now.";
+const WENT_AWAY = "Your desktop went away; retry the same action now.";
+// Info verbs on an agent's own desktop are answered here, without starting it. The manifest is metadata only: its
+// mcp_invocation is what Hermes launches, and deck-cua points the command back at itself (bot-screen-protocol.md:29).
+const INFO_VERBS = new Set(["manifest", "--help", "status", "doctor"]);
+// Hermes' computer_use starts only with a manifest that meets its cua-driver runtime contract: a semantic
+// binary_version >= 0.20.0 and the mcp/serve/stop flags advertised (its _manifest_contract_reason). The version is
+// the cua-driver inside the pinned desktop image (docs/agent-spaces.md). The flags are only
+// advertised: Hermes passes none of them in standard mode, and the space route ignores the argv after `mcp`.
+const SPACE_DRIVER_VERSION = "0.34.0";
+const flags = (...names) => names.map((name) => ({ name }));
+const SPACE_MANIFEST = Object.freeze({
+  name: "cua-spacesd",
+  binary_version: SPACE_DRIVER_VERSION,
+  schema_version: "1",
+  mcp_invocation: { command: "deck-cua", args: ["mcp"] },
+  subcommands: [
+    { name: "mcp", args: flags("--socket", "--grant") },
+    { name: "serve", args: flags("--socket", "--permission-mode", "--capability-manifest", "--approve-capability-manifest", "--embedded") },
+    { name: "stop", args: flags("--socket") },
+  ],
+});
+// no desktop of its own and the shared desktop not offered as a fallback (DECK_SPACES_SHARED_FALLBACK=0)
+const NO_DESKTOP = Object.freeze({
+  offline: "Your desktop host is offline; ask the user.",
+  limit: "Every desktop host is full right now; retry later or ask the user.",
+  failed: "Your desktop could not start; ask the user to check Settings > This device > Agent desktops.",
+  none: "No desktop host is available; ask the user.",
+});
 
 // ---- device frames ---------------------------------------------------------------------------------
 function encodeFrame(op, ch, payload) {
@@ -129,6 +165,7 @@ function driverConfig(env = process.env) {
   const deckHome = wire.expandHome(env.DECK_HOME) || home(".hermes-deck");
   const envFile = env.DECK_RELAY_ENV || path.join(__dirname, "..", ".env");
   const venvPython = home(".hermes", "hermes-agent", "venv", "bin", "python");
+  const stickySec = Number(String(env.DECK_SPACES_STICKY_SEC ?? "").trim() || 120);
   return {
     deckHome,
     sockPath: env.DECK_DRIVER_SOCK || wire.defaultSockPath(deckHome),
@@ -136,18 +173,32 @@ function driverConfig(env = process.env) {
     tokensFile: env.DECK_DEVICE_TOKENS || path.join(path.dirname(envFile), "devices.json"),
     hermesPython: wire.expandHome(env.DECK_HERMES_PYTHON) || (fs.existsSync(venvPython) ? venvPython : ""),
     desktopHost: /^(1|true|yes|on)$/i.test(String(env.DECK_DESKTOP_HOST || "").trim()),
+    stickyMs: Math.max(30, Math.min(900, Number.isFinite(stickySec) ? stickySec : 120)) * 1000,
   };
 }
+
+// In agent mode a verb other than mcp, call and the info verbs (final review I4): Hermes' manifest contract advertises
+// serve and stop, so this line tells the agent what to keep instead of starting a desktop for nothing.
+const AGENT_MCP_ONLY = "On an agent's own desktop only the MCP transport is available; keep computer_use.permission_mode at standard.";
 
 class Driver {
   /**
    * @param {object} o
    * @param {import("./presence").Presence} o.presence routing ("desktop" capability) and the decks' connections
    * @param {(profile: string) => string} [o.agentName] profile -> display name (grants name the agent)
-   * plus the driverConfig() fields and optional limits: cuMaxAgeMs, cuMaxBytes, pruneEveryMs, tokenCheckMs.
+   * @param {import("./desktops").Desktops|null} [o.desktops] agent spaces phase 2: each agent's own desktop
+   * @param {((host: string, profile: string) => (req: object) => Promise<object>)|null} [o.spaceFetch] HTTP to one
+   *   agent desktop's cua-spacesd (direct on the agent host, the space tunnel for a Deck computer)
+   * @param {boolean} [o.sharedFallback] no own desktop: fall back to the shared desktop (DECK_SPACES_SHARED_FALLBACK)
+   * plus the driverConfig() fields and optional limits: cuMaxAgeMs, cuMaxBytes, pruneEveryMs, tokenCheckMs, desktopWaitMs,
+   * helloDesktopMs.
    */
-  constructor({ presence, spaces = null, agentName = (p) => p, log = (...a) => console.log("deck-relay driver:", ...a), ...o }) {
+  constructor({ presence, spaces = null, desktops = null, spaceFetch = null, sharedFallback = true, agentName = (p) => p, log = (...a) => console.log("deck-relay driver:", ...a), spaceAudit = null, spaceApprovals = null, riskyPatterns = [], ...o }) {
     this.o = {
+      desktopWaitMs: DESKTOP_WAIT_MS,
+      helloDesktopMs: HELLO_DESKTOP_MS,
+      stickyMs: 120_000,
+      now: () => Date.now(),
       cuMaxAgeMs: 24 * 3600 * 1000,
       cuMaxBytes: 500 * 1024 * 1024,
       pruneEveryMs: 10 * 60 * 1000,
@@ -158,6 +209,12 @@ class Driver {
     };
     this.presence = presence;
     this.spaces = spaces; // agent spaces (spaces.js): the shared desktop's lock, or null when spaces are off
+    this.desktops = desktops; // agent spaces phase 2 (desktops.js): which agent desktop runs where, or null
+    this.spaceFetch = spaceFetch;
+    Object.assign(this, { spaceAudit, spaceApprovals, riskyPatterns });
+    this.sharedFallback = sharedFallback !== false;
+    this.spaceAnswered = new Map(); // route key -> when the plugin's last query answered the agent's own desktop
+    this.sticky = new Map(); // overflow session key -> {route, last, read}; successful desktop choices only
     this.agentName = agentName;
     this.log = log;
     this.links = new Map(); // a deck's relay connection -> its driver link
@@ -246,7 +303,7 @@ class Driver {
     const devices = [...this.links.values()]
       .filter((l) => l.ok)
       .map((l) => ({ device: l.device, token: l.tokenName, os: l.os, driverOk: l.driverOk, grant: l.grant ? { agent: l.grant.agent, app: l.grant.app, title: l.grant.window.title } : null, channels: l.channels.size }));
-    const sessions = [...this.conns].filter((c) => c.kind === "host" || c.kind === "device").map((c) => ({ key: c.key, verb: c.verb, device: c.device }));
+    const sessions = [...this.conns].filter((c) => c.kind === "host" || c.kind === "device" || c.kind === "space").map((c) => ({ key: c.key, verb: c.verb, device: c.device }));
     return { devices, sessions };
   }
 
@@ -257,9 +314,22 @@ class Driver {
 
   removeDeck(ws) {
     const link = this.links.get(ws);
-    if (!link) return;
-    this.links.delete(ws);
-    this._endLink(link, "the device disconnected");
+    if (link) {
+      this.links.delete(ws);
+      this._endLink(link, "the device disconnected");
+    }
+    this._endOrphanSpaces();
+  }
+
+  /**
+   * Space sessions on a Deck computer that has no connection left end now, also when idle (a request in flight
+   * already fails through the tunnel). presence.disconnect runs before removeDeck, so connOf is already null.
+   */
+  _endOrphanSpaces() {
+    for (const c of [...this.conns]) {
+      if (c.kind !== "space" || c.done || c.spaceHost === "agent-host" || this.presence.connOf(c.spaceHost)) continue;
+      this._end(c, EXIT_ENDED, "Bot ekranı: the computer that hosts your desktop disconnected; an action in flight may not have completed");
+    }
   }
 
   /** A binary message from a deck: true when it was a driver frame (handled), false for anything else. */
@@ -414,12 +484,104 @@ class Driver {
     return { ok: true, r, device: id, name, link, epoch: r.epoch };
   }
 
+  // ---- agent spaces phase 2: the agent's own desktop ----------------------------------------------------------
+  /** An asynchronous hello or query: anything that throws there still answers the wrapper or the plugin. */
+  _agentStep(c, p) {
+    p.catch((e) => {
+      this.log("agent desktop route failed:", e && e.message);
+      c.resolving = false;
+      if (!c.done) this._fail(c, NO_DESKTOP.failed);
+    });
+  }
+
+  /** Per-agent mode with a desktop registry: an agent's computer_use goes to its own desktop first. */
+  _agentMode() {
+    return !!(this.spaces && this.spaces.perDesktop() && this.desktops && this.spaceFetch);
+  }
+
+  _pruneSticky() {
+    const now = this.o.now();
+    for (const [key, entry] of this.sticky) {
+      if (this.spaces?.mode !== "overflow" || now - entry.last >= this.o.stickyMs) this.sticky.delete(key);
+    }
+  }
+
+  _rememberDesktop(key, route, read = false) {
+    if (this.spaces?.mode === "overflow") this.sticky.set(key, { route, last: this.o.now(), read });
+  }
+
+  /** Overflow agents whose unexpired sessions use shared, excluding device overrides. */
+  sharedProfiles() {
+    this._pruneSticky();
+    if (!this.sharedFallback || !this.presence.fallback.desktop) return [];
+    return [...this.sticky].filter(([key, entry]) => entry.route.kind === "shared" && !this._devicePinned(key, key.slice(2).split("/")[0]))
+      .map(([key]) => key.slice(2).split("/")[0]);
+  }
+
+  _reconcileDesktop(key, before, route) {
+    this._pruneSticky();
+    const current = this.sticky.get(key);
+    // Another query/hello may have assigned this session while resolution awaited. Reconcile in the caller,
+    // with no await before gating, recording or opening; an unused desktop can stop through normal idle cleanup.
+    return current && current !== before ? current.route : route;
+  }
+
+  /** Pin checks happen first. Overflow keeps a session's actual desktop until a full idle window passes. */
+  async _sessionDesktop(profile, key, waitMs) {
+    if (this.spaces.mode !== "overflow") return this._desktopRoute(profile, waitMs);
+    this._pruneSticky();
+    const entry = this.sticky.get(key);
+    if (entry) entry.last = this.o.now(); // busy calls and captures are still calls in this task
+    const shared = this.sharedFallback && !!this.presence.fallback.desktop;
+    if (entry?.route.kind === "shared") return shared ? entry.route : { kind: "unavailable", reason: "none" };
+    this.spaces.lock.sweep();
+    const holder = this.spaces.lock.state().holder;
+    if (!entry && shared && (!holder || holder === profile)) return { kind: "shared" };
+    const d = await this._desktopRoute(profile, waitMs);
+    // A remembered own desktop must not silently move to another host or to shared while its windows are in use.
+    if (entry && d.kind !== "starting" && (d.kind !== "space" || d.host !== entry.route.host)) {
+      return { kind: "unavailable", reason: d.reason || "offline" };
+    }
+    return d.kind === "fallback" && shared ? { kind: "shared", reason: d.reason } : d;
+  }
+
+  /** "Work on this device": a device pin for this agent (or this exact key) wins over its own desktop (spec 4.3). */
+  _devicePinned(key, profile) {
+    if (typeof this.presence.pinOf !== "function") return false;
+    const pin = this.presence.pinOf(`p:${profile}`, CAP) || this.presence.pinOf(key, CAP);
+    return !!pin && pin.kind === "device";
+  }
+
+  /**
+   * The agent's desktop from the registry, raced against waitMs: {kind:"space", host, port?}, {kind:"fallback",
+   * reason}, or {kind:"starting"} when it is not ready in time (the start goes on). A registry that throws or
+   * answers nonsense counts as a desktop that could not start.
+   */
+  async _desktopRoute(profile, waitMs = this.o.desktopWaitMs) {
+    let timer = null;
+    const resolving = Promise.resolve()
+      .then(() => this.desktops.resolve(profile))
+      .catch((e) => {
+        this.log("desktop resolve failed:", e && e.message);
+        return null;
+      });
+    const slow = Number.isFinite(waitMs) ? new Promise((r) => (timer = setTimeout(() => r({ kind: "starting" }), waitMs))) : null;
+    try {
+      const d = await (slow ? Promise.race([resolving, slow]) : resolving);
+      if (d && d.kind === "space" && typeof d.host === "string" && d.host) return d;
+      if (d && (d.kind === "starting" || (d.kind === "fallback" && NO_DESKTOP[d.reason]))) return d;
+      return { kind: "fallback", reason: "failed" };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   // ---- the local socket -----------------------------------------------------------------------------------
   _onLocal(s) {
     const c = { s, kind: null, done: false, key: "", verb: "", argv: [], profile: "default", sid: "", skey: "", device: null, route: null, link: null, ch: 0, fence: null, out: null, filter: null, opened: false };
     this.conns.add(c);
     const t = setTimeout(() => {
-      if (!c.kind && !c.done) this._fail(c, "no hello");
+      if (!c.kind && !c.done && !c.resolving) this._fail(c, "no hello");
     }, HELLO_MS);
     const feed = wire.lineReader(
       (m) => this._onLocalMsg(c, m),
@@ -434,12 +596,13 @@ class Driver {
   }
 
   _onLocalMsg(c, m) {
-    if (c.done) return;
+    if (c.done || c.resolving) return; // nothing is read while a hello waits for the agent's desktop
     if (!c.kind) {
       if (m.t === "query") return this._query(c, m);
       if (m.t === "hello") return this._hello(c, m);
       return this._fail(c, "bad request");
     }
+    if (c.kind === "space") return this._spaceMsg(c, m);
     if (c.kind !== "device") return; // a host-route wrapper only listens (for exit)
     if (m.t === "data" && typeof m.b64 === "string") {
       const buf = Buffer.from(m.b64, "base64");
@@ -470,8 +633,185 @@ class Driver {
     c.argv = m.argv.slice();
     c.verb = c.argv[0] || "";
     c.key = wire.routeKey(c);
+    if (this._agentMode() && !this._devicePinned(c.key, c.profile)) {
+      if (INFO_VERBS.has(c.verb)) return this._spaceInfo(c);
+      if (c.verb === "call") return this._fail(c, "Bot ekranı: one-shot calls are not available on an agent's own desktop; use the MCP session", 126);
+      // serve, stop and anything else: refused before _helloAgent, so they never start (or wait 13 s for) a desktop
+      if (c.verb !== "mcp") return this._fail(c, AGENT_MCP_ONLY, 126);
+      return this._agentStep(c, this._helloAgent(c));
+    }
+    this._helloRoute(c);
+  }
+
+  /** manifest, --help, status, doctor in per-agent mode: written here, no desktop is started for them. */
+  _spaceInfo(c) {
+    c.kind = "info";
+    wire.send(c.s, { t: "route", ok: true, device: `space:${c.profile}`, epoch: this.presence.epoch });
+    const text =
+      c.verb === "manifest"
+        ? JSON.stringify(SPACE_MANIFEST)
+        : c.verb === "--help"
+          ? "deck-cua: computer_use for this agent runs on the agent's own desktop; Hermes reaches it with `deck-cua mcp`."
+          : `deck-cua: ${c.profile} works on the agent's own desktop; it starts on the first computer_use action.`;
+    this._toWrapper(c, "data", Buffer.from(text + "\n"));
+    this._finish(c, 0);
+  }
+
+  /** deck-cua's hello in per-agent mode: the whole start is waited for (Hermes runs it after the plugin's query said ok). */
+  async _helloAgent(c) {
+    c.resolving = true;
+    const before = this.sticky.get(c.key);
+    const selected = await this._sessionDesktop(c.profile, c.key, this.o.helloDesktopMs);
+    c.resolving = false;
+    if (c.done) return; // the wrapper gave up meanwhile
+    const d = this._reconcileDesktop(c.key, before, selected);
+    if (this.spaces.mode === "overflow") {
+      if (d.kind === "starting") return this._fail(c, STARTING, EXIT_ENDED);
+      if (d.kind !== "space" && d.kind !== "shared") return this._fail(c, NO_DESKTOP[d.reason]);
+      const read = this.sticky.get(c.key)?.read === true;
+      const device = d.kind === "shared" ? "host" : `space:${c.profile}@${d.host}`;
+      const g = this.spaces.gate(c.profile, device, { read, fallback: true });
+      if (!g.ok) return this._fail(c, d.reason ? `${NO_DESKTOP[d.reason]} ${g.error}` : g.error, EXIT_ENDED);
+      this._rememberDesktop(c.key, d, read);
+      return d.kind === "space" ? this._openSpace(c, d) : this._helloRoute(c, d.reason);
+    }
+    if (d.kind === "space") return this._openSpace(c, d);
+    if (d.kind === "starting") return this._fail(c, STARTING, EXIT_ENDED); // before deck-cua gives up on the relay
+    if (!this.sharedFallback) return this._fail(c, NO_DESKTOP[d.reason]);
+    // The plugin's query saw the agent's own desktop and took no turn on the shared one: running there now would
+    // skip its lock. When that query fell back too (a read-only one takes no turn), the shared desktop is fine.
+    const saidSpace = this.spaceAnswered.delete(c.key);
+    if (saidSpace && this.spaces.lock.state().holder !== c.profile) {
+      const rt = this._route(c.key);
+      if (rt.ok && rt.device === "host") return this._fail(c, WENT_AWAY, EXIT_ENDED);
+    }
+    this._helloRoute(c, d.reason); // phase 1's shared desktop
+  }
+
+  /** A space route: deck-cua's stdio MCP, carried to the desktop's Streamable HTTP /mcp by the bridge. */
+  _openSpace(c, d) {
+    if (c.verb !== "mcp") return this._fail(c, "Bot ekranı: only the MCP transport reaches an agent's own desktop", 126);
+    let fetch;
+    try {
+      fetch = this.spaceFetch(d.host, c.profile);
+    } catch (e) {
+      this.log("spaceFetch failed:", e.message);
+      return this._fail(c, NO_DESKTOP.failed);
+    }
+    c.kind = "space";
+    c.spaceHost = d.host;
+    c.device = `space:${c.profile}@${d.host}`;
+    c.bridge = new McpHttpBridge({ fetch });
+    c.lines = lines(); // Hermes' bytes, cut into whole lines for the fence
+    this._initSpaceSafety(c);
+    wire.send(c.s, { t: "route", ok: true, device: c.device, epoch: this.presence.epoch });
+  }
+
+  _spaceMsg(c, m) {
+    if (m.t === "data" && typeof m.b64 === "string") {
+      this.desktops.touch(c.profile); // in use: never stopped as idle
+      for (const line of c.lines.push(Buffer.from(m.b64, "base64"))) this._spaceLine(c, line);
+    } else if (m.t === "close") {
+      // Hermes closed its MCP session: the answers still on their way go out, then the wrapper exits 0
+      Promise.resolve(c.flow).then(() => {
+        this._finish(c, 0);
+        c.bridge.close();
+      });
+    }
+  }
+
+  _initSpaceSafety(c) {
+    c.session = randomUUID(); c.typing = ""; c.flow = Promise.resolve(); c.current = null; c.replyLines = lines();
+    c.bridge.on("data", (b) => this._spaceReply(c, b));
+    c.bridge.on("close", () => {
+      if (c.current) { this._auditSpace(c, c.current, "error"); c.current = null; }
+      this._end(c, EXIT_ENDED, "The connection to your desktop ended; an action in flight may not have completed.");
+    });
+  }
+
+  _auditSpace(c, item, outcome, result = null) {
+    try {
+      Promise.resolve(this.spaceAudit?.record({ profile: c.profile, host: c.spaceHost, tool: item.name,
+        args: item.args, command: item.command, outcome, duration: Date.now() - item.at, result })).catch(() => {});
+    } catch {}
+  }
+
+  _spaceReply(c, chunk) {
+    for (const line of c.replyLines.push(chunk)) {
+      let msg; try { msg = JSON.parse(line); } catch { continue; }
+      const p = c.current;
+      if (p && msg.method === undefined && typeof msg.id === typeof p.id && msg.id === p.id) {
+        const ok = !msg.error && !msg.result?.isError;
+        if (ok) c.typing = advance(c.typing, p.name, p.args);
+        this._auditSpace(c, p, ok ? "ok" : "error", msg.result);
+        c.current = null;
+      }
+    }
+    this._toWrapper(c, "data", chunk);
+  }
+
+  /** Serialize fence and approval checks too: a previous reply commits typing before the next check. */
+  _spaceLine(c, line) {
+    let msg; try { msg = JSON.parse(line.toString("utf8")); } catch { return; }
+    if (!msg || typeof msg !== "object") return;
+    c.flow = c.flow.then(() => this._spaceCall(c, msg)).catch(() => {
+      if (c.current) { this._auditSpace(c, c.current, "error"); c.current = null; }
+      c.bridge.close();
+    });
+  }
+
+  async _spaceCall(c, msg) {
+    if (Array.isArray(msg)) {
+      for (const member of msg) {
+        if (!member || typeof member !== "object") continue;
+        if (member.method === "tools/call")
+          this._auditSpace(c, { name: member.params?.name, args: member.params?.arguments || {}, at: Date.now() }, "refused");
+        if (!c.done && !c.bridge.closed && member.id !== undefined)
+          this._toWrapper(c, "data", Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: member.id,
+            error: { code: -32000, message: "batches are not supported" } }) + "\n"));
+      }
+      return;
+    }
+    const tool = msg.method === "tools/call";
+    const p = msg.params && typeof msg.params === "object" ? msg.params : {};
+    const item = { id: msg.id, name: p.name, args: p.arguments || {}, at: Date.now() };
+    const refuse = (message, outcome = "error") => {
+      this._auditSpace(c, item, outcome);
+      if (!c.done && msg.id !== undefined && msg.id !== null)
+        this._toWrapper(c, "data", Buffer.from(JSON.stringify(toolError(msg.id, message)) + "\n"));
+    };
+    if (c.done || c.bridge.closed) { if (tool) this._auditSpace(c, item, "error"); return; }
+    if (tool) {
+      const fenced = checkSpaceCall(item.name, item.args);
+      if (!fenced.ok) return refuse(fenced.message, "fenced");
+      if (msg.id === undefined || msg.id === null) return refuse("Tool calls need a request ID.");
+      if (this.desktops.busy?.(c.profile)) return refuse("A desktop operation is in progress. Retry later.");
+      if (item.name === "type_text" && (typeof item.args.text !== "string" || item.args.text.length > 65_536))
+        return refuse("Typed text must be a string of at most 65536 characters.");
+      const typed = preview(c.typing, item.name, item.args);
+      if (typed && this.spaceApprovals && (this.spaceAudit?.settings().approvals ?? true) && risky(typed.command, this.riskyPatterns)) {
+        const decision = this.spaceApprovals.check({ profile: c.profile, host: c.spaceHost,
+          command: typed.command, text: typed.text, args: item.args });
+        item.command = decision.command;
+        if (!decision.ok) return refuse(decision.message, decision.outcome || "approval");
+      }
+      c.current = item;
+    }
+    c.bridge.write(Buffer.from(JSON.stringify(msg) + "\n"));
+    await c.bridge.queue;
+    if (c.current === item)
+      this._end(c, EXIT_ENDED, "Your desktop's reply could not be matched to the action; the session ended. Retry in a new session.");
+  }
+
+  endSpace(profile) {
+    for (const c of [...this.conns]) if (c.kind === "space" && c.profile === profile && !c.done)
+      this._end(c, EXIT_ENDED, "The desktop is being restored. Retry after the operation finishes.");
+  }
+
+  /** Phase 1's route for a hello; `reason` when the agent's own desktop was not available (per-agent mode). */
+  _helloRoute(c, reason = null) {
     const rt = this._route(c.key);
-    if (!rt.ok) return this._fail(c, rt.error);
+    if (!rt.ok) return this._fail(c, reason && NO_DESKTOP[reason] ? NO_DESKTOP[reason] : rt.error);
     c.route = rt.r;
     c.device = rt.device;
     if (rt.device === "host") {
@@ -529,21 +869,74 @@ class Driver {
   _query(c, m) {
     const id = this._identity(m);
     const key = wire.routeKey(id);
-    const rt = this._route(key);
     c.kind = "query";
+    if (this._agentMode() && !this._devicePinned(key, id.profile)) return this._agentStep(c, this._queryAgent(c, m, id, key));
+    this._queryRoute(c, m, id, key);
+  }
+
+  _answer(c, out) {
+    c.done = true;
+    wire.send(c.s, out);
+    c.s.end();
+  }
+
+  /** Whether a driver session of this key is still connected (the plugin then drops Hermes' cached connection). */
+  _live(c, key) {
+    return [...this.conns].some((o) => o !== c && o.key === key && o.verb === "mcp" && (o.kind === "host" || o.kind === "device" || o.kind === "space") && !o.done);
+  }
+
+  /** The plugin's query in per-agent mode: the agent's own desktop, busy while it starts, else the fallback. */
+  async _queryAgent(c, m, id, key) {
+    const before = this.sticky.get(key);
+    const selected = await this._sessionDesktop(id.profile, key);
+    if (c.done) return; // the plugin gave up meanwhile
+    const d = this._reconcileDesktop(key, before, selected);
+    const sticky = this.sticky.get(key);
+    if (sticky) sticky.read = m.read === true; // a refused write must not leave a previous capture's read bypass
+    const epoch = this.presence.epoch;
+    if (d.kind === "shared") return this._queryRoute(c, m, id, key, d.reason);
+    if (d.kind === "unavailable" || (this.spaces.mode === "overflow" && d.kind === "fallback")) return this._answer(c, { t: "route", ok: false, busy: false, device: null, error: NO_DESKTOP[d.reason], epoch, live: false });
+    if (d.kind === "starting") return this._answer(c, { t: "route", ok: false, busy: true, error: STARTING, epoch, live: false });
+    if (d.kind === "space") {
+      const device = `space:${id.profile}@${d.host}`;
+      const g = this.spaces.gate(id.profile, device, { read: m.read === true });
+      if (!g.ok) return this._answer(c, { t: "route", ok: false, busy: !!g.busy, error: g.error, epoch, live: false });
+      this._spaceAnswered(key, true);
+      this._rememberDesktop(key, d, m.read === true);
+      return this._answer(c, { t: "route", ok: true, device, epoch, live: this._live(c, key) });
+    }
+    this._spaceAnswered(key, false);
+    if (!this.sharedFallback) return this._answer(c, { t: "route", ok: false, busy: false, device: null, error: NO_DESKTOP[d.reason], epoch, live: false });
+    this._queryRoute(c, m, id, key, d.reason); // the shared desktop, taking turns through its lock
+  }
+
+  /** Remember (or forget) that the plugin's last query for this key answered the agent's own desktop. */
+  _spaceAnswered(key, yes) {
+    const t = Date.now();
+    for (const [k, at] of this.spaceAnswered) if (t - at > 10 * 60_000) this.spaceAnswered.delete(k); // stale
+    if (yes) this.spaceAnswered.set(key, t);
+    else this.spaceAnswered.delete(key);
+  }
+
+  /** Phase 1's route for a query; `reason` (why the agent's own desktop is unavailable) when it fell back. */
+  _queryRoute(c, m, id, key, reason = null) {
+    const overflow = this.spaces?.mode === "overflow";
+    const fallback = !!reason || overflow;
+    const rt = this._route(key);
     if (rt.ok && this.spaces) {
-      const g = this.spaces.gate(id.profile, rt.device === "host" ? "host" : rt.device, { read: m.read === true });
+      const g = this.spaces.gate(id.profile, rt.device === "host" ? "host" : rt.device, { read: m.read === true, fallback });
       if (!g.ok) {
         c.done = true;
-        wire.send(c.s, { t: "route", ok: false, busy: !!g.busy, error: g.error, epoch: Number.isInteger(rt.epoch) ? rt.epoch : null, live: false });
+        wire.send(c.s, { t: "route", ok: false, busy: !!g.busy, error: overflow && reason ? `${NO_DESKTOP[reason]} ${g.error}` : g.error, epoch: Number.isInteger(rt.epoch) ? rt.epoch : null, live: false });
         return c.s.end();
       }
     }
     // whether a driver session of this key is still connected: the plugin only drops Hermes' cached driver
     // connection when there is a live one pointing at the old route
-    const live = [...this.conns].some((o) => o !== c && o.key === key && o.verb === "mcp" && (o.kind === "host" || o.kind === "device") && !o.done);
+    const live = this._live(c, key);
+    if (rt.ok && rt.device === "host") this._rememberDesktop(key, { kind: "shared" }, m.read === true);
     const out = { t: "route", ok: rt.ok, device: rt.ok ? rt.device : null, epoch: Number.isInteger(rt.epoch) ? rt.epoch : null, live };
-    if (!rt.ok) out.error = rt.error;
+    if (!rt.ok) out.error = fallback && NO_DESKTOP[reason] ? NO_DESKTOP[reason] : rt.error;
     else if (rt.device !== "host") Object.assign(out, { name: rt.name, grant: this._grantFor(rt.link, id.profile), deckPid: rt.link.pid });
     c.done = true;
     wire.send(c.s, out);
@@ -600,6 +993,7 @@ class Driver {
     }
     if (message) this._toWrapper(c, "err", Buffer.from(`deck-cua: ${message}\n`));
     this._finish(c, code);
+    if (c.bridge) c.bridge.close(); // nothing more goes to that desktop
   }
 
   /** The local socket closed (the wrapper exited, or a query finished). */
@@ -610,11 +1004,15 @@ class Driver {
       this._send(c.link, OP.CLOSE, c.ch, { code: 0 });
     }
     c.done = true;
+    if (c.bridge) c.bridge.close();
     this._release(c);
   }
 
   // ---- stop and lease -------------------------------------------------------------------------------
-  /** POST /desktop/stop: device id, "host", or null for everything. */
+  /**
+   * POST /desktop/stop: device id, "host", or null for everything. Sessions on agents' own desktops end with null and
+   * "host", and with the id of the Deck computer that hosts them; the desktops themselves keep running.
+   */
   stopDevices(device) {
     const out = { ok: true, devices: [], wrappers: 0 };
     for (const link of this.links.values()) {
@@ -624,8 +1022,9 @@ class Driver {
       out.devices.push(link.device);
     }
     for (const c of [...this.conns]) {
-      if ((c.kind !== "host" && c.kind !== "device") || c.done) continue;
-      if (device === null || (device === "host" ? c.kind === "host" : c.device === device)) {
+      if ((c.kind !== "host" && c.kind !== "device" && c.kind !== "space") || c.done) continue;
+      const hit = c.kind === "space" ? device === null || device === "host" || c.spaceHost === device : device === null || (device === "host" ? c.kind === "host" : c.device === device);
+      if (hit) {
         this._end(c, EXIT_ENDED, "Bot ekranı: stopped from Hermes Deck");
         out.wrappers += 1;
       }
@@ -723,6 +1122,7 @@ class Driver {
 
   /** Frames older than cuMaxAgeMs go first, then the oldest until the folder is under cuMaxBytes. */
   prune(now = Date.now()) {
+    this._pruneSticky();
     const files = [];
     const dirs = [];
     const walk = (dir, depth) => {

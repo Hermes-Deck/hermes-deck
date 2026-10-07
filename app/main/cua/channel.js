@@ -11,6 +11,7 @@ const { t: i18nText, getLocale: i18nLocale } = require("../../renderer/i18n");
 const { EventEmitter } = require("events");
 const { OP, encodeFrame, decodeFrame, frameJson } = require("./wire");
 const { exitCode, chunks } = require("./protocol");
+const { foregroundInput } = require("./foreground");
 
 const MAX_CHANNELS = 16;
 const HIGH_WATER = 8 * 1024 * 1024; // pause a process's stdout while the socket has this much queued
@@ -25,10 +26,12 @@ class DriverChannel extends EventEmitter {
    * @param {(open: {ch, argv, agent, profile, sid}) => Promise<{ok: boolean, code?: number, error?: string}>} o.gate
    * @param {(argv: string[], open: object) => import("child_process").ChildProcess} o.runner
    * @param {(proc: object) => void} [o.kill]  kills one process now (process groups included)
+   * @param {() => object|null} [o.grant]  current local grant, read immediately before each input
+   * @param {(hwnd: number, options: object) => Promise<object>} [o.raise]  best-effort native raise (Windows only)
    */
-  constructor({ hello, gate, runner, kill = (p) => p.kill() }) {
+  constructor({ hello, gate, runner, kill = (p) => p.kill(), grant = () => null, raise = null }) {
     super();
-    Object.assign(this, { helloFn: hello, gate, runner, kill });
+    Object.assign(this, { helloFn: hello, gate, runner, kill, grant, raise });
     this.relay = null;
     this.handlers = null;
     this.on_ = false; // started: the switch is on and a device key is set
@@ -113,6 +116,7 @@ class DriverChannel extends EventEmitter {
     if (!this.channels.size) return;
     for (const [ch, c] of this.channels) {
       c.done = true;
+      if (c.input) c.input.destroy();
       if (c.proc) this.kill(c.proc);
       if (notify) this.send(OP.CLOSE, ch, { code, error });
     }
@@ -145,7 +149,10 @@ class DriverChannel extends EventEmitter {
     if (!c || c.done) return;
     if (op === OP.DATA) {
       this._touch();
-      if (c.proc) return writeIn(c.proc, payload);
+      if (c.proc) {
+        if (c.input && c.input.writableLength + payload.length > PENDING_MAX) return this._fail(ch, 1, "driver input too large");
+        return writeIn({ stdin: c.input || c.proc.stdin }, payload);
+      }
       c.pendingBytes += payload.length;
       if (c.pendingBytes > PENDING_MAX) return this._fail(ch, 1, "stdin too large before the driver started");
       c.pending.push(Buffer.from(payload));
@@ -155,11 +162,13 @@ class DriverChannel extends EventEmitter {
       c.relayClosed = true;
       if (!c.proc) return this._fail(ch, 137, "closed by the relay");
       try {
-        c.proc.stdin.end();
+        (c.input || c.proc.stdin).end();
       } catch {
         /* already closed */
       }
-      setTimeout(() => this.kill(c.proc), CLOSE_GRACE_MS);
+      const killLater = () => setTimeout(() => this.kill(c.proc), CLOSE_GRACE_MS);
+      if (c.input) c.input.once("end", killLater);
+      else killLater();
     }
   }
 
@@ -187,6 +196,11 @@ class DriverChannel extends EventEmitter {
       return this._fail(ch, 127, e.message);
     }
     c.proc = proc;
+    if (open.argv[0] === "mcp" && this.raise) {
+      c.input = foregroundInput({ grant: this.grant, profile: open.profile, raise: this.raise, active: () => !c.done });
+      c.input.on("error", e => this._fail(ch, 1, e.message));
+      c.input.pipe(proc.stdin);
+    }
     this.emit("channels", this.channels.size);
     const ws = this.relay && this.relay.ws;
     const pump = (op) => (b) => {
@@ -213,6 +227,7 @@ class DriverChannel extends EventEmitter {
       ended = true;
       const ours = this.channels.get(ch) === c;
       c.done = true;
+      if (c.input) c.input.destroy();
       if (ours) this.channels.delete(ch);
       this.emit("channels", this.channels.size);
       // v2: the Deck reports every exit, also after the relay's own CLOSE (the relay waits for it)
@@ -220,7 +235,7 @@ class DriverChannel extends EventEmitter {
     };
     proc.on("error", (e) => end(127, e.code === "ENOENT" ? "cua-driver not found on the device" : e.message));
     proc.on("close", (code, signal) => end(exitCode(code, signal)));
-    for (const b of c.pending) writeIn(proc, b);
+    for (const b of c.pending) writeIn({ stdin: c.input || proc.stdin }, b);
     c.pending = [];
   }
 
@@ -228,6 +243,7 @@ class DriverChannel extends EventEmitter {
     const c = this.channels.get(ch);
     if (c) {
       c.done = true;
+      if (c.input) c.input.destroy();
       if (c.proc) this.kill(c.proc);
       this.channels.delete(ch);
     }

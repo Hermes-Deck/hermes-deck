@@ -61,6 +61,31 @@ function fenceGrant(grant, deckPid, now = Date.now()) {
 
 const where = (device) => (device ? ` on ${device}` : " on this device");
 const describe = (grant) => `${grant.app || "the handed app"} (${grant.title || `window ${grant.windowId}`})`;
+// The upstream driver's hint is not a Deck risky-command approval. Keep its protocol fields and error intact.
+const foregroundHint = (text) => text.replace(/(delivery_mode\s*=\s*\\*["']foreground\\*["']\s*\()separate approval(\))/g,
+  "$1the user must allow foreground input in Hermes Deck$2");
+function foregroundReply(msg) {
+  const hints = (value) => {
+    if (!value || typeof value !== "object") return false;
+    let changed = false;
+    for (const [key, v] of Object.entries(value)) {
+      if (["escalation_hint", "hint"].includes(key) && typeof v === "string") {
+        value[key] = foregroundHint(v); changed = value[key] !== v || changed;
+      } else changed = hints(v) || changed;
+    }
+    return changed;
+  };
+  hints(msg?.result?.structuredContent);
+  for (const part of Array.isArray(msg?.result?.content) ? msg.result.content : []) {
+    if (part?.type !== "text" || typeof part.text !== "string") continue;
+    try {
+      const value = JSON.parse(part.text);
+      if (hints(value)) part.text = JSON.stringify(value);
+    } catch { part.text = foregroundHint(part.text); }
+  }
+  if (typeof msg?.error?.message === "string") msg.error.message = foregroundHint(msg.error.message);
+  return msg;
+}
 
 /**
  * {ok: true, filter?, tool?, args?} or {ok: false, message} for one tools/call. `filter` ("list_windows" or
@@ -110,6 +135,20 @@ function checkCall(name, args, { grant, deckPid, device } = {}) {
     return { ok: true };
   }
   return no(`${name} is not on the list of driver tools allowed${on}`);
+}
+
+/**
+ * The relay's fence on an agent's own desktop (agent spaces phase 2, spec 4.3): the whole desktop is the agent's, so
+ * no single-window grant applies; only what would harm the desktop itself or hide the agent from the user is refused.
+ * {ok: true} or {ok: false, message}.
+ */
+function checkSpaceCall(name, args) {
+  const a = args && typeof args === "object" && !Array.isArray(args) ? args : {};
+  const no = (why) => ({ ok: false, message: `Bot ekranı: ${why}` });
+  if (name === "kill_app") return no("kill_app is not available on your desktop: it could end the desktop's own processes");
+  if (name === "set_agent_cursor_enabled" && a.enabled === false) return no("the agent cursor stays visible on your desktop: the user sees where you act");
+  if (name === "set_config" && String(a.key) === "capture_scope") return no("the capture scope cannot be changed on your desktop");
+  return { ok: true };
 }
 
 /** Keep only the handed window (list_windows) or its process (list_apps) in a listing object, in place. */
@@ -197,7 +236,7 @@ class McpFence {
   }
 
   _reply(obj) {
-    this.toHermes(Buffer.from(JSON.stringify(obj) + "\n"));
+    this.toHermes(Buffer.from(JSON.stringify(foregroundReply(obj)) + "\n"));
   }
 
   fromHermes(chunk) {
@@ -288,6 +327,11 @@ class McpFence {
         return;
       }
     }
+    // Only result hints/text may change; JSON-RPC IDs and unrelated payloads retain their values.
+    // Parse only lines that carry the hint; screenshot replies pass through byte for byte.
+    if (line.includes("separate approval")) {
+      try { this._reply(JSON.parse(line.toString("utf8"))); return; } catch {}
+    }
     this.toHermes(Buffer.concat([line, Buffer.from("\n")]));
   }
 
@@ -319,4 +363,4 @@ class McpFence {
   }
 }
 
-module.exports = { McpFence, checkCall, filterListing, appsAnswer, goneMessage, fenceGrant, appMatches, toolError, int, PLUMBING, CAPTURES, INPUT, LISTINGS };
+module.exports = { McpFence, checkCall, checkSpaceCall, lines, filterListing, appsAnswer, goneMessage, fenceGrant, appMatches, toolError, foregroundReply, int, PLUMBING, CAPTURES, INPUT, LISTINGS };

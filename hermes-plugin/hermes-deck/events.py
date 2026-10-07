@@ -285,7 +285,7 @@ def on_agent_loop_stopped(session_key: str = "", **_):
 CU_TOOL = "computer_use"
 FRAME_MAX_W = 1280
 FRAME_QUALITY = 70
-QUERY_TIMEOUT = 2.0
+QUERY_TIMEOUT = 3.5   # above the relay's 2 s race for an agent desktop that is starting (driver.js)
 # agent spaces: a queued computer_use waits here this long for the shared desktop. Hermes bounds a pre_tool_call
 # hook at 30 s (plugins.hook_callback_timeout) and then blocks with a generic message, so the wait stays under it;
 # the agent is told to retry, and the relay keeps its place in line (15 s) and its 120 s total from the first ask.
@@ -444,12 +444,21 @@ def _cu_fence(args: dict, session_id: str):
     ident = _route_identity()
     if action in _READS:
         ident = {**ident, "read": True}
-    r = _relay_query(ident)
-    waited = 0.0
-    while r is not None and not r.get("ok") and r.get("busy") and waited < SPACE_WAIT_S:
-        time.sleep(SPACE_POLL_S)          # each query keeps this agent's place in the relay's queue
-        waited += SPACE_POLL_S
-        r = _relay_query(ident)
+    # the whole wait, slow queries included, ends by one monotonic deadline: Hermes bounds this hook at 30 s
+    deadline = time.monotonic() + SPACE_WAIT_S
+    r = _relay_query(ident, timeout=QUERY_TIMEOUT)
+    while r is not None and not r.get("ok") and r.get("busy"):
+        left = deadline - time.monotonic()
+        if left <= 0:
+            break
+        time.sleep(min(SPACE_POLL_S, left))   # each query keeps this agent's place in the relay's queue
+        left = deadline - time.monotonic()
+        if left <= 0:
+            break
+        nxt = _relay_query(ident, timeout=min(QUERY_TIMEOUT, left))
+        if nxt is None:
+            break                             # out of time mid-answer: the last busy answer stands
+        r = nxt
     if r is None:
         return _block("Bot ekranı: the Hermes Deck relay is not reachable on the agent host, so computer_use "
                       "has no route. Tell the user.")
@@ -473,6 +482,9 @@ def _cu_fence(args: dict, session_id: str):
     if device == "host":
         st["grant"] = None
         return None
+    if isinstance(device, str) and device.startswith("space:"):
+        st["grant"] = None                     # the agent's own desktop: the whole desktop is its to use
+        return None
     return _device_fence(action, args, st, str(r.get("name") or device), r.get("grant"), deck_pid)
 
 
@@ -489,6 +501,9 @@ def _device_fence(action: str, args: dict, st: dict, where: str, grant, deck_pid
     title = str(win.get("title") or "") or f"window {gwid}"
     label = f"{gapp or 'the handed app'} ({title})"
     foreground = args.get("delivery_mode") == "foreground"
+    if g.get("foreground") is True and (args.get("bring_to_front") or (action == "focus_app" and args.get("raise_window"))):
+        return _block('Bot ekranı: use delivery_mode "foreground" on the input action itself; '
+                      'Hermes Deck brings the handed window forward for it.')
     if ((foreground and not (g.get("foreground") is True and action in _INPUT)) or args.get("bring_to_front")
             or (action == "focus_app" and args.get("raise_window"))):
         return _block(f"Bot ekranı: foreground input would take over the user's mouse and keyboard on {where}. "

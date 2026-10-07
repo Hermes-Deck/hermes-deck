@@ -32,6 +32,24 @@ const MANIFEST = {
   mcp_invocation: { command: "C:\\Users\\someone\\AppData\\Local\\cua-driver\\cua-driver.exe", args: ["mcp"] },
   subcommands: [{ name: "mcp", args: [{ name: "--socket" }, { name: "--grant" }] }],
 };
+/**
+ * Hermes' cua-driver runtime contract for a `manifest` (a port of its _manifest_contract_reason): "" when Hermes'
+ * computer_use would start with this driver, else why not.
+ */
+function hermesContractReason(m) {
+  if (!m || typeof m !== "object") return "driver manifest is missing or invalid";
+  const v = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(String(m.binary_version || "").trim());
+  if (!v) return "driver manifest does not report a semantic version";
+  const [a, b, c] = v.slice(1).map(Number);
+  if (a * 1e6 + b * 1e3 + c < 20 * 1e3) return "Hermes computer use requires cua-driver 0.20.0 or newer";
+  const args = m.mcp_invocation && m.mcp_invocation.args;
+  if (!Array.isArray(args) || !args.every((x) => typeof x === "string")) return "driver manifest does not provide an MCP launch command";
+  const need = { mcp: ["--socket", "--grant"], serve: ["--socket", "--permission-mode", "--capability-manifest", "--approve-capability-manifest", "--embedded"], stop: ["--socket"] };
+  const have = {};
+  for (const s of m.subcommands || []) if (s && typeof s.name === "string") have[s.name] = new Set((s.args || []).filter((x) => x && typeof x.name === "string").map((x) => x.name));
+  const missing = Object.entries(need).flatMap(([cmd, flags]) => flags.filter((f) => !(have[cmd] || new Set()).has(f)).map((f) => `${cmd} ${f}`));
+  return missing.length ? `driver manifest is missing: ${missing.join(", ")}` : "";
+}
 const WINDOWS = [
   { pid: 4242, window_id: 77, app_name: "Notepad", title: "notes.txt" },
   { pid: 4242, window_id: 78, app_name: "Notepad", title: "private.txt" },
@@ -52,7 +70,7 @@ async function until(fn, ms = 5000) {
   }
 }
 
-async function relayWithDriver({ desktopHost = false, ...extra } = {}) {
+async function relayWithDriver({ desktopHost = false, spacesMode = null, ...extra } = {}) {
   const dir = tmpDir();
   const agentsFile = path.join(dir, "agents.json");
   fs.writeFileSync(agentsFile, JSON.stringify(AGENTS));
@@ -63,6 +81,8 @@ async function relayWithDriver({ desktopHost = false, ...extra } = {}) {
     host: "127.0.0.1", port: 0, token: TOKEN, eventsDir: path.join(dir, "events"), stateDir: path.join(dir, "state"), dataDir: path.join(dir, "data"),
     claudeDirs: [], claudeProfile: "claude-code", claudeChatMap: null, launchdPrefixes: [], codexbar: null, agentsFile, broadcastWindowS: 300, tickMs: 100,
     cdp: { port: null },
+    // agent spaces (DECK_SPACES): no cua-spacesd behind it in these tests
+    spaces: spacesMode ? { mode: spacesMode, url: "http://127.0.0.1:9", tokenFile: path.join(dir, "no-spacesd-token") } : null,
     driver: { deckHome, sockPath: sockPath(dir), cuDir: path.join(deckHome, "cu"), tokensFile, hermesPython: "", desktopHost, ...extra },
   };
   const relay = await start(cfg);
@@ -175,6 +195,58 @@ function query(sock, ident = { profile: "scout", skey: SKEY, sid: "" }) {
     s.on("error", reject);
   });
 }
+
+/** deck-cua's side of the local socket by hand: a hello, then data lines; every relay message is kept in order. */
+function localClient(sock, hello) {
+  const s = net.connect(sock);
+  const c = { s, msgs: [], closedAt: null };
+  let buf = "";
+  s.on("connect", () => s.write(JSON.stringify({ t: "hello", v: 1, sid: "", skey: "", ...hello }) + "\n"));
+  s.on("data", (b) => {
+    buf += b;
+    for (let i = buf.indexOf("\n"); i >= 0; i = buf.indexOf("\n")) {
+      c.msgs.push(JSON.parse(buf.slice(0, i)));
+      buf = buf.slice(i + 1);
+    }
+  });
+  s.on("error", () => {});
+  c.closed = new Promise((resolve) => s.on("close", () => resolve((c.closedAt = Date.now()))));
+  c.data = (obj) => s.write(JSON.stringify({ t: "data", b64: Buffer.from(JSON.stringify(obj) + "\n").toString("base64") }) + "\n");
+  c.raw = (text) => s.write(JSON.stringify({ t: "data", b64: Buffer.from(text).toString("base64") }) + "\n"); // any bytes, e.g. half a line
+  c.lines = () => c.msgs.filter((m) => m.t === "data").map((m) => JSON.parse(Buffer.from(m.b64, "base64").toString()));
+  return c;
+}
+
+/** Task 3's Desktops as the driver sees it: resolve answers what the test says; resolve and touch calls are kept. */
+function fakeDesktops(answer) {
+  const d = { resolved: [], touched: [] };
+  d.resolve = (p) => (d.resolved.push(p), typeof answer === "function" ? answer(p) : Promise.resolve(answer));
+  d.touch = (p) => d.touched.push(p);
+  d.stop = async () => {};
+  d.state = () => "ready";
+  d.hosts = () => [];
+  d.list = () => [];
+  return d;
+}
+
+/** cua-spacesd's Streamable HTTP /mcp as the space tunnel answers it: initialize hands out a session id. */
+function fakeSpace() {
+  const f = { opened: [], reqs: [] };
+  f.spaceFetch = (host, profile) => {
+    f.opened.push([host, profile]);
+    return async (req) => {
+      const msg = JSON.parse(Buffer.from(req.body).toString());
+      f.reqs.push({ ...req, msg });
+      const json = (obj, extra = {}) => ({ status: 200, headers: { "content-type": "application/json", ...extra }, body: Buffer.from(JSON.stringify(obj)) });
+      if (msg.id === undefined) return { status: 202, headers: {}, body: Buffer.alloc(0) };
+      if (msg.method === "initialize") return json({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2025-03-26", serverInfo: { name: "cua-spacesd" } } }, { "mcp-session-id": "sess-1" });
+      return json({ jsonrpc: "2.0", id: msg.id, result: { tools: [{ name: "screenshot" }], session: req.headers["mcp-session-id"] || null } });
+    };
+  };
+  return f;
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const post = (relay, p, body, token = TOKEN) =>
   fetch(`http://127.0.0.1:${relay.port}${p}`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -728,4 +800,531 @@ test("fence: the agent's own cursor stays visible on a device (two cursors); tur
   assert.match(off.message, /cursor/);
   assert.equal(checkCall("set_agent_cursor_enabled", { session: "s", enabled: true }, { grant, device: "pc" }).ok, true);
   assert.equal(checkCall("get_agent_cursor_state", {}, { grant, device: "pc" }).ok, true);
+});
+
+// ---- agent spaces phase 2: an agent's own desktop --------------------------------------------------------------
+test("F10: device MCP replies reword foreground hints across chunks without changing the approval gate", () => {
+  for (const quote of ["'", '"']) {
+    const replies = [];
+    const fence = new McpFence({ ctx: () => ({}), toDevice() {}, toHermes: (b) => replies.push(String(b)) });
+    const hint = `Retry with delivery_mode=${quote}foreground${quote} (separate approval).`;
+    const reply = { id: 1, result: { isError: true, structuredContent: { escalation_hint: hint }, content: [{ type: "text", text: JSON.stringify({ escalation_hint: hint }) }] } };
+    const encoded = JSON.stringify(reply) + "\n";
+    fence.fromDevice(Buffer.from(encoded.slice(0, 47)));
+    fence.fromDevice(Buffer.from(encoded.slice(47)));
+    const result = JSON.parse(replies.join("")).result;
+    assert.doesNotMatch(JSON.stringify(result), /approval/);
+    assert.match(result.structuredContent.escalation_hint, /user must allow foreground input in Hermes Deck/);
+    assert.equal(JSON.parse(result.content[0].text).escalation_hint, result.structuredContent.escalation_hint);
+    const unchanged = '{"id":2,"result":{"isError":true,"content":[{"type":"text","text":"Approval requested: sudo whoami"}]}}\n';
+    fence.fromDevice(Buffer.from(unchanged));
+    assert.equal(replies.at(-1), unchanged);
+  }
+});
+
+const AGENT_DESKTOP = { kind: "space", host: "agent-host", port: 1 };
+
+test("overflow: list follows a read-only shared session until sticky expiry", async (t) => {
+  let now = 0;
+  const { relay, sock } = await relayWithDriver({ spacesMode: "overflow", desktops: fakeDesktops(AGENT_DESKTOP), spaceFetch: fakeSpace().spaceFetch, now: () => now });
+  t.after(() => relay.stop());
+  const list = async () => (await fetch(`http://127.0.0.1:${relay.port}/spaces`, { headers: { authorization: `Bearer ${TOKEN}` } })).json();
+  assert.equal((await query(sock, { profile: "scout", skey: SKEY, read: true })).device, "host");
+  assert.equal(relay.driver.spaces.lock.state().holder, null);
+  let row = (await list()).spaces.find((r) => r.id === "scout");
+  assert.equal(row.usingShared, true);
+  assert.equal(row.state, "off");
+  now = 120000;
+  row = (await list()).spaces.find((r) => r.id === "scout");
+  assert.equal(row.usingShared, false);
+  assert.equal(row.state, "off");
+});
+
+test("overflow: free shared route takes the phase 1 lock, hello follows it", async (t) => {
+  const desktops = fakeDesktops(AGENT_DESKTOP);
+  const { relay, sock } = await relayWithDriver({ spacesMode: "overflow", desktops, spaceFetch: fakeSpace().spaceFetch });
+  t.after(() => relay.stop());
+  const q = await query(sock);
+  assert.deepStrictEqual([q.ok, q.device, relay.driver.spaces.lock.state().holder], [true, "host", "scout"]);
+  const c = localClient(sock, { argv: ["mcp"], profile: "scout", skey: SKEY });
+  assert.strictEqual((await until(() => c.msgs[0])).device, "host");
+  assert.deepStrictEqual(desktops.resolved, []);
+});
+
+test("overflow: busy shared route uses own desktop, query and hello agree", async (t) => {
+  const { relay, sock } = await relayWithDriver({ spacesMode: "overflow", desktops: fakeDesktops(AGENT_DESKTOP), spaceFetch: fakeSpace().spaceFetch });
+  t.after(() => relay.stop());
+  const lock = relay.driver.spaces.lock;
+  lock.request("research");
+  assert.strictEqual((await query(sock)).device, "space:scout@agent-host");
+  lock.release("research"); // between the plugin's query and the driver's hello
+  const c = localClient(sock, { argv: ["mcp"], profile: "scout", skey: SKEY });
+  assert.strictEqual((await until(() => c.msgs[0])).device, "space:scout@agent-host");
+  assert.strictEqual(lock.state().holder, null);
+});
+
+for (const first of ["query", "hello"]) test(`overflow: delayed ${first} keeps the concurrent shared session's desktop`, async (t) => {
+  let finishDesktop, resolving;
+  const pending = new Promise((resolve) => { finishDesktop = resolve; });
+  const started = new Promise((resolve) => { resolving = resolve; });
+  const desktops = fakeDesktops(() => { resolving(); return pending; });
+  const { relay, sock } = await relayWithDriver({ spacesMode: "overflow", desktops, spaceFetch: fakeSpace().spaceFetch, desktopWaitMs: Infinity, helloDesktopMs: Infinity });
+  t.after(() => { finishDesktop(AGENT_DESKTOP); return relay.stop(); });
+  const lock = relay.driver.spaces.lock;
+  lock.request("research");
+  const delayed = first === "query" ? query(sock) : localClient(sock, { argv: ["mcp"], profile: "scout", skey: SKEY });
+  await started;
+  lock.release("research");
+  assert.strictEqual((await query(sock)).device, "host");
+  const active = localClient(sock, { argv: ["mcp"], profile: "scout", skey: SKEY });
+  assert.strictEqual((await until(() => active.msgs[0])).device, "host");
+  assert.strictEqual(lock.state().holder, "scout");
+
+  finishDesktop(AGENT_DESKTOP);
+  const route = first === "query" ? await delayed : await until(() => delayed.msgs[0]);
+  assert.strictEqual(route.device, "host", "a delayed desktop resolution must keep the newer shared route");
+  assert.strictEqual((await query(sock)).device, "host", "the shared choice stays sticky");
+  assert.ok(relay.driver.state().sessions.every((s) => s.device === "host"));
+  assert.strictEqual(active.closedAt, null);
+});
+
+for (const reason of ["offline", "limit", "failed", "none"]) test(`overflow: own desktop unavailable (${reason}) queues with reason`, async (t) => {
+  const { relay, sock } = await relayWithDriver({ spacesMode: "overflow", desktops: fakeDesktops({ kind: "fallback", reason }), spaceFetch: fakeSpace().spaceFetch });
+  t.after(() => relay.stop());
+  relay.driver.spaces.lock.request("research");
+  const q = await query(sock);
+  assert.deepStrictEqual([q.ok, q.busy], [false, true]);
+  assert.match(q.error, /1st in line/);
+  assert.match(q.error, { offline: /host is offline/, limit: /host is full/, failed: /could not start/, none: /No desktop host/ }[reason]);
+  assert.deepStrictEqual(relay.driver.spaces.lock.state().queue, ["scout"]);
+});
+
+test("overflow: device pin overrides a sticky own desktop and the shared desktop", async (t) => {
+  const desktops = fakeDesktops(AGENT_DESKTOP);
+  const { relay, sock, deckToken } = await relayWithDriver({ spacesMode: "overflow", desktops, spaceFetch: fakeSpace().spaceFetch });
+  t.after(() => relay.stop());
+  relay.driver.spaces.lock.request("research");
+  assert.strictEqual((await query(sock)).device, "space:scout@agent-host");
+  await connectDeck(relay, deckToken);
+  relay.presence.setPin("p:scout", "desktop", { kind: "device", id: DEVICE });
+  const before = desktops.resolved.length;
+  assert.strictEqual((await query(sock)).device, DEVICE);
+  const c = localClient(sock, { argv: ["mcp"], profile: "scout", skey: SKEY });
+  assert.strictEqual((await until(() => c.msgs[0])).device, DEVICE);
+  assert.strictEqual(desktops.resolved.length, before);
+});
+
+test("overflow: own desktop sticks across reads, expires after inactivity, sessions are independent", async (t) => {
+  let now = 0;
+  const { relay, sock } = await relayWithDriver({ spacesMode: "overflow", desktops: fakeDesktops(AGENT_DESKTOP), spaceFetch: fakeSpace().spaceFetch, now: () => now });
+  t.after(() => relay.stop());
+  const lock = relay.driver.spaces.lock;
+  lock.request("research");
+  assert.strictEqual((await query(sock)).device, "space:scout@agent-host");
+  lock.release("research");
+  now = 119000;
+  assert.strictEqual((await query(sock, { profile: "scout", skey: SKEY, read: true })).device, "space:scout@agent-host");
+  assert.strictEqual((await query(sock, { profile: "scout", skey: "another-session" })).device, "host");
+  now = 238000; // only 119 s since the read: it refreshed stickiness
+  assert.strictEqual((await query(sock)).device, "space:scout@agent-host");
+  now = 358000; // exactly 120 s without a call
+  assert.strictEqual((await query(sock)).device, "host");
+});
+
+test("overflow: shared session losing lock stays busy, including hello, until sticky expiry", async (t) => {
+  let now = 0;
+  const desktops = fakeDesktops(AGENT_DESKTOP);
+  const { relay, sock } = await relayWithDriver({ spacesMode: "overflow", desktops, spaceFetch: fakeSpace().spaceFetch, now: () => now });
+  t.after(() => relay.stop());
+  const lock = relay.driver.spaces.lock;
+  assert.strictEqual((await query(sock)).device, "host");
+  lock.release("scout");
+  lock.request("research");
+  now = 60000;
+  const q = await query(sock);
+  assert.deepStrictEqual([q.ok, q.busy], [false, true]);
+  const c = localClient(sock, { argv: ["mcp"], profile: "scout", skey: SKEY });
+  await c.closed;
+  assert.equal(c.msgs[0].ok, false);
+  assert.match(c.msgs[0].error, /in use by research/);
+  assert.deepStrictEqual(desktops.resolved, []);
+  now = 180000;
+  assert.strictEqual((await query(sock)).device, "space:scout@agent-host");
+});
+
+test("overflow: stale sticky entries are swept without another session call", async (t) => {
+  let now = 0;
+  const { relay, sock } = await relayWithDriver({ spacesMode: "overflow", desktops: fakeDesktops(AGENT_DESKTOP), spaceFetch: fakeSpace().spaceFetch, now: () => now });
+  t.after(() => relay.stop());
+  assert.equal((await query(sock)).ok, true);
+  assert.equal(relay.driver.sticky?.size, 1);
+  now = 120000;
+  relay.driver.prune(); // existing periodic maintenance, no new timer
+  assert.equal(relay.driver.sticky.size, 0);
+});
+
+test("overflow: a blocked write replaces earlier read intent before hello", async (t) => {
+  const { relay, sock } = await relayWithDriver({ spacesMode: "overflow", desktops: fakeDesktops(AGENT_DESKTOP), spaceFetch: fakeSpace().spaceFetch });
+  t.after(() => relay.stop());
+  assert.equal((await query(sock)).device, "host");
+  relay.driver.spaces.lock.release("scout");
+  relay.driver.spaces.lock.request("research");
+  assert.equal((await query(sock, { profile: "scout", skey: SKEY, read: true })).device, "host");
+  assert.equal((await query(sock)).busy, true);
+  const c = localClient(sock, { argv: ["mcp"], profile: "scout", skey: SKEY });
+  const route = await until(() => c.msgs[0]);
+  assert.equal(route.ok, false, "a previous capture must not let a blocked writer bypass the shared lock");
+});
+
+test("overflow: no shared desktop uses own; neither desktop returns the reason", async (t) => {
+  let answer = AGENT_DESKTOP;
+  const { relay, sock } = await relayWithDriver({ spacesMode: "overflow", desktops: fakeDesktops(() => Promise.resolve(answer)), spaceFetch: fakeSpace().spaceFetch, sharedFallback: false });
+  t.after(() => relay.stop());
+  assert.strictEqual((await query(sock)).device, "space:scout@agent-host");
+  answer = { kind: "fallback", reason: "limit" };
+  const q = await query(sock, { profile: "research", skey: "" });
+  assert.deepStrictEqual([q.ok, q.busy, q.error], [false, false, "Every desktop host is full right now; retry later or ask the user."]);
+  const c = localClient(sock, { argv: ["mcp"], profile: "research" });
+  await c.closed;
+  assert.equal(c.msgs[0].error, q.error);
+});
+
+test("overflow: no shared or own desktop never routes to an unpinned device", async (t) => {
+  const { relay, sock, deckToken } = await relayWithDriver({ spacesMode: "overflow", desktops: fakeDesktops({ kind: "fallback", reason: "none" }), spaceFetch: fakeSpace().spaceFetch });
+  t.after(() => relay.stop());
+  await connectDeck(relay, deckToken);
+  relay.presence.fallback.desktop = null;
+  const q = await query(sock);
+  assert.deepStrictEqual([q.ok, q.error], [false, "No desktop host is available; ask the user."]);
+});
+
+test("agent mode: hello for a profile with a desktop answers a space route and pipes MCP through the bridge", async (t) => {
+  const desktops = fakeDesktops(AGENT_DESKTOP);
+  const space = fakeSpace();
+  const { relay, sock } = await relayWithDriver({ spacesMode: "agent", desktops, spaceFetch: space.spaceFetch });
+  t.after(() => relay.stop());
+
+  const c = localClient(sock, { argv: ["mcp"], profile: "aurora" });
+  const route = await until(() => c.msgs[0]);
+  assert.deepStrictEqual(Object.keys(route).sort(), ["device", "epoch", "ok", "t"]);
+  assert.deepStrictEqual([route.t, route.ok, route.device], ["route", true, "space:aurora@agent-host"]);
+  assert.ok(Number.isInteger(route.epoch));
+  assert.deepStrictEqual(desktops.resolved, ["aurora"]);
+  assert.deepStrictEqual(space.opened, [["agent-host", "aurora"]]); // the bridge reaches that host, for that agent
+
+  c.data({ jsonrpc: "2.0", id: 1, method: "initialize" });
+  const init = await until(() => c.lines()[0]);
+  assert.deepStrictEqual([init.id, init.result.serverInfo.name], [1, "cua-spacesd"]);
+  c.data({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+  const list = await until(() => c.lines()[1]);
+  assert.deepStrictEqual([list.id, list.result.session], [2, "sess-1"]); // initialize's session id goes along
+  assert.deepStrictEqual(space.reqs.map((r) => [r.method, r.path, r.msg.method]), [["POST", "/mcp", "initialize"], ["POST", "/mcp", "tools/list"]]);
+  assert.deepStrictEqual(desktops.touched, ["aurora", "aurora"]); // every message keeps the desktop from idling out
+  assert.deepStrictEqual(relay.driver.state().sessions, [{ key: "p:aurora", verb: "mcp", device: "space:aurora@agent-host" }]);
+
+  // the plugin's query for the same agent: the same route, and a live session on it; the shared lock stays free
+  const q = await query(sock, { profile: "aurora", skey: "", sid: "" });
+  assert.deepStrictEqual([q.ok, q.device, q.live], [true, "space:aurora@agent-host", true]);
+  assert.strictEqual(relay.driver.spaces.lock.state().holder, null);
+
+  // Hermes ends its MCP session: the wrapper exits 0
+  c.s.write(JSON.stringify({ t: "close" }) + "\n");
+  await c.closed;
+  assert.deepStrictEqual(c.msgs.at(-1), { t: "exit", code: 0 });
+
+  // deck-cua itself (a real process) pipes its stdio over the socket for a space route
+  const w = wrapper(sock, ["mcp"]);
+  w.send({ jsonrpc: "2.0", id: 7, method: "initialize", params: {} });
+  const got = await until(() => w.lines()[0]);
+  assert.strictEqual(got.id, 7);
+  assert.deepStrictEqual(space.opened.at(-1), ["agent-host", "scout"]);
+  w.p.stdin.end();
+  assert.strictEqual(await w.exit, 0, w.err);
+
+  // only the MCP transport reaches an agent's own desktop (info verbs are the relay's own: see the fix round 1 test)
+  const m = wrapper(sock, ["serve"]);
+  assert.strictEqual(await m.exit, 126);
+  assert.match(m.err, /only the MCP transport is available/);
+});
+
+test("agent mode: a desktop that is still starting answers busy so the plugin waits", async (t) => {
+  const desktops = fakeDesktops(() => sleep(3000).then(() => AGENT_DESKTOP));
+  const { relay, sock } = await relayWithDriver({ spacesMode: "agent", desktops, spaceFetch: fakeSpace().spaceFetch });
+  t.after(() => relay.stop());
+
+  let t0 = Date.now();
+  const q = await query(sock);
+  const took = Date.now() - t0;
+  assert.deepStrictEqual([q.t, q.ok, q.busy, q.error], ["route", false, true, "Your desktop is starting; retry the same action now."]);
+  assert.ok(took >= 1900 && took < 2900, `answered after ${took} ms`); // the 2 s race, not the whole start
+
+  // deck-cua's own hello waits for the whole start (Hermes runs it only after the plugin's query said ok)
+  t0 = Date.now();
+  const c = localClient(sock, { argv: ["mcp"], profile: "scout", skey: SKEY });
+  const route = await until(() => c.msgs[0], 6000);
+  assert.deepStrictEqual([route.ok, route.device], [true, "space:scout@agent-host"]);
+  assert.ok(Date.now() - t0 >= 2900, "the hello waited for the desktop");
+  c.s.destroy();
+});
+
+test("agent mode: fallback goes to the shared desktop through the phase 1 lock", async (t) => {
+  const desktops = fakeDesktops({ kind: "fallback", reason: "offline" });
+  const { relay, sock } = await relayWithDriver({ spacesMode: "agent", desktops, spaceFetch: fakeSpace().spaceFetch });
+  t.after(() => relay.stop());
+  const spaces = relay.driver.spaces;
+  const gated = [];
+  const gate = spaces.gate.bind(spaces);
+  spaces.gate = (profile, kind, o) => (gated.push([profile, kind]), gate(profile, kind, o));
+
+  const q = await query(sock);
+  assert.deepStrictEqual([q.ok, q.device], [true, "host"]);
+  assert.deepStrictEqual(gated, [["scout", "host"]]);
+  assert.strictEqual(spaces.lock.state().holder, "scout");
+  // the lock is real: another agent falling back waits in line behind Scout
+  const other = await query(sock, { profile: "research", skey: "agent:main:telegram:dm:2002", sid: "" });
+  assert.deepStrictEqual([other.ok, other.busy], [false, true]);
+  assert.match(other.error, /in use by Scout; you are 1st in line/);
+
+  // deck-cua's hello on a fallback runs the agent host's own driver, as in phase 1
+  const c = localClient(sock, { argv: ["mcp"], profile: "scout", skey: SKEY });
+  const route = await until(() => c.msgs[0]);
+  assert.deepStrictEqual([route.ok, route.device], [true, "host"]);
+  c.s.destroy();
+});
+
+test("agent mode without the shared desktop as fallback: the agent is told why it has no desktop", async (t) => {
+  const answer = { kind: "fallback", reason: "offline" };
+  const desktops = fakeDesktops(() => Promise.resolve({ ...answer }));
+  const { relay, sock } = await relayWithDriver({ spacesMode: "agent", desktops, spaceFetch: fakeSpace().spaceFetch, sharedFallback: false });
+  t.after(() => relay.stop());
+  const texts = {
+    offline: "Your desktop host is offline; ask the user.",
+    limit: "Every desktop host is full right now; retry later or ask the user.",
+    failed: "Your desktop could not start; ask the user to check Settings > This device > Agent desktops.",
+    none: "No desktop host is available; ask the user.",
+  };
+  for (const [reason, text] of Object.entries(texts)) {
+    answer.reason = reason;
+    const q = await query(sock);
+    assert.deepStrictEqual([q.ok, q.busy, q.device, q.error], [false, false, null, text], reason);
+  }
+  // a registry that throws counts as a desktop that could not start
+  desktops.resolve = () => Promise.reject(new Error("boom"));
+  assert.strictEqual((await query(sock)).error, texts.failed);
+  // deck-cua gets the same words and no route
+  answer.reason = "offline";
+  desktops.resolve = () => Promise.resolve({ ...answer });
+  const w = wrapper(sock, ["mcp"]);
+  assert.strictEqual(await w.exit, 69);
+  assert.match(w.err, /Your desktop host is offline; ask the user\./);
+  assert.strictEqual(relay.driver.spaces.lock.state().holder, null); // the shared desktop was never offered
+});
+
+test("agent mode: a device pin (Work on this device) wins over the agent's own desktop", async (t) => {
+  const desktops = fakeDesktops(AGENT_DESKTOP);
+  const { relay, sock, deckToken } = await relayWithDriver({ spacesMode: "agent", desktops, spaceFetch: fakeSpace().spaceFetch });
+  t.after(() => relay.stop());
+  const deck = await connectDeck(relay, deckToken);
+  assert.deepStrictEqual(relay.presence.setPin("p:scout", "desktop", { kind: "device", id: DEVICE }), { ok: true });
+
+  const q = await query(sock);
+  assert.deepStrictEqual([q.ok, q.device, q.name], [true, DEVICE, "Test PC"]);
+  const s = wrapper(sock, ["mcp"]);
+  s.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  await until(() => s.lines().length === 1);
+  assert.deepStrictEqual(deck.calls.map((x) => x.method), ["initialize"]); // it ran on the device
+  assert.deepStrictEqual(desktops.resolved, []); // the agent's own desktop was never asked for
+  s.p.stdin.end();
+  assert.strictEqual(await s.exit, 0, s.err);
+  // another agent without a pin still gets its own desktop
+  assert.strictEqual((await query(sock, { profile: "research", skey: "", sid: "" })).device, "space:research@agent-host");
+});
+
+test("agent mode: Stop ends space sessions like device sessions and leaves the shared desktop's lock alone", async (t) => {
+  const desktops = fakeDesktops(AGENT_DESKTOP);
+  const { relay, sock } = await relayWithDriver({ spacesMode: "agent", desktops, spaceFetch: fakeSpace().spaceFetch });
+  t.after(() => relay.stop());
+  const lock = relay.driver.spaces.lock;
+
+  for (const device of ["host", undefined]) {
+    assert.strictEqual(lock.request("research").ok, true); // another agent works on the shared desktop meanwhile
+    const c = localClient(sock, { argv: ["mcp"], profile: "scout", skey: SKEY });
+    await until(() => c.msgs[0]);
+    c.data({ jsonrpc: "2.0", id: 1, method: "initialize" });
+    await until(() => c.lines().length === 1);
+    assert.strictEqual(lock.state().holder, "research"); // a space session never takes the shared lock
+    const res = await (await post(relay, "/desktop/stop", device === undefined ? {} : { device })).json();
+    assert.deepStrictEqual([res.ok, res.wrappers], [true, 1], String(device));
+    await c.closed;
+    assert.deepStrictEqual(c.msgs.at(-1), { t: "exit", code: 75 });
+    assert.match(Buffer.from(c.msgs.find((m) => m.t === "err").b64, "base64").toString(), /stopped from Hermes Deck/);
+    await until(() => relay.driver.state().sessions.length === 0); // the relay side of the socket closed too
+  }
+});
+
+test("Review Focus 1: the Deck host's connection closes during a space session: deck-cua gets an error and the session ends", async (t) => {
+  const desktops = fakeDesktops({ kind: "space", host: DEVICE, port: 1 });
+  const spaceFetch = () => async () => {
+    throw new Error("the Deck's connection is gone"); // what the space tunnel rejects with when the Deck drops
+  };
+  const { relay, sock } = await relayWithDriver({ spacesMode: "agent", desktops, spaceFetch });
+  t.after(() => relay.stop());
+
+  const c = localClient(sock, { argv: ["mcp"], profile: "scout", skey: SKEY });
+  const route = await until(() => c.msgs[0]);
+  assert.deepStrictEqual([route.ok, route.device], [true, `space:scout@${DEVICE}`]);
+  const t0 = Date.now();
+  c.data({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "screenshot", arguments: {} } });
+  await Promise.race([c.closed, sleep(1000)]);
+  assert.ok(c.closedAt && c.closedAt - t0 < 1000, "the local socket ended within 1 s");
+  const [err] = c.lines();
+  assert.deepStrictEqual([err.jsonrpc, err.id, err.error.code], ["2.0", 1, -32000]);
+  assert.match(err.error.message, /not reachable right now \(the Deck's connection is gone\)/);
+  assert.deepStrictEqual(c.msgs.at(-1), { t: "exit", code: 75 });
+  await until(() => relay.driver.state().sessions.length === 0); // the relay side of the socket closed too
+});
+
+// ---- Task 6 fix round 1 -----------------------------------------------------------------------------------------
+
+test("agent mode: info verbs are answered by the relay before any desktop starts; a one-shot call is refused", async (t) => {
+  const desktops = fakeDesktops(AGENT_DESKTOP);
+  const { relay, sock } = await relayWithDriver({ spacesMode: "agent", desktops, spaceFetch: fakeSpace().spaceFetch });
+  t.after(() => relay.stop());
+
+  // the wire: a route, one manifest line, exit 0
+  const c = localClient(sock, { argv: ["manifest"], profile: "scout" });
+  await c.closed;
+  assert.deepStrictEqual([c.msgs[0].t, c.msgs[0].ok, c.msgs[0].device], ["route", true, "space:scout"]);
+  assert.deepStrictEqual(c.lines()[0].mcp_invocation, { command: "deck-cua", args: ["mcp"] });
+  assert.deepStrictEqual(c.msgs.at(-1), { t: "exit", code: 0 });
+  // the real wrapper: exit 0, and mcp_invocation pointed back at itself (bot-screen-protocol.md:29)
+  const m = wrapper(sock, ["manifest"]);
+  assert.strictEqual(await m.exit, 0, m.err);
+  const man = JSON.parse(m.text());
+  assert.deepStrictEqual(man.mcp_invocation, { command: SELF, args: ["mcp"] });
+  assert.strictEqual(typeof man.binary_version, "string");
+  assert.ok(Array.isArray(man.subcommands) && man.subcommands.some((x) => x.name === "mcp"));
+  // Hermes' computer_use refuses to start unless `<driver> manifest` meets its runtime contract (its reader,
+  // tools/computer_use/cua_backend_driver.py _manifest_contract_reason): a semantic binary_version >= 0.20.0, a list
+  // of mcp_invocation args, and these subcommand flags advertised. "agent-desktop" failed it (phase 2 side test).
+  assert.strictEqual(hermesContractReason(man), "");
+  assert.strictEqual(hermesContractReason(c.lines()[0]), "");
+  // --help, status, doctor: one readable line, exit 0
+  for (const verb of ["--help", "status", "doctor"]) {
+    const w = wrapper(sock, [verb]);
+    assert.strictEqual(await w.exit, 0, `${verb}: ${w.err}`);
+    assert.match(w.text(), /agent's own desktop/, verb);
+  }
+  // a one-shot call: 126 and a line the agent can read
+  const call = wrapper(sock, ["call", "screenshot", "{}"]);
+  assert.strictEqual(await call.exit, 126);
+  assert.match(call.err, /one-shot calls are not available on an agent's own desktop; use the MCP session/);
+  assert.deepStrictEqual(desktops.resolved, []); // nothing above started a desktop
+});
+
+test("agent mode: the relay's fence on an agent's own desktop: kill_app, hiding the agent cursor and the capture scope never reach it", async (t) => {
+  const space = fakeSpace();
+  const { relay, sock } = await relayWithDriver({ spacesMode: "agent", desktops: fakeDesktops(AGENT_DESKTOP), spaceFetch: space.spaceFetch });
+  t.after(() => relay.stop());
+  const c = localClient(sock, { argv: ["mcp"], profile: "scout", skey: SKEY });
+  await until(() => c.msgs[0]);
+  const call = (id, name, args) => JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }) + "\n";
+  // two requests in one chunk, and two more split across chunks mid-line: the fence reads whole lines
+  c.raw(call(1, "set_agent_cursor_enabled", { session: "s", enabled: false }) + call(2, "kill_app", { pid: 7 }));
+  const tail = call(3, "set_config", { key: "capture_scope", value: "desktop" }) + call(4, "click", { x: 5, y: 5 }) + call(5, "set_agent_cursor_enabled", { session: "s", enabled: true });
+  c.raw(tail.slice(0, 30));
+  c.raw(tail.slice(30));
+  const got = await until(() => (c.lines().length >= 5 ? c.lines() : null));
+  const byId = Object.fromEntries(got.map((l) => [l.id, l]));
+  for (const id of [1, 2, 3]) assert.strictEqual(byId[id].result.isError, true, String(id));
+  assert.match(byId[1].result.content[0].text, /agent cursor stays visible/);
+  assert.match(byId[2].result.content[0].text, /kill_app is not available/);
+  assert.match(byId[3].result.content[0].text, /capture scope cannot be changed/);
+  assert.deepStrictEqual(space.reqs.map((r) => r.msg.params.name), ["click", "set_agent_cursor_enabled"]); // only the allowed calls
+  assert.strictEqual(byId[4].result.isError, undefined);
+});
+
+test("agent mode: the Deck computer that hosts an agent's desktop disconnects: its idle space sessions end", async (t) => {
+  const desktops = fakeDesktops((p) => Promise.resolve(p === "research" ? AGENT_DESKTOP : { kind: "space", host: DEVICE, port: 1 }));
+  const { relay, sock, deckToken } = await relayWithDriver({ spacesMode: "agent", desktops, spaceFetch: fakeSpace().spaceFetch });
+  t.after(() => relay.stop());
+  const deck = await connectDeck(relay, deckToken);
+  const c = localClient(sock, { argv: ["mcp"], profile: "scout", skey: SKEY });
+  assert.strictEqual((await until(() => c.msgs[0])).device, `space:scout@${DEVICE}`);
+  const other = localClient(sock, { argv: ["mcp"], profile: "research" }); // on the agent host: not affected
+  assert.strictEqual((await until(() => other.msgs[0])).device, "space:research@agent-host");
+
+  deck.ws.close(); // idle: no request in flight that a tunnel error could end
+  await Promise.race([c.closed, sleep(1000)]);
+  assert.ok(c.closedAt, "the session on the gone Deck ended");
+  assert.match(Buffer.from(c.msgs.find((x) => x.t === "err").b64, "base64").toString(), /the computer that hosts your desktop disconnected/);
+  assert.deepStrictEqual(c.msgs.at(-1), { t: "exit", code: 75 });
+  assert.strictEqual(other.closedAt, null);
+  other.s.destroy();
+});
+
+test("agent mode: the desktop goes away between the plugin's query and deck-cua's hello: the shared desktop is not used without its lock", async (t) => {
+  let n = 0;
+  const desktops = fakeDesktops(() => Promise.resolve(n++ === 0 ? AGENT_DESKTOP : { kind: "fallback", reason: "offline" }));
+  const { relay, sock } = await relayWithDriver({ spacesMode: "agent", desktops, spaceFetch: fakeSpace().spaceFetch });
+  t.after(() => relay.stop());
+  assert.strictEqual((await query(sock)).device, "space:scout@agent-host");
+  const c = localClient(sock, { argv: ["mcp"], profile: "scout", skey: SKEY });
+  const route = await until(() => c.msgs[0]);
+  c.s.destroy();
+  assert.deepStrictEqual(route, { t: "route", ok: false, error: "Your desktop went away; retry the same action now.", code: 75 });
+  assert.strictEqual(relay.driver.spaces.lock.state().holder, null);
+  // but when the query itself fell back, a read-only one (a capture: no turn taken) still leads to the shared desktop
+  const q = await query(sock, { profile: "scout", skey: SKEY, sid: "", read: true });
+  assert.deepStrictEqual([q.ok, q.device], [true, "host"]);
+  const c2 = localClient(sock, { argv: ["mcp"], profile: "scout", skey: SKEY });
+  const route2 = await until(() => c2.msgs[0]);
+  c2.s.destroy();
+  assert.deepStrictEqual([route2.ok, route2.device], [true, "host"]);
+});
+
+test("agent mode: deck-cua's hello waits for a starting desktop only up to its cap", async (t) => {
+  const desktops = fakeDesktops(() => sleep(1500).then(() => AGENT_DESKTOP));
+  const { relay, sock } = await relayWithDriver({ spacesMode: "agent", desktops, spaceFetch: fakeSpace().spaceFetch, helloDesktopMs: 300 });
+  t.after(() => relay.stop());
+  assert.strictEqual(relay.driver.o.helloDesktopMs, 300);
+  assert.strictEqual(new Driver({ presence: new Presence(), log: () => {} }).o.helloDesktopMs, 13_000); // under deck-cua's 15 s
+  const t0 = Date.now();
+  const c = localClient(sock, { argv: ["mcp"], profile: "scout", skey: SKEY });
+  await c.closed;
+  assert.deepStrictEqual(c.msgs[0], { t: "route", ok: false, error: "Your desktop is starting; retry the same action now.", code: 75 });
+  assert.ok(c.closedAt - t0 < 1200, `ended after ${c.closedAt - t0} ms`);
+});
+
+test("agent mode: no own desktop and no shared route either: the agent hears why it has no desktop", async (t) => {
+  const answer = { kind: "fallback", reason: "offline" };
+  const desktops = fakeDesktops(() => Promise.resolve({ ...answer }));
+  const { relay, sock } = await relayWithDriver({ spacesMode: "agent", desktops, spaceFetch: fakeSpace().spaceFetch });
+  t.after(() => relay.stop());
+  relay.presence.fallback.desktop = null; // the agent host offers no shared desktop now
+  let q = await query(sock);
+  assert.deepStrictEqual([q.ok, q.error], [false, "Your desktop host is offline; ask the user."]);
+  answer.reason = "limit";
+  q = await query(sock);
+  assert.strictEqual(q.error, "Every desktop host is full right now; retry later or ask the user.");
+  const c = localClient(sock, { argv: ["mcp"], profile: "scout", skey: SKEY });
+  await c.closed;
+  assert.deepStrictEqual([c.msgs[0].ok, c.msgs[0].error], [false, "Every desktop host is full right now; retry later or ask the user."]);
+});
+
+// ---- final fix wave I4: in agent mode only `mcp` and the info verbs pass; nothing else starts a desktop -----------
+
+test("I4 agent mode: serve, stop and any other verb are refused with 126 before a desktop is resolved", async (t) => {
+  const desktops = fakeDesktops(AGENT_DESKTOP);
+  const { relay, sock } = await relayWithDriver({ spacesMode: "agent", desktops, spaceFetch: fakeSpace().spaceFetch });
+  t.after(() => relay.stop());
+  for (const argv of [["serve", "--socket", "/tmp/x"], ["stop"], ["screenshot"]]) {
+    const w = wrapper(sock, argv);
+    assert.strictEqual(await w.exit, 126, argv[0]);
+    assert.match(w.err, /On an agent's own desktop only the MCP transport is available; keep computer_use\.permission_mode at standard\./, argv[0]);
+  }
+  assert.deepStrictEqual(desktops.resolved, [], "no desktop was resolved (or started) for them");
+  const call = wrapper(sock, ["call", "screenshot", "{}"]);
+  assert.strictEqual(await call.exit, 126);
+  assert.match(call.err, /one-shot calls are not available/, "call keeps its own text");
 });

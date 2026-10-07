@@ -648,6 +648,9 @@ window.DeckBotScreen = function DeckBotScreen(ctx) {
           "aria-describedby": "bs-foreground-help", onchange: (e) => { s.foreground = e.target.checked; } }),
         h("span", null, i18nNode("botscreen.foreground"))));
       kids.push(h("p", { id: "bs-foreground-help", class: "bs-note" }, i18nNode("botscreen.foregroundHelp")));
+      if (/^(excel|winword|powerpnt|outlook)\.exe$/i.test(String(w?.executable || "").split(/[\\/]/).pop())) {
+        kids.push(h("p", { class: "bs-note" }, i18nNode("botscreen.officeForegroundNote")));
+      }
       if (s.error) kids.push(h("p", { class: "form-error", role: "alert" }, s.error));
       kids.push(
         h(
@@ -913,7 +916,10 @@ window.DeckBotScreen = function DeckBotScreen(ctx) {
     if (B.sheet) renderSheet();
   }
   api.onEvent((m) => {
-    if (m && m.t === "open-screen" && ctx.openScreen) ctx.openScreen(); // the "agent took the desktop" notification
+    if (m && m.t === "open-screen" && ctx.openScreen) {
+      ctx.openScreen(); // desktop or approval notification
+      if (m.profile && m.approval && SP) SP.focusApproval(m.profile, m.approval);
+    }
     if (m && m.t === "frontmost") openSheet(m);
     else if (m && m.t === "frontmost-error") {
       B.msg = { ok: false, text: m.error };

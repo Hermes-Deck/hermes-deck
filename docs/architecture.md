@@ -44,6 +44,8 @@ The bridge part, `observer.py` (derived from Hermes Desk), keeps snapshots of th
 | `presence.js` | Device heartbeats and routing for the `browser` and `desktop` capabilities. |
 | `cdp.js`, `browser.js` | The Hermes-facing CDP endpoint, the CDP tunnel over a deck's connection, and the optional headless fallback browser on the relay host. |
 | `driver.js`, `driver-wire.js`, `mcpfence.js`, `devtokens.js` | Bot screen, agent-host side: the local driver socket, device channels, the relay's MCP fence, device tokens, lease, stop and frames. |
+| `spaces.js`, `space-lock.js`, `space-fetch.js`, `space-mcp.js` | Agent spaces: the shared desktop's lock and queue, the viewer proxy, the Deck's `/spaces` API, and the MCP bridge for `space` routes. |
+| `desktops.js`, `space-tunnel.js` | Agent spaces phase 2: per-agent desktop lifecycle, home hosts, limits and fallback; the `[0xD6]` tunnel to Deck-hosted desktops. |
 
 The checkpoint and rollups are saved to `relay/data/checkpoint.json` every 30 s and on shutdown.
 
@@ -80,6 +82,7 @@ The main process (`app/main/`) owns every connection and every secret. The rende
 | `browser-transfer.js`, `browser-bundle.js` | Consent-based transfer of an agent browser's tabs, cookies and storage between devices, encrypted for the target. |
 | `update-check.js`, `update-service.js`, `updates.js` | App update check and install (release + `SHA256SUMS.txt`), and the notices driven by the relay's version. |
 | `history.js` | IPC for the sub-agent views; reads go to the relay. |
+| `desktops.js`, `desktop-host.js`, `space-tunnel.js`, `space-proxy.js`, `space-view.js` | Agent spaces phase 2, device side: hosting agent desktops on this computer (consent, Docker state, isolation, limits), the tunnel end of the relay's `[0xD6]` frames, the loopback viewer proxy and the isolated viewer. |
 | `desktop.js`, `notify.js`, `pet.js`, `tray.js`, `autostart.js` | Notifications, status pet, tray icon, start at login. |
 | `settings.js` | `settings.json` in the app's data folder; secrets encrypted with Electron `safeStorage`. |
 
@@ -257,6 +260,21 @@ Hermes profile ──computer_use──> deck-cua ──socket──> relay ─�
                                                         │  └─ viewer proxy (token added) <── cua-spacesd (loopback)
 Deck (Bot screen tab) <── loopback proxy <── authenticated HTTP/WS ──┘
 Deck "This device"    <──────── device channel (existing) ──── bounded cua-driver on this device + its agent cursor
+```
+
+**Own desktop per agent (phase 2).** With `DECK_SPACES=agent` each agent gets its own Linux desktop, a container from a digest-pinned Cua image (setup and measurements in `docs/agent-spaces.md`). Agents work at the same time, and the user watches any desktop or takes full control of one while the others keep going.
+- **Desktop hosts.** The agent host (relay, `relay/src/desktops.js`) and any Deck computer that switched on "Host agent desktops on this device" (`app/main/desktops.js`, behind a consent sheet) drive Docker or colima through the `docker` CLI. A Deck reports `desktops: {ready, limit, running, idleMin}` in its heartbeat; the relay learns the hosts from it. A locked Deck stays a host; an asleep or stale one does not. Every `docker` call has a time bound (one runner, `dockerRunner` in `app/main/desktop-host.js`, shared by the relay, the Deck and the doctor). `DECK_DESKTOPS_AGENTS` on the relay limits which agents get a desktop at all.
+- **Lifecycle.** The relay owns it: a desktop starts on the agent's first `computer_use` and stops when idle (counted from the last agent action, view or user control), a host at its limit stops its least recently used idle desktop, and a Deck host that goes away shows its desktops as off. The home folder is a volume that survives stops.
+- **Routing.** For each route query the relay picks, in order: the agent's pin, its own desktop on its home host, the shared desktop (the fallback), a tool error. An agent's own desktop has no lock; Full control there blocks that agent only.
+- **Space route.** `deck-cua` speaks MCP over the relay to the container's cua-spacesd (`/mcp`, bearer token kept on the desktop host). For a Deck-hosted desktop the relay sends the HTTP as `[0xD6]` frames on the Deck's connection (`relay/src/space-tunnel.js`, `app/main/space-tunnel.js`); the Deck checks the path, adds the token and answers from its loopback port. Viewer answers stream in chunks of at most 256 KB; MCP stays buffered. The relay answers driver info verbs (`manifest`, `status`) itself, without starting a desktop, and refuses every verb other than `mcp` (exit 126) before resolving one.
+- **Isolation.** Containers sit on their own Docker network. Firewall rules inside the Docker VM block the host, the LAN and the tailnet and are checked before every start and every 60 s (`desktop-host.js`). Inside the container the supervisor and one cua-spacesd run as root, the desktop and the agent's apps as the user `cua`.
+- **Viewing.** A Deck on the hosting computer reads the desktop from loopback through its own proxy (`app/main/space-proxy.js`); other Decks go through the relay's view proxy. The Bot screen shows one pill per agent.
+
+```
+Hermes profile ──computer_use──> deck-cua ──socket──> relay ──┬─ host route (shared desktop, phase 1)
+                                                               ├─ space:<profile>@agent-host ──> local Docker or colima ──> container :3211/mcp
+                                                               └─ space:<profile>@<device> ──[0xD6] frames on the Deck's connection──> Deck ──> Docker Desktop ──> container :3211/mcp
+Deck (Bot screen) <── viewer: loopback when the desktop is on this machine, else the relay's view proxy (phase 1) ──┘
 ```
 
 ## Trust boundaries

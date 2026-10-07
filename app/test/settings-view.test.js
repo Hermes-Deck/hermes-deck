@@ -248,6 +248,117 @@ test("the This device section carries the hosting rows; Open Bot screen only whi
   assert.ok(root().querySelector('[data-fk="bs:open"]'));
 });
 
+test("Agent desktops: the host switch asks for consent first (download size from the pin); declining saves nothing", async () => {
+  const flush = async () => { for (let i = 0; i < 6; i++) await new Promise((r) => setImmediate(r)); };
+  const calls = [];
+  let answer = false;
+  let push = null;
+  let last = null;
+  const base = { docker: "ready", image: "absent", pull: null, host: false, limit: 3, running: [], error: null, isolation: true, sizeBytes: 486649135 };
+  const deck = {
+    desktops: {
+      state: async () => last || base, // what the main process holds now
+      host: async (on) => { calls.push(["host", on]); last = { ...base, host: on, image: "pulling", pull: { pct: 10 } }; return { settings: { language: "en", desktops: { host: on } }, state: last }; },
+      stop: async (p) => { calls.push(["stop", p]); return last; },
+      reset: async (p) => { calls.push(["reset", p]); return last; },
+      onEvent: (cb) => { push = (st) => cb((last = st)); },
+    },
+    openExternal: (u) => calls.push(["open", u]),
+  };
+  const asked = [];
+  const { sv, root, saves } = mount({ deck, confirm: async (o) => { asked.push(o); return answer; }, saveCall: async (call) => { await call(); } });
+  sv.open("device");
+  await flush();
+  const box = () => root().querySelector('.sv-section[data-section="device"]');
+  assert.match(box().text, /Agent desktops/);
+  const sw = () => box().querySelector("#s-dk-host");
+  assert.equal(sw().checked, false);
+
+  sw().checked = true;
+  sw().dispatch("change");
+  await flush();
+  assert.equal(asked.length, 1);
+  assert.match(asked[0].body, /about 487 MB once/);
+  assert.match(asked[0].body, /Undo points use up to 5 GB per agent on this computer\./);
+  assert.equal(calls.filter((c) => c[0] === "host").length, 0, "declined: nothing saved, nothing downloaded");
+  assert.equal(sw().checked, false);
+
+  answer = true;
+  sw().checked = true;
+  sw().dispatch("change");
+  await flush();
+  assert.deepEqual(calls.filter((c) => c[0] === "host"), [["host", true]]);
+  assert.match(box().text, /Downloading the desktop image… 10%/);
+
+  push({ ...base, host: true, image: "present", running: [{ profile: "aurora", memMB: 700, cpuPct: 3.5, homeBytes: 12e9 }] });
+  assert.match(box().text, /Ready/);
+  assert.match(box().text, /aurora/);
+  assert.match(box().text, /700 MB · 3.5% CPU · 12.0 GB/);
+  assert.match(box().text, /Home folder is over 10 GB/);
+  box().querySelector('[data-fk="dk:stop:aurora"]').dispatch("click");
+  await flush();
+  box().querySelector('[data-fk="dk:reset:aurora"]').dispatch("click");
+  await flush();
+  assert.deepEqual(calls.filter((c) => c[0] === "stop" || c[0] === "reset"), [["stop", "aurora"], ["reset", "aurora"]]);
+  assert.match(asked.at(-1).body, /Reset aurora's desktop\?/);
+
+  // turning it off needs no consent
+  const before = asked.length;
+  sw().checked = false;
+  sw().dispatch("change");
+  await flush();
+  assert.equal(asked.length, before);
+  assert.deepEqual(calls.filter((c) => c[0] === "host").at(-1), ["host", false]);
+
+  push({ ...base, docker: "missing" });
+  assert.match(box().text, /Docker is not installed/);
+  box().querySelector('[data-fk="dk:docker-link"]').dispatch("click");
+  assert.deepEqual(calls.at(-1), ["open", SVM.DOCKER_URL]);
+  push({ ...base, docker: "stopped" });
+  assert.match(box().text, /Docker is not running/);
+
+  const limit = box().querySelector("#s-dk-limit");
+  limit.value = "4";
+  limit.dispatch("change");
+  const mem = box().querySelector("#s-dk-memory");
+  mem.value = "2.5";
+  mem.dispatch("change");
+  const idle = box().querySelector("#s-dk-idleMin");
+  idle.value = "";
+  idle.dispatch("change");
+  assert.deepEqual(saves.filter((p) => p.desktops), [{ desktops: { limit: 4 } }, { desktops: { memory: "2.5g" } }], "an emptied field saves nothing");
+  assert.equal(saves.some((p) => p.desktops && "host" in p.desktops), false, "the switch never goes through the generic save");
+});
+
+test("Agent desktops: a failed turn-on leaves the switch off even while it has the focus (fix1 #6)", async () => {
+  const flush = async () => { for (let i = 0; i < 6; i++) await new Promise((r) => setImmediate(r)); };
+  const base = { docker: "ready", image: "absent", pull: null, host: false, limit: 3, running: [], error: null, isolation: true, sizeBytes: 1e9 };
+  const deck = { desktops: { state: async () => base, host: async () => { throw new Error("disk full"); }, onEvent() {} }, openExternal() {} };
+  const { sv, root } = mount({ deck, confirm: async () => true, saveCall: async (call) => { try { await call(); } catch {} } });
+  sv.open("device");
+  await flush();
+  const sw = root().querySelector("#s-dk-host");
+  sw.focus();
+  sw.checked = true;
+  sw.dispatch("change");
+  await flush();
+  assert.equal(root().querySelector("#s-dk-host").checked, false);
+});
+
+test("Agent desktops: Turkish reset confirmation names the agent naturally (fix1 #8)", () => {
+  i18n.setLanguage("tr");
+  assert.match(i18n.t("desktops.resetConfirm", { agent: "Hermes" }), /^Hermes ajanının masaüstü sıfırlansın mı\?/);
+});
+
+test("Agent desktops: no group without the desktops API; sizes read as people say them", () => {
+  const { sv, root } = mount();
+  sv.open("device");
+  assert.equal(root().querySelector("#s-dk-host"), null);
+  assert.equal(SVM.sizeText(486649135), "487 MB");
+  assert.equal(SVM.sizeText(1.2e9), "1.2 GB");
+  assert.equal(SVM.sizeText(null), "?");
+});
+
 // ---------------------------------------------------------------- wiring and copy
 
 test("index.html loads the view before app.js; app.js routes every Settings entry point to it", () => {
@@ -272,4 +383,229 @@ test("new set.* strings exist in English and Turkish and the view uses no other 
   for (const [, k] of src.matchAll(/\bT\("([\w.]+)"/g)) assert.ok(k in i18n.tables.en, `missing key ${k}`);
   // help paragraphs are gone: no .fhelp is created by the view
   assert.ok(!/class: "fhelp"/.test(src));
+});
+
+// ---------------------------------------------------------------- agent spaces, phase 2 (Task 9)
+
+function spacesDeck(list, calls = []) {
+  return {
+    spaces: {
+      list: async () => list,
+      mode: async (m) => (calls.push(["mode", m]), { ok: true }),
+      home: async (p, host) => (calls.push(["home", p, host]), { ok: true }),
+    },
+  };
+}
+
+// Relay-owned settings must never pass through the local settings save path.
+const safetyDefaults = { audit: true, typedText: false, screenshots: true, days: 7, approvals: true, snapshotKeep: 10 };
+test("activity/safety settings wait for relay defaults and save single validated properties only to relay", async () => {
+  const patches = [];
+  let loaded, finish;
+  let value = { ...safetyDefaults };
+  const m = mount({ deck: { spaces: {
+    list: async () => ({ mode: "agent", hosts: [], spaces: [] }),
+    safety: (patch) => {
+      if (!patch) return new Promise((resolve) => { loaded = resolve; });
+      patches.push(patch);
+      return new Promise((resolve) => { finish = () => { value = { ...value, ...patch }; resolve({ settings: value }); }; });
+    },
+  } } });
+  m.sv.open("device");
+  const control = (key) => m.root().querySelector(`#s-safety-${key}`);
+  for (const key of Object.keys(value)) {
+    assert.ok(control(key), `missing safety control: ${key}`);
+    assert.equal(control(key).disabled, true);
+  }
+  loaded({ settings: value });
+  await new Promise(setImmediate);
+  for (const [key, expected] of Object.entries(value)) {
+    assert.equal(control(key).disabled, false);
+    assert.equal(typeof expected === "boolean" ? control(key).checked : control(key).value, typeof expected === "boolean" ? expected : String(expected));
+  }
+  for (const [key, next] of Object.entries({ audit: false, typedText: true, screenshots: false, days: 90, approvals: false, snapshotKeep: 100 })) {
+    const el = control(key);
+    if (el.type === "checkbox") el.checked = next; else el.value = String(next);
+    el.dispatch("change");
+    assert.equal(el.disabled, true);
+    assert.deepEqual(patches.at(-1), { [key]: next });
+    finish();
+    await new Promise(setImmediate);
+    assert.equal(el.disabled, false);
+  }
+  for (const [key, bad] of [["days", ""], ["days", "0"], ["days", "91"], ["days", "1.5"], ["snapshotKeep", "101"], ["snapshotKeep", "no"]]) {
+    control(key).value = bad;
+    control(key).dispatch("change");
+    await new Promise(setImmediate);
+    assert.equal(control(key).value, String(value[key]));
+  }
+  assert.equal(patches.length, 6, "invalid values never reach IPC");
+  assert.equal(m.saves.length, 0);
+});
+
+test("failed safety saves revert and stopped-agent undo deletion requires confirmation and refreshes totals", async () => {
+  const deletes = [], reads = [], asked = [];
+  let consent = false, failDelete = true;
+  const m = mount({ confirm: async (o) => { asked.push(o); return consent; }, deck: { spaces: {
+    list: async () => ({ mode: "agent", hosts: [], spaces: [{ id: "host", kind: "shared" }, { id: "agent1", kind: "agent", state: "stopped" }] }),
+    safety: async (patch) => patch ? { ok: false, error: "operation-failed" } : { settings: safetyDefaults },
+    snapshots: async (id) => { reads.push(id); return { points: [], totalBytes: deletes.length > 1 ? 0 : 123_000_000 }; },
+    deleteSnapshots: async (id) => { deletes.push(id); return { ok: !failDelete }; },
+  } } });
+  m.sv.open("device"); await new Promise(setImmediate);
+  const typed = m.root().querySelector("#s-safety-typedText");
+  assert.ok(typed);
+  typed.checked = true; typed.dispatch("change"); await new Promise(setImmediate);
+  assert.equal(typed.checked, false);
+  assert.match(m.root().querySelector(".sv-safety").text, /Could not save or load safety settings/);
+  assert.deepEqual(reads, ["agent1"]);
+  const button = m.root().querySelector('[data-snapshot-delete="agent1"]');
+  assert.ok(button);
+  assert.match(m.root().querySelector(".sv-snapshot-disk").text, /123 MB/);
+  button.dispatch("click"); await new Promise(setImmediate);
+  assert.deepEqual(deletes, []);
+  assert.match(asked[0].body, /current home folder will be kept/);
+  consent = true; button.dispatch("click"); await new Promise(setImmediate);
+  assert.deepEqual(deletes, ["agent1"]);
+  assert.equal(button.disabled, false, "failed deletion can be retried");
+  failDelete = false; button.dispatch("click"); await new Promise(setImmediate);
+  assert.deepEqual(deletes, ["agent1", "agent1"]);
+  assert.deepEqual(reads, ["agent1", "agent1"]);
+  assert.match(m.root().querySelector(".sv-snapshot-disk").text, /Undo points: 0 MB/);
+  assert.equal(m.saves.length, 0);
+});
+
+test("safety load failures leave controls disabled and unavailable snapshots cannot be deleted", async () => {
+  const m = mount({ deck: { spaces: {
+    list: async () => ({ mode: "agent", hosts: [], spaces: [{ id: "agent1", kind: "agent" }] }),
+    safety: async () => { throw new Error("offline"); },
+    snapshots: async () => ({ ok: false, error: "offline" }),
+  } } });
+  m.sv.open("device"); await new Promise(setImmediate);
+  assert.ok(m.root().querySelector("#s-safety-audit"));
+  for (const key of Object.keys(safetyDefaults)) assert.equal(m.root().querySelector(`#s-safety-${key}`).disabled, true);
+  assert.match(m.root().querySelector(".sv-safety").text, /Could not save or load safety settings/);
+  assert.match(m.root().querySelector(".sv-snapshot-disk").text, /Unavailable/);
+  assert.equal(m.root().querySelector('[data-snapshot-delete="agent1"]').disabled, true);
+});
+
+for (const [flag, message] of [["auditLocked", /disabled by the relay's environment/], ["loggingPaused", /paused because storage is unavailable/]]) test(`safety reports ${flag} and respects the relay audit lock`, async () => {
+  const m = mount({ deck: { spaces: {
+    list: async () => ({ mode: "shared", hosts: [], spaces: [] }),
+    safety: async () => ({ settings: { ...safetyDefaults, audit: false, [flag]: true } }),
+  } } });
+  m.sv.open("device"); await new Promise(setImmediate);
+  const audit = m.root().querySelector("#s-safety-audit");
+  assert.ok(audit);
+  assert.equal(audit.disabled, flag === "auditLocked");
+  assert.equal(audit.checked, false);
+  assert.match(m.root().querySelector(".sv-safety").text, message);
+});
+test("undo point totals and deletion stay available in shared mode, for every known agent", async () => {
+  const reads = [];
+  const m = mount({ agents: () => [{ profile: "agent1", name: "Agent One" }, { profile: "host" }], deck: { spaces: {
+    list: async () => ({ mode: "shared", hosts: [], spaces: [{ id: "host", kind: "shared" }] }),
+    safety: async () => ({ settings: safetyDefaults }),
+    snapshots: async (id) => { reads.push(id); return { points: [], totalBytes: 50_000_000 }; },
+    deleteSnapshots: async () => ({ ok: true }),
+  } } });
+  m.sv.open("device"); await new Promise(setImmediate); await new Promise(setImmediate);
+  assert.deepEqual(reads, ["agent1"], "the shared desktop id is never an agent");
+  assert.ok(m.root().querySelector('[data-snapshot-delete="agent1"]'));
+  assert.match(m.root().querySelector(".sv-snapshot-disk").text, /Agent One/);
+  assert.match(m.root().querySelector(".sv-snapshot-disk").text, /50 MB/);
+});
+
+test("the audit lock explanation survives a saved edit and a deletion", async () => {
+  const m = mount({ agents: () => [{ profile: "agent1" }], confirm: async () => true, deck: { spaces: {
+    list: async () => ({ mode: "agent", hosts: [], spaces: [{ id: "agent1", kind: "agent" }] }),
+    safety: async (patch) => ({ ok: true, settings: { ...safetyDefaults, audit: false, auditLocked: true, ...(patch || {}) } }),
+    snapshots: async () => ({ points: [], totalBytes: 0 }),
+    deleteSnapshots: async () => ({ ok: true }),
+  } } });
+  m.sv.open("device"); await new Promise(setImmediate); await new Promise(setImmediate);
+  const typed = m.root().querySelector("#s-safety-typedText");
+  typed.checked = true; typed.dispatch("change"); await new Promise(setImmediate);
+  assert.match(m.root().querySelector(".sv-safety").text, /disabled by the relay's environment/);
+  assert.match(m.root().querySelector(".sv-safety").text, /Saved/);
+  m.root().querySelector('[data-snapshot-delete="agent1"]').dispatch("click"); await new Promise(setImmediate); await new Promise(setImmediate);
+  assert.match(m.root().querySelector(".sv-safety").text, /disabled by the relay's environment/);
+});
+
+const flushAll = async () => { for (let i = 0; i < 6; i++) await new Promise((r) => setImmediate(r)); };
+
+for (const [lang, label] of [["en", "Shared first, own desktop when busy"], ["tr", "Önce ortak masaüstü, doluysa kendi masaüstü"]]) test(`overflow: Settings option in ${lang} saves mode`, async () => {
+  i18n.setLanguage(lang);
+  const calls = [];
+  const { sv, root } = mount({ deck: spacesDeck({ mode: "shared", spaces: [], hosts: [], homes: {} }, calls), saveCall: async (call) => call() });
+  sv.open("device");
+  await flushAll();
+  const mode = root().querySelector("#s-space-mode");
+  const option = mode.children.find((o) => o.attrs.value === "overflow");
+  assert.ok(option, "overflow option exists");
+  assert.equal(option.text, label);
+  mode.value = "overflow";
+  mode.dispatch("change");
+  await flushAll();
+  assert.deepEqual(calls.at(-1), ["mode", "overflow"]);
+});
+
+test("overflow: Settings shows no-host hint", async () => {
+  const { sv, root } = mount({ deck: spacesDeck({ mode: "overflow", spaces: [], hosts: [], homes: {} }) });
+  sv.open("device");
+  await flushAll();
+  assert.match(root().querySelector('.sv-section[data-section="device"]').text, /No computer hosts agent desktops yet/);
+});
+
+test("Agent spaces: own desktop per agent is selectable; one home-host row per agent (never host), offline hosts dimmed; a change goes to the relay", async () => {
+  const calls = [];
+  const list = {
+    mode: "agent",
+    spaces: [{ id: "host", kind: "shared" }],
+    hosts: [{ id: "agent-host", name: "mac", ready: true, limit: 1, running: 0 }, { id: "a1b2c3d4", name: "pc", ready: true, limit: 3, running: 1 }, { id: "b2c3d4e5", name: "laptop", ready: false, limit: 2, running: 0 }],
+    homes: { aurora: "a1b2c3d4", scout: "c3d4e5f6" },
+  };
+  const { sv, root } = mount({
+    deck: spacesDeck(list, calls),
+    agents: () => [{ profile: "aurora", name: "Aurora" }, { profile: "pioneer" }, { profile: "host" }, { profile: "scout", name: "Scout" }],
+    saveCall: async (call) => { await call(); },
+  });
+  sv.open("device");
+  await flushAll();
+  const mode = root().querySelector("#s-space-mode");
+  assert.equal(mode.disabled, false);
+  assert.equal(mode.value, "agent");
+  const agentOpt = mode.children.find((o) => o.attrs.value === "agent");
+  assert.equal(agentOpt.disabled, false, "Own desktop per agent can be chosen");
+  assert.doesNotMatch(agentOpt.text, /phase 2/i);
+  const a = root().querySelector("#s-space-home-aurora");
+  assert.ok(a, "a row for Aurora");
+  assert.ok(root().querySelector("#s-space-home-pioneer"));
+  assert.equal(root().querySelector("#s-space-home-host"), null, "profile host is never an agent");
+  assert.equal(a.value, "a1b2c3d4");
+  assert.equal(root().querySelector("#s-space-home-pioneer").value, "auto");
+  assert.deepEqual(a.children.map((o) => o.attrs.value), ["auto", "agent-host", "a1b2c3d4", "b2c3d4e5"]);
+  assert.deepEqual(a.children.map((o) => o.text), ["Automatic", "Agent host", "pc", "laptop (offline)"]);
+  assert.ok(a.children[3].classList.contains("off"), "an offline device is dimmed");
+  const s = root().querySelector("#s-space-home-scout");
+  assert.equal(s.value, "c3d4e5f6", "a home host that is gone stays shown");
+  assert.equal(s.children.at(-1).text, "c3d4e5f6 (offline)");
+  assert.match(root().querySelector('.sv-section[data-section="device"]').text, /Aurora/);
+  const p = root().querySelector("#s-space-home-pioneer");
+  p.value = "agent-host";
+  p.dispatch("change");
+  await flushAll();
+  assert.deepEqual(calls.at(-1), ["home", "pioneer", "agent-host"]);
+  assert.doesNotMatch(root().querySelector('.sv-section[data-section="device"]').text, /No computer hosts agent desktops/);
+});
+
+test("Agent spaces: in agent mode with no desktop host yet, Settings says how to get one", async () => {
+  const { sv, root } = mount({ deck: spacesDeck({ mode: "agent", spaces: [], hosts: [], homes: {} }), agents: () => [{ profile: "aurora" }] });
+  sv.open("device");
+  await flushAll();
+  assert.match(root().querySelector('.sv-section[data-section="device"]').text, /No computer hosts agent desktops yet/);
+  const { sv: sv2, root: root2 } = mount({ deck: spacesDeck({ mode: "shared", spaces: [], hosts: [], homes: {} }), agents: () => [] });
+  sv2.open("device");
+  await flushAll();
+  assert.doesNotMatch(root2().querySelector('.sv-section[data-section="device"]').text, /No computer hosts agent desktops/, "shared mode needs no desktop host");
 });

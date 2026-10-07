@@ -40,6 +40,9 @@
 .sv-end { justify-content: flex-end; min-height: 40px; }
 .sv-row.off > * { opacity: 0.45; }
 .sv-block { display: block; padding: 4px 14px; }
+.sv-block[hidden] { display: none; }
+/* Agent spaces > home host: a desktop host that is offline is dimmed in its list */
+.sv select option.off { color: var(--marble-dim); }
 .sv-inline { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px 12px; min-width: 0; }
 .sv-path { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px var(--mono); color: var(--marble-dim); }
 .sv-link { margin: 0; font: 12px var(--body); text-decoration: none; color: var(--marble-dim); }
@@ -145,3 +148,13 @@
 .upd-adv summary { cursor: pointer; padding: 6px 0; color: var(--vein-text); font-size: 12.5px; }
 .upd-adv .sv-row { padding-left: 0; padding-right: 0; }
 .sv-ctl .sv-inline select.s-wall-choice { width: 160px; }
+
+/* ---------- agent desktops (Settings > This device) and its consent sheet ---------- */
+.sv-dk-status:empty { display: none; }
+.sv-dk-status { margin: 0; font-size: 12.5px; color: var(--marble-dim); }
+.sv-dk-list:empty { display: none; }
+.sv-dk-list .sv-label .muted { font-size: 12px; }
+.sv-confirm { width: min(520px, calc(100vw - 40px)); border: 1px solid var(--vein); border-radius: 10px; padding: 22px; color: var(--marble); background: var(--basalt); }
+.sv-confirm::backdrop { background: rgb(var(--shade-rgb) / .65); }
+.sv-confirm h3 { margin-top: 0; }
+.sv-confirm p { line-height: 1.5; }
