@@ -1,0 +1,96 @@
+/* Hermes Deck — Activity panel (activity-view.js): one tree, one status vocabulary, one overflow menu per row.
+   Colour roles (tokens from styles.css): patina = live; gilt = needs attention or a threshold; amphora = failed
+   or a hard threshold; everything else is neutral (marble / vein-text). Status is always also text or shape. */
+
+.acard { margin: 0 0 10px; padding: 4px 6px 6px; border: 1px solid transparent; border-radius: 10px; background: var(--slate); }
+.acard.mine { border-color: var(--patina-soft); }
+.acard.live { border-color: var(--patina-soft); }
+.anode { min-width: 0; }
+
+/* ---------- one agent row ---------- */
+.arow { border-radius: 8px; }
+.arow.sub { margin-left: calc(var(--depth, 1) * 10px); }
+.arow-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 2px; }
+.arow-main {
+  display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; grid-template-areas: "dot title time" ". status cost" ". sub sub";
+  column-gap: 8px; row-gap: 1px; align-items: baseline; width: 100%; margin: 0; padding: 7px 6px; border: 0; border-radius: 8px;
+  background: none; text-align: left; color: inherit; cursor: pointer; min-width: 0;
+}
+.arow-main:hover, .arow.open > .arow-head > .arow-main { background: var(--slate-2); }
+.adot { grid-area: dot; align-self: center; width: 7px; height: 7px; border-radius: 50%; background: var(--vein-text); }
+.atitle { grid-area: title; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--marble); }
+.arow.sub .atitle { color: var(--marble-dim); }
+.atime { grid-area: time; font: 11px var(--mono); color: var(--vein-text); white-space: nowrap; }
+.astatus { grid-area: status; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 11.5px var(--body); color: var(--vein-text); }
+.asub { grid-area: sub; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; min-width: 0; font: 11px var(--mono); color: var(--vein-text); }
+.amodel { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--marble-dim); }
+.acost { grid-area: cost; font: 11px var(--mono); color: var(--marble-dim); white-space: nowrap; text-align: right; }
+
+/* status: dot shape + colour, always with the word beside it */
+.arow.st-thinking .adot, .arow.st-tool .adot { background: var(--patina); animation: breathe 1.8s ease-in-out infinite; }
+.arow.st-waiting .adot { background: var(--gilt); }
+.arow.st-failed .adot { background: var(--amphora); border-radius: 2px; }
+.arow.st-done .adot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--marble-dim); }
+.arow.st-stopped .adot, .arow.st-idle .adot, .arow.st-quiet .adot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--vein-text); }
+.arow.st-thinking .astatus, .arow.st-tool .astatus { color: var(--patina); }
+.arow.st-waiting .astatus { color: var(--gilt); }
+.arow.st-failed .astatus { color: var(--amphora); font-weight: 700; }
+.arow.st-failed .astatus::before { content: "× "; }
+.arow.st-done .astatus { color: var(--marble-dim); }
+
+/* reasoning level and retry chips: neutral, never a status colour */
+.achip { padding: 0 6px; border: 1px solid var(--vein); border-radius: 6px; white-space: nowrap; font: 500 10px/15px var(--mono); letter-spacing: 0.02em; color: var(--marble-dim); }
+.achip.effort { background: var(--slate-2); }
+
+/* ---------- overflow menu ---------- */
+.amenu-wrap { position: relative; }
+.amore { display: grid; place-items: center; width: 28px; height: 28px; margin: 4px 2px 0 0; padding: 0; border: 0; border-radius: 7px; background: none; color: var(--vein-text); cursor: pointer; opacity: 0.0; }
+.arow:hover .amore, .arow:focus-within .amore, .amore.on, .amore:focus-visible { opacity: 1; }
+@media (hover: none) { .amore { opacity: 1; } }
+.amore:hover, .amore.on { background: var(--slate-2); color: var(--marble); }
+.amore-ic { width: 14px; height: 14px; background: currentColor; -webkit-mask: var(--amore-ic) center / contain no-repeat; mask: var(--amore-ic) center / contain no-repeat;
+  --amore-ic: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='3' cy='8' r='1.5'/%3E%3Ccircle cx='8' cy='8' r='1.5'/%3E%3Ccircle cx='13' cy='8' r='1.5'/%3E%3C/svg%3E"); }
+.amenu {
+  position: absolute; top: 100%; right: 0; z-index: 20; display: flex; flex-direction: column; min-width: 150px; padding: 4px;
+  border: 1px solid var(--vein); border-radius: 9px; background: var(--slate-2); box-shadow: 0 8px 22px rgb(var(--shade-rgb) / 0.45);
+}
+.amenu-item { padding: 6px 10px; border: 0; border-radius: 6px; background: none; text-align: left; font: 12px var(--body); color: var(--marble); cursor: pointer; white-space: nowrap; }
+.amenu-item:hover:not(:disabled), .amenu-item:focus-visible { background: var(--hover); }
+.amenu-item.on { color: var(--patina); }
+.amenu-item.danger { color: var(--amphora); font-weight: 700; }
+.amenu-item:disabled { opacity: 0.45; cursor: default; }
+
+/* ---------- drawer: the request and the metrics ---------- */
+.adrawer { margin: 0 6px 6px 24px; padding: 2px 0 4px; display: flex; flex-direction: column; gap: 6px; }
+.adrawer .ask-wrap { margin: 0; }
+.ametrics { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 6px 12px; }
+.ametric { display: grid; grid-template-columns: 1fr auto; grid-template-areas: "k v" "m m"; align-items: baseline; gap: 2px 6px; min-width: 0; font: 11px var(--mono); }
+.ametric-k { grid-area: k; color: var(--vein-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ametric-v { grid-area: v; color: var(--marble); }
+.ameter { grid-area: m; height: 3px; border-radius: 2px; background: var(--vein); overflow: hidden; }
+.ameter > i { display: block; height: 100%; background: var(--marble-dim); }
+.ametric.warn .ametric-v { color: var(--gilt); }
+.ametric.warn .ameter > i { background: var(--gilt); }
+.ametric.bad .ametric-v { color: var(--amphora); }
+.ametric.bad .ameter > i { background: var(--amphora); }
+
+/* ---------- sub-agent group: summary + honest totals ---------- */
+.agroup { margin: 2px 0 0 14px; padding-left: 8px; border-left: 1px solid var(--vein); }
+.agroup-head { display: flex; align-items: baseline; gap: 6px; width: 100%; margin: 0; padding: 4px 4px; border: 0; border-radius: 6px; background: none; text-align: left; cursor: pointer; font: 11px var(--mono); color: var(--vein-text); }
+.agroup-head:hover { background: var(--slate-2); color: var(--marble-dim); }
+.agroup-sum { display: flex; flex-wrap: wrap; gap: 0 8px; }
+.agroup-sum b { font-weight: 600; color: var(--marble-dim); }
+.sum-run { color: var(--patina); }
+.sum-bad { color: var(--amphora); font-weight: 700; }
+.agroup-head .chev { display: inline-block; width: 10px; }
+.atotals { display: flex; flex-direction: column; gap: 4px; margin: 2px 4px 6px 20px; }
+.atot { display: flex; flex-direction: column; gap: 0; margin: 0; font: 11px var(--mono); color: var(--vein-text); }
+.atot-k { font: 500 11.5px var(--body); color: var(--marble-dim); }
+.atot-v { display: flex; flex-wrap: wrap; gap: 0 10px; }
+.atot-v > span { white-space: nowrap; }
+.akids { display: flex; flex-direction: column; }
+
+.acard .hctl-wrap.at-card { margin: 0 6px 6px 24px; }
+.acard .linkbtn { margin-top: 0; }
+
+@media (prefers-reduced-motion: reduce) { .adot { animation: none !important; } }

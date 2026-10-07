@@ -1,0 +1,23 @@
+name: Feature request
+description: Describe a problem and a proposed improvement.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to do, and what prevents it today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: markdown
+    attributes:
+      value: Do not include tokens, private infrastructure details or real conversation content. Use synthetic examples.

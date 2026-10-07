@@ -1,0 +1,76 @@
+/* Ajan skin (pets/skins/agent.js): a 72 px medallion with a state ring, standing on a name tag. */
+.ag { position: absolute; inset: 0; }
+.ag-medal {
+  position: absolute; left: 32px; top: 34px; width: 80px; height: 80px; transform-origin: 50% 100%;
+  animation: ag-breathe 3.8s ease-in-out infinite;
+}
+@keyframes ag-breathe {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-1px) scale(1.02); }
+}
+/* resting states: the breath pauses where it is (running, it redraws the window every vsync) */
+.ag[data-s="idle"] .ag-medal, .ag[data-s="offline"] .ag-medal { animation-play-state: paused; }
+
+/* the face: the agent's avatar, else its initials on slate like the deck's coins */
+.ag-face {
+  position: absolute; inset: 5px; border-radius: 50%; overflow: hidden;
+  display: grid; place-items: center; background: var(--slate-2); box-shadow: inset 0 0 0 1px var(--edge), 0 4px 12px rgba(0, 0, 0, 0.45);
+  transition: opacity 0.16s ease, filter 0.5s ease;
+}
+.ag-face.swap { opacity: 0; }
+.ag-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: none; }
+.ag-face.has-img .ag-img { display: block; }
+.ag-face.has-img .ag-init { display: none; }
+.ag-init { font: 27px/1 var(--display); color: var(--marble); letter-spacing: 0.02em; }
+
+/* the ring: marble at idle, a turning patina arc while working, amphora / gilt when something is new or
+   waiting, grey and dashed when the relay is away (stroke and dashes ease from one state to the next) */
+.ag-ring { position: absolute; inset: 0; width: 80px; height: 80px; transform: rotate(-90deg); overflow: visible; }
+.ag-ring circle { fill: none; stroke-width: 3; }
+.ag-ring .track { stroke: var(--vein); }
+.ag-ring .arc { stroke: var(--marble-dim); stroke-dasharray: 233 0; stroke-linecap: round; transition: stroke 0.5s ease, stroke-dasharray 0.5s ease; }
+.ag[data-s="working"] .ag-ring { animation: ag-spin 1.6s linear infinite; }
+.ag[data-s="working"] .ag-ring .arc { stroke: var(--patina); stroke-dasharray: 64 169; }
+.ag[data-s="reply"] .ag-ring .arc { stroke: var(--amphora); }
+.ag[data-s="waiting"] .ag-ring .arc { stroke: var(--gilt); }
+.ag[data-s="offline"] .ag-ring .arc { stroke: var(--vein-text); stroke-dasharray: 3 6; stroke-linecap: butt; }
+.ag[data-s="offline"] .ag-face { filter: grayscale(1) brightness(0.72); }
+@keyframes ag-spin {
+  from { transform: rotate(-90deg); }
+  to { transform: rotate(270deg); }
+}
+
+.ag-halo {
+  position: absolute; inset: -12px; border-radius: 50%; pointer-events: none; opacity: 0;
+  background: radial-gradient(circle, transparent 46%, rgba(111, 179, 166, 0.45) 56%, transparent 72%);
+  transition: opacity 0.5s ease;
+}
+.ag[data-s="working"] .ag-halo { opacity: 0.8; }
+.ag[data-s="waiting"] .ag-halo {
+  opacity: 1; background: radial-gradient(circle, transparent 46%, rgba(205, 166, 90, 0.55) 56%, transparent 72%);
+  animation: ag-pulse 1.5s ease-in-out infinite;
+}
+@keyframes ag-pulse {
+  0%, 100% { transform: scale(0.95); opacity: 0.6; }
+  50% { transform: scale(1.1); opacity: 1; }
+}
+.ag-ripple { position: absolute; inset: 2px; border-radius: 50%; border: 2px solid var(--amphora); opacity: 0; pointer-events: none; }
+.ag[data-s="reply"] .ag-ripple { animation: ag-ripple 1.8s ease-out infinite; }
+.ag[data-s="reply"] .ag-ripple.r2 { animation-delay: 0.9s; }
+@keyframes ag-ripple {
+  0% { transform: scale(1); opacity: 0.75; }
+  100% { transform: scale(1.32); opacity: 0; } /* 76 px x 1.32 x 1.02 breath = 102 px: clear of the window edge */
+}
+
+/* the name tag under the medallion */
+.ag-tag {
+  position: absolute; left: 50%; bottom: 6px; transform: translateX(-50%); max-width: 106px; /* inside the pet box: never past the window edge */
+  height: 20px; padding: 0 9px; border-radius: 10px; display: flex; align-items: center;
+  background: var(--basalt); border: 1px solid var(--vein); box-shadow: 0 3px 8px rgba(0, 0, 0, 0.35);
+}
+.ag-name { font: 12px/16px var(--display); letter-spacing: 0.04em; color: var(--marble); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ag[data-s="offline"] .ag-name { color: var(--marble-dim); }
+
+.ag.still *, .ag.still { animation: none !important; }
+
+.pet-slot[data-skin="agent"] { --hit-w: 84px; --hit-h: 108px; --hit-b: 4px; --count-top: 30px; --count-left: 80px; --runs-top: 96px; --runs-right: 8px; }

@@ -1,0 +1,7 @@
+/* Hayat (pets/skins/hayat.js): where its hit area and badges sit, per pose (stage px, feet on y = 136). */
+.pet-slot[data-skin="hayat"][data-pose="sit"] { --hit-w: 70px; --hit-h: 84px; --hit-b: 6px; }
+.pet-slot[data-skin="hayat"][data-pose="stand"] { --hit-w: 74px; --hit-h: 100px; --hit-b: 6px; }
+.pet-slot[data-skin="hayat"][data-pose="lie"] { --hit-w: 86px; --hit-h: 62px; --hit-b: 6px; }
+.pet-slot[data-skin="hayat"][data-badge="sit"] { --count-top: 46px; --count-left: 82px; --runs-top: 120px; --runs-right: 4px; }
+.pet-slot[data-skin="hayat"][data-badge="stand"] { --count-top: 34px; --count-left: 84px; --runs-top: 120px; --runs-right: 4px; }
+.pet-slot[data-skin="hayat"][data-badge="lie"] { --count-top: 64px; --count-left: 86px; --runs-top: 120px; --runs-right: 2px; }

@@ -1,0 +1,33 @@
+{
+  "name": "hermes-deck",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Hermes Deck: Telegram-based cockpit for the agent fleet (chats + live activity, fleet health, token use).",
+  "author": "Hermes Deck contributors",
+  "main": "main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "shot": "electron . --shot",
+    "test": "node --test \"test/*.test.js\"",
+    "icon": "node scripts/make-icon.js",
+    "electron:install": "install-electron",
+    "shortcuts": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-shortcuts.ps1",
+    "postinstall": "node scripts/copy-fonts.js",
+    "dist": "node scripts/copy-fonts.js && node scripts/build-info.js && electron-builder --publish never && node scripts/checksums.js",
+    "dist:win": "node scripts/copy-fonts.js && node scripts/build-info.js && electron-builder --win --publish never && node scripts/checksums.js",
+    "dist:mac": "node scripts/copy-fonts.js && node scripts/build-info.js && electron-builder --mac --publish never && node scripts/checksums.js",
+    "checksums": "node scripts/checksums.js"
+  },
+  "dependencies": {
+    "libsodium-wrappers": "0.8.4",
+    "teleproto": "1.229.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@fontsource/atkinson-hyperlegible-mono": "^5.3.0",
+    "@fontsource/atkinson-hyperlegible-next": "^5.3.0",
+    "@fontsource/marcellus": "^5.3.0",
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3"
+  }
+}

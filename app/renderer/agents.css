@@ -1,0 +1,158 @@
+/* Hermes Deck — sub-agent views (agents.js): B1 session/sub-agent detail, B2 running list, B3 tool calls,
+   B4 sub-agent tree, A13 role/OMH labels, F2 folded prompt context. Tokens from styles.css: patina = live,
+   gilt = warning (a retry), amphora = failure; everything else is marble on basalt and slate. */
+
+/* ---------- B1: the detail takes the chat column while it is open ---------- */
+.detail { display: none; }
+body.detail-open .chat { grid-template-rows: minmax(0, 1fr); }
+body.detail-open .chat > :not(.detail):not(.panel-open):not(.toasts) { display: none; }
+body.detail-open .detail { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; }
+
+.dt-head {
+  display: flex; flex-direction: column; gap: 6px; min-width: 0; max-height: 48vh; overflow-y: auto;
+  padding: 12px 20px 12px; border-bottom: 1px solid var(--vein);
+}
+.dt-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font: 11px var(--mono); color: var(--vein-text); }
+.dt-back { font-family: var(--body); }
+.dt-kind { text-transform: uppercase; letter-spacing: 0.06em; }
+.dt-model { color: var(--marble-dim); }
+.dt-agent { margin-left: auto; color: var(--marble-dim); }
+.dt-title {
+  margin: 2px 0 0; font: 500 15px/1.4 var(--body); color: var(--marble); overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.dt-meta { display: flex; flex-wrap: wrap; gap: 3px 8px; margin: 0; font: 11.5px var(--mono); color: var(--vein-text); }
+.dt-sep { color: var(--muted); }
+.dt-parent { margin: 0; font-size: 12px; color: var(--vein-text); }
+.dt-parent .linkbtn { margin: 0; font-size: 12px; font-family: var(--body); }
+.dt-head .now { margin: 0; font: 12px var(--mono); color: var(--patina); }
+.dt-tree summary { cursor: pointer; font: 10.5px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--vein-text); }
+.dt-tree summary:hover { color: var(--marble-dim); }
+.dt-tree .tree { margin-top: 2px; }
+
+.dt-body { min-height: 0; overflow-y: auto; padding: 6px 22px 24px; }
+.dt-body:focus { outline: none; }
+.dt-item { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
+.dt-older + .dt-item, .dt-body > .dt-item:first-child { border-top: 0; }
+.dt-label { display: flex; flex-direction: column; gap: 2px; padding-top: 2px; font: 10.5px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--vein-text); }
+.dt-label time { letter-spacing: 0; text-transform: none; }
+.dt-label .live { color: var(--patina); }
+.dt-content { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.dt-text { font-size: 13.5px; line-height: 1.5; color: var(--marble); white-space: pre-wrap; overflow-wrap: anywhere; }
+.dt-text.md { white-space: normal; }
+.dt-item.user .dt-content { padding: 8px 12px; border-radius: 10px; background: var(--raised); }
+.dt-item.user .rq { margin: 0 0 2px; }
+.dt-older { margin: 4px 0 6px; text-align: center; }
+.dt-empty { max-width: 440px; margin: 28px auto; text-align: center; font-size: 13px; color: var(--vein-text); }
+.dt-warn { margin: 6px 0; font: 11px var(--mono); color: var(--amphora); }
+.dt-thinking { margin: 8px 0 0 64px; font: 12px var(--mono); color: var(--patina); }
+
+/* ---------- B3: a tool call that opens to its full input and result ---------- */
+.call { min-width: 0; }
+.call-head {
+  display: grid; grid-template-columns: 10px 38px auto minmax(0, 1fr) auto; gap: 8px; align-items: baseline;
+  width: 100%; margin: 0; padding: 3px 6px; border: 0; border-radius: 6px; background: none; text-align: left; cursor: pointer;
+  font: 11.5px var(--mono); color: var(--vein-text);
+}
+.call-head:hover { background: var(--slate-2); }
+.call.open > .call-head { background: var(--slate-2); }
+.call-name { color: var(--marble); white-space: nowrap; }
+.call-args { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.call-st { white-space: nowrap; }
+.call-st.ok { color: var(--marble-dim); }
+.call-st.err { color: var(--amphora); }
+.call-st.run { color: var(--patina); }
+.call-body { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 8px 16px; }
+.call-note { margin: 0; font: 11px var(--mono); color: var(--vein-text); }
+.cblock-head { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; font: 10px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--vein-text); }
+.cblock-len { margin-left: auto; letter-spacing: 0; text-transform: none; }
+.cblock.bad .cblock-head > span:first-child { color: var(--amphora); }
+.cpre {
+  margin: 0; padding: 8px 10px; max-height: 340px; overflow: auto; border-radius: 6px; background: var(--well);
+  font: 12px/1.45 var(--mono); color: var(--marble-dim); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text;
+}
+.copy { padding: 1px 8px; border: 1px solid var(--vein); border-radius: 6px; background: none; cursor: pointer; font: 10.5px var(--mono); letter-spacing: 0; text-transform: none; color: var(--marble-dim); }
+.copy:hover { background: var(--slate-2); color: var(--marble); }
+.copy.done { border-color: var(--patina-soft); color: var(--patina); }
+.tools .call-head { padding: 2px 4px; font-size: 11px; }
+
+/* ---------- B4: sub-agent tree on Activity cards (and in the B1 header) ---------- */
+.tree { margin: 8px 0 0; }
+.tree-sum { margin: 0 0 2px; font: 10.5px var(--mono); color: var(--vein-text); }
+.tree-sum .live { color: var(--patina); }
+.node { margin: 6px 0 0 2px; padding-left: 10px; border-left: 1px solid var(--vein); font-size: 12.5px; }
+.node.here { border-left-color: var(--marble-dim); }
+.node.here > .node-line .node-goal { color: var(--marble); }
+.branch-kids { margin-left: 4px; }
+.node-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.node-goal {
+  flex: 1 1 auto; min-width: 0; padding: 0; border: 0; background: none; text-align: left; cursor: pointer;
+  font: inherit; color: var(--marble-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.node-goal:hover { color: var(--marble); text-decoration: underline; text-underline-offset: 2px; }
+.node-model { flex: none; font: 11px var(--mono); }
+.depth { flex: none; font: 10px var(--mono); color: var(--vein-text); }
+.node .nums { margin: 1px 0 0; font: 11px var(--mono); color: var(--vein-text); } /* also outside a .card (B1 header) */
+.node .now { margin: 2px 0 0; font: 12px var(--mono); color: var(--patina); }
+.branch { color: var(--marble-dim); }
+.retry-line { display: flex; flex-wrap: wrap; gap: 2px 12px; margin: 2px 0 0; }
+.retry { padding: 0; border: 0; background: none; cursor: pointer; text-align: left; font: 11px var(--mono); color: var(--gilt); }
+.retry:hover { text-decoration: underline; text-underline-offset: 2px; }
+.card-links { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; }
+
+/* ---------- A13: role and OMH provenance chips ---------- */
+.sa-lbl {
+  flex: none; padding: 0 6px; border: 1px solid var(--vein); border-radius: 6px; white-space: nowrap;
+  font: 500 9.5px/15px var(--mono); letter-spacing: 0.03em; color: var(--marble-dim);
+}
+.sa-lbl.omh { border-color: var(--edge-2); background: var(--slate-2); color: var(--marble); }
+
+/* ---------- B2: running right now, on top of Activity ---------- */
+.runnow { margin: 0 0 14px; border: 1px solid var(--vein); border-radius: 10px; background: var(--slate-0); }
+.runnow.busy { border-color: var(--patina-soft); }
+.runnow-head {
+  display: flex; justify-content: space-between; align-items: baseline; width: 100%; padding: 8px 12px;
+  border: 0; background: none; cursor: pointer; text-align: left;
+  font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--vein-text);
+}
+.runnow-head:hover { color: var(--marble-dim); }
+.runnow-head .live { color: var(--patina); }
+.runnow-head .chev { display: inline-block; width: 12px; margin-right: 4px; font-family: var(--mono); }
+.run-list { display: flex; flex-direction: column; padding: 0 6px 6px; }
+.run-row {
+  display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 10px; align-items: center;
+  width: 100%; padding: 6px; border: 0; border-radius: 7px; background: none; text-align: left; cursor: pointer;
+}
+.run-row:hover { background: var(--slate); }
+.run-row.sub { padding-left: calc(6px + var(--depth, 1) * 14px); }
+.run-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--patina); animation: breathe 1.8s ease-in-out infinite; }
+.run-main { display: flex; flex-direction: column; min-width: 0; }
+.run-title { font-size: 12.5px; color: var(--marble); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.run-row.sub .run-title { color: var(--marble-dim); }
+.run-where { color: var(--vein-text); }
+.run-now { display: flex; align-items: baseline; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap; font: 11px var(--mono); color: var(--patina); }
+.run-dur { font: 11px var(--mono); color: var(--marble-dim); }
+.run-empty { margin: 0; padding: 0 12px 10px; font-size: 12px; color: var(--vein-text); }
+
+/* ---------- F2: the prompt's Telegram context, folded ---------- */
+.ask-wrap { margin: 6px 0 0; }
+.card .ask-wrap .ask { margin: 0; }
+.pctx { margin-top: 4px; }
+.pctx-chip {
+  padding: 0 8px; border: 1px dashed var(--vein); border-radius: 9px; background: none; cursor: pointer;
+  font: 10.5px/17px var(--mono); color: var(--vein-text);
+}
+.pctx-chip:hover, .pctx-chip[aria-expanded="true"] { border-color: var(--vein-text); color: var(--marble-dim); }
+.pctx-box {
+  display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow: auto; margin-top: 5px; padding: 6px 9px;
+  border-left: 2px solid var(--vein); border-radius: 4px; background: rgb(var(--hi-rgb) / 0.03);
+  font: 11.5px/1.45 var(--mono); color: var(--marble-dim); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.pctx-line { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 8px; }
+.pctx-kind { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--vein-text); }
+.msg .pctx { margin: 2px 0 2px; }
+/* a reply quote inside a prompt: like the Telegram reply quotes (messages.css), but nothing to jump to */
+.rq.static { cursor: default; }
+.rq.static:hover { background: rgb(var(--hi-rgb) / 0.045); }
+
+@media (prefers-reduced-motion: reduce) { .run-dot { animation: none; } }

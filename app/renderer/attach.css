@@ -1,0 +1,51 @@
+/* File attachments in the composer (attach.js, A7): the clip button, the tray of staged files with
+   upload progress, the drop overlay on the chat column. */
+.attach-btn {
+  flex: none; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0;
+  border-radius: 8px; background: none; color: var(--marble-dim); cursor: pointer;
+}
+.attach-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.attach-btn:hover:not(:disabled) { background: var(--slate-2); color: var(--marble); }
+.attach-btn:focus-visible, .send:focus-visible { outline: 2px solid var(--patina); outline-offset: 1px; }
+.attach-btn:disabled { opacity: 0.45; cursor: default; }
+
+.attach-tray { display: flex; flex-direction: column; gap: 8px; margin: 12px 16px 0; }
+.attach-tray[hidden] { display: none; }
+.attach-tray.note { flex-direction: row; align-items: center; gap: 10px; padding: 7px 8px 7px 12px; border-left: 2px solid var(--gilt); border-radius: 6px; background: var(--slate); }
+.att-msg { flex: 1; min-width: 0; font-size: 12.5px; color: var(--marble-dim); }
+.att-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.att {
+  display: flex; align-items: center; gap: 8px; flex: 0 1 280px; min-width: 160px; max-width: 100%; padding: 4px;
+  border: 1px solid var(--vein); border-radius: 9px; background: var(--slate);
+}
+.att.sending { border-color: var(--patina-soft); }
+.att.failed { border-color: var(--amphora-edge-2); }
+.att-thumb { flex: none; width: 40px; height: 40px; object-fit: cover; border-radius: 6px; background: var(--basalt); }
+.att-ico { flex: none; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 6px; background: var(--basalt); color: var(--vein-text); font-size: 18px; }
+.att-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.att-name { font-size: 12.5px; color: var(--marble); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.att-text { color: var(--marble-dim); font-size: 12px; }
+.att-text summary { cursor: pointer; }
+.att-text pre { max-height: 140px; overflow: auto; white-space: pre-wrap; word-break: break-word; font: inherit; }
+.att-meta { font: 11px var(--mono); color: var(--vein-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.att-risky { color: var(--gilt); }
+.att-bar { display: block; height: 3px; margin-top: 3px; border-radius: 2px; background: var(--vein); overflow: hidden; }
+.att-fill { display: block; height: 100%; width: 0; background: var(--patina); transition: width 0.2s linear; }
+.att-x, .att-cancel { flex: none; align-self: center; min-width: 28px; height: 28px; padding: 0 8px; border: 0; border-radius: 6px; background: none; color: var(--vein-text); cursor: pointer; }
+.att-cancel { font: 11px var(--mono); border: 1px solid var(--vein); }
+.att-x:hover:not(:disabled), .att-cancel:hover:not(:disabled) { background: var(--slate-2); color: var(--marble); }
+.att-x:disabled, .att-cancel:disabled { opacity: 0.5; cursor: default; }
+.att-opt { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--marble-dim); cursor: pointer; }
+.att-opt input { margin: 0; accent-color: var(--patina); }
+
+.drop-zone {
+  position: absolute; inset: 64px 12px 12px; z-index: 30; display: grid; place-items: center; pointer-events: none;
+  border: 2px dashed var(--patina); border-radius: 12px; background: rgb(var(--obsidian-rgb) / 0.82);
+  font-family: var(--display); font-size: 20px; color: var(--marble);
+}
+.drop-zone[hidden] { display: none; }
+.drop-zone.off { border-color: var(--amphora); color: var(--marble-dim); }
+
+@media (prefers-reduced-motion: reduce) {
+  .att-fill { transition: none; }
+}

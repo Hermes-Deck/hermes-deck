@@ -1,0 +1,35 @@
+"use strict";
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { newer, createUpdateNotice } = require("../main/updates");
+
+test("update notices compare versions and persist once across reconnects and upgrades", () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "deck-update-")), "updates.json");
+  const notices = [];
+  const notify = (key, vars) => { notices.push([key, vars.version]); return true; };
+  const first = createUpdateNotice({ file, version: "0.1.1", legacyProfile: true, notify });
+  assert.deepEqual(notices, [["updates.installed", "0.1.1"]]);
+  assert.equal(first.available("0.1.2"), true);
+  assert.equal(first.available("0.1.2"), false);
+  const restarted = createUpdateNotice({ file, version: "0.1.1", notify });
+  assert.equal(restarted.available("0.1.2"), false);
+  assert.equal(restarted.available("0.1.0"), false);
+  assert.equal(restarted.available("<script>"), false);
+  assert.equal(restarted.available("0.2.0"), true);
+  createUpdateNotice({ file, version: "0.2.0", notify });
+  assert.deepEqual(notices.at(-1), ["updates.installed", "0.2.0"]);
+  const before = notices.length;
+  createUpdateNotice({ file, version: "0.2.0", notify });
+  assert.equal(notices.length, before);
+  assert.equal(newer("0.10.0", "0.9.9"), true);
+  assert.equal(newer("1.0.0-beta", "0.9.9"), false);
+  const freshFile = file + ".fresh";
+  createUpdateNotice({ file: freshFile, version: "0.2.0", notify });
+  assert.equal(notices.length, before, "fresh installs are not announced as upgrades");
+  const muted = createUpdateNotice({ file: file + ".muted", version: "0.1.1", notify: () => false });
+  assert.equal(muted.available("0.1.2"), false);
+  assert.equal(JSON.parse(fs.readFileSync(file + ".muted")).notified, "");
+});

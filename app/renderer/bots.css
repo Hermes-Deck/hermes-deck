@@ -1,0 +1,62 @@
+/* Botlar: the Hermes rail's bot mode (renderer/bots.js) and the faces from renderer/botface.js.
+   Faces keep Hermes Desktop's own colours (they are the bot's identity); everything around them uses the
+   Deck's tokens. */
+
+/* rail top: Oturumlar | Botlar beside the fold button (the rail is not a window drag region; no-drag
+   keeps it clickable even if a drag region ever covers it) */
+.rail-top.has-seg { justify-content: space-between; align-items: center; gap: 8px; padding: 4px 2px 0 8px; }
+.seg { display: inline-flex; border: 1px solid var(--vein); border-radius: 8px; overflow: hidden; -webkit-app-region: no-drag; }
+.seg button { border: 0; background: none; color: var(--vein-text); font: 11px var(--mono); padding: 4px 11px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--vein); }
+.seg button:hover { color: var(--marble); }
+.seg button[aria-pressed="true"] { background: var(--slate-2); color: var(--marble); }
+.seg button:focus-visible { outline: 2px solid var(--patina); outline-offset: -2px; }
+body.rail-compact .seg { display: none; }
+body.rail-compact .rail-top.has-seg { justify-content: center; padding-left: 2px; }
+.rail-top .rail-toggle { -webkit-app-region: no-drag; }
+
+/* rows */
+.eyebrow.bots-head { margin-top: 12px; }
+.rail-note.bad { color: var(--amphora); }
+.row.bot .meta .badge { margin-top: 1px; }
+.bot-fold {
+  display: flex; align-items: center; gap: 4px; width: calc(100% - 64px); margin: 0 8px 2px 56px; padding: 3px 6px;
+  border: 0; border-radius: 6px; background: none; cursor: pointer; text-align: left;
+  font: 11px var(--mono); color: var(--vein-text);
+}
+.bot-fold:hover { background: var(--slate); color: var(--marble-dim); }
+.bot-fold .chev { display: inline-block; width: 12px; }
+.row.bot + .bot-fold { margin-top: -2px; }
+.bot-fold ~ .row.hrow.child { padding-left: 34px; }
+body.rail-compact .bot-fold { display: none; }
+
+/* the avatar box: a face (SVG), Desktop's 160 px raster of a face, or a real picture */
+.botav { position: relative; display: grid; place-items: center; width: var(--s, 36px); height: var(--s, 36px); flex: none; }
+.botav .botface { display: block; width: 100%; height: 100%; overflow: visible; }
+.botav img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.botav.photo img { border-radius: 22%; }
+.botav.raster img { object-fit: contain; }
+.chat-head .botav { margin-right: 2px; }
+.empty.bot-empty { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.empty.bot-empty .botav { margin-bottom: 6px; }
+
+/* face motion, CSS only: a blink now and then; while the bot works, the three dots pulse */
+.botface .bf-shut { opacity: 0; }
+.botface .bf-dots circle { opacity: 0; }
+.botface .bf-open { animation: bf-blink 6.4s infinite; }
+.botface .bf-shut { animation: bf-shut 6.4s infinite; }
+.botface.working .bf-open, .botface.working .bf-shut { animation-duration: 2.9s; }
+.botface.working .bf-dots circle { animation: bf-dot 1.2s ease-in-out infinite; }
+.botface.working .bf-dots circle:nth-child(2) { animation-delay: 0.2s; }
+.botface.working .bf-dots circle:nth-child(3) { animation-delay: 0.4s; }
+@keyframes bf-blink { 0%, 95%, 100% { opacity: 1; } 96.5%, 98.5% { opacity: 0; } }
+@keyframes bf-shut { 0%, 95%, 100% { opacity: 0; } 96.5%, 98.5% { opacity: 1; } }
+@keyframes bf-dot { 0%, 100% { opacity: 0.2; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .botface .bf-open, .botface .bf-shut { animation: none; }
+  .botface.working .bf-dots circle { animation: none; opacity: 0.6; }
+}
+
+/* Rutinler (right panel) */
+.card.routine .ask { font-size: 12.5px; }
+.card.routine .nums.err { color: var(--amphora); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

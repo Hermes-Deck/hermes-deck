@@ -1,0 +1,665 @@
+/* Hermes Deck — tokens.
+   Ground is basalt and obsidian; text is marble. Three antique materials carry meaning and nothing else:
+   patina (bronze verdigris) = live/running, gilt = warning/cost, amphora red = failure. */
+:root {
+  --obsidian: #0d0e10;
+  --basalt: #15171a;
+  --slate: #1d2024;
+  --slate-2: #262a2f;
+  --vein: #2c3035;
+  --vein-text: #8b9098;
+  --marble: #e8e4dc;
+  --marble-dim: #b9b5ae;
+  --patina: #6fb3a6;
+  --patina-soft: #2c4a45;
+  --gilt: #cda65a;
+  --amphora: #c96a4e;
+  /* the same materials as channels, for translucent washes: rgb(var(--patina-rgb) / 0.1) */
+  --patina-rgb: 111 179 166;
+  --gilt-rgb: 205 166 90;
+  --amphora-rgb: 201 106 78;
+  --obsidian-rgb: 13 14 16; /* scrims over the page or a picture */
+  --hi-rgb: 255 255 255; /* faint lift on the ground: white on a dark theme, ink on a light one */
+  --shade-rgb: 0 0 0; /* drop shadows */
+  /* surfaces between the main steps */
+  --well: #101214; /* sunken: code, logs, empty video */
+  --slate-0: #17191c;
+  --raised: #2b3036; /* own messages, a user's turn */
+  --hover: #31363c;
+  --hover-2: #2d3237;
+  --line: #202327; /* row rules inside a pane */
+  --track: #1f2226;
+  --scroll: #2a2e33;
+  --edge: #3a3f45; /* a firmer border than vein */
+  --edge-2: #4a5058;
+  --muted: #4a4f56; /* separators set as text */
+  --faint: #5f646b;
+  /* hover steps and text tints of the three materials */
+  --patina-hover: #82c2b5;
+  --amphora-hover: #d97b5f;
+  --amphora-text: #eab8a9;
+  --marble-hover: #f4f1ea;
+  --link: #9fcdc4;
+  /* tinted borders and washes follow whatever the theme sets above */
+  --gilt-edge: color-mix(in srgb, var(--gilt) 30%, var(--basalt));
+  --gilt-wash: color-mix(in srgb, var(--gilt) 5%, var(--basalt));
+  --amphora-edge: color-mix(in srgb, var(--amphora) 30%, var(--basalt));
+  --amphora-edge-2: color-mix(in srgb, var(--amphora) 38%, var(--basalt));
+  --who0-rgb: 143 179 232;
+  --lichen-rgb: 127 176 138;
+
+  --display: "Marcellus", Georgia, serif;
+  --body: "Atkinson Hyperlegible Next", "Segoe UI", system-ui, sans-serif;
+  --mono: "Atkinson Hyperlegible Mono", ui-monospace, Consolas, monospace;
+  --r: 8px;
+  --top: 34px;
+}
+
+/* Themes (Settings > Appearance). Token names are roles, not colours: a theme only re-points them.
+   basalt is :root above; marble is the light one, aegean a navy dark. main/theme.js sets data-theme. */
+:root[data-theme="marble"] {
+  color-scheme: light;
+  --obsidian: #f3f0ea;
+  --basalt: #ebe7df;
+  --slate: #e2ddd3;
+  --slate-2: #d8d2c6;
+  --vein: #cdc6b8;
+  --vein-text: #67625a;
+  --marble: #1d2024;
+  --marble-dim: #45423d;
+  --patina: #2b7266;
+  --patina-soft: #c9e0d9;
+  --gilt: #7d5a12;
+  --amphora: #a5432a;
+  --patina-rgb: 43 114 102;
+  --gilt-rgb: 125 90 18;
+  --amphora-rgb: 165 67 42;
+  --obsidian-rgb: 243 240 234;
+  --hi-rgb: 40 32 20;
+  --shade-rgb: 60 48 30;
+  --well: #e7e2d8;
+  --slate-0: #efebe4;
+  --raised: #dbd5c9;
+  --hover: #d2cbbe;
+  --hover-2: #d8d1c5;
+  --line: #ddd7cc;
+  --track: #ddd7cc;
+  --scroll: #c8c1b3;
+  --edge: #bfb7a8;
+  --edge-2: #ada597;
+  --muted: #9d978c;
+  --faint: #857f75;
+  --patina-hover: #22645a;
+  --amphora-hover: #8f3822;
+  --amphora-text: #8f3822;
+  --marble-hover: #33373c;
+  --link: #24685c;
+  --who-0: #2f5f9e;
+  --who-1: #4f4cad;
+  --who-2: #7445a3;
+  --who-3: #94398a;
+  --who-4: #a23a58;
+  --who-5: #4a7420;
+  --who0-rgb: 47 95 158;
+  --lichen-rgb: 74 116 32;
+}
+:root[data-theme="aegean"] {
+  --obsidian: #0a1020;
+  --basalt: #0f172a;
+  --slate: #16203a;
+  --slate-2: #1e2a48;
+  --vein: #26355a;
+  --vein-text: #8995b2;
+  --marble: #e7e9f0;
+  --marble-dim: #b2b9ca;
+  --patina: #6cc3b6;
+  --patina-soft: #1d4a4d;
+  --gilt: #d8b264;
+  --amphora: #dc785c;
+  --patina-rgb: 108 195 182;
+  --gilt-rgb: 216 178 100;
+  --amphora-rgb: 220 120 92;
+  --obsidian-rgb: 10 16 32;
+  --well: #0b1222;
+  --slate-0: #121b31;
+  --raised: #22304f;
+  --hover: #2a3859;
+  --hover-2: #25324f;
+  --line: #19233b;
+  --track: #1a2440;
+  --scroll: #27334f;
+  --edge: #34446b;
+  --edge-2: #45567e;
+  --muted: #4c5879;
+  --faint: #5e6b8b;
+  --patina-hover: #88d0c5;
+  --amphora-hover: #e68d73;
+  --amphora-text: #f2c1b1;
+  --marble-hover: #ffffff;
+  --link: #a2d6ce;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--obsidian);
+  color: var(--marble);
+  font: 13.5px/1.45 var(--body);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; color: inherit; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+:focus-visible { outline: 2px solid var(--patina); outline-offset: 2px; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--scroll); border-radius: 6px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- top bar (window drag region) ---------- */
+.topbar {
+  height: var(--top);
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 0 150px 0 16px; /* right side: Windows caption buttons */
+  border-bottom: 1px solid var(--vein);
+  -webkit-app-region: drag;
+  user-select: none;
+}
+body.mac .topbar { padding-left: 84px; padding-right: 16px; }
+.wordmark { font-family: var(--display); font-size: 15px; letter-spacing: 0.08em; }
+.pulse-sum { font: 11.5px var(--mono); color: var(--marble-dim); }
+.pulse-sum .live { color: var(--patina); }
+.conn { margin-left: auto; display: flex; gap: 14px; font: 11px var(--mono); color: var(--vein-text); }
+.conn .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: var(--vein-text); vertical-align: 1px; }
+.conn .ok .dot { background: var(--patina); }
+.conn .warn .dot { background: var(--gilt); }
+.conn .bad .dot { background: var(--amphora); }
+
+/* ---------- three columns ---------- */
+.shell {
+  display: grid;
+  /* rail | gutter | chat | gutter | panel; widths come from the drag gutters (--rail-w / --panel-w) */
+  grid-template-columns: var(--rail-w, 268px) 6px minmax(360px, 1fr) 6px var(--panel-w, 560px);
+  grid-template-rows: minmax(0, 1fr); /* columns never grow past the window; each scrolls inside */
+  height: calc(100vh - var(--top));
+}
+
+/* ---------- rail ---------- */
+.rail { background: var(--basalt); border-right: 1px solid var(--vein); overflow-y: auto; padding: 6px 8px 16px; }
+.eyebrow {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin: 14px 8px 6px; font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--vein-text);
+}
+.row {
+  display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; gap: 10px; align-items: center;
+  width: 100%; padding: 8px; border: 0; border-radius: var(--r); background: transparent; text-align: left; cursor: pointer;
+}
+.row:hover { background: var(--slate); }
+.row[aria-current="true"] { background: var(--slate-2); }
+.row .who { display: flex; flex-direction: column; min-width: 0; }
+.row .name { font-weight: 500; }
+.row .sub { font-size: 12px; color: var(--marble-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .sub.live { color: var(--patina); font-family: var(--mono); font-size: 11.5px; }
+.row .meta { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font: 10.5px var(--mono); color: var(--vein-text); }
+.badge { min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--marble); color: var(--obsidian); font: 500 10.5px/18px var(--mono); text-align: center; }
+.row.topic { grid-template-columns: 18px minmax(0, 1fr) auto; padding: 6px 8px; }
+.row.topic .hash { color: var(--vein-text); font-family: var(--mono); }
+.row.topic .name { font-weight: 400; color: var(--marble-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row.topic[aria-current="true"] .name, .row.topic.unread .name { color: var(--marble); }
+.row.topic .livedot { width: 7px; height: 7px; border-radius: 50%; background: var(--patina); }
+.rail-note { margin: 10px 8px; font-size: 12px; color: var(--vein-text); }
+
+/* ---------- the coin: an agent's medallion; its rim is the context gauge ---------- */
+.coin { position: relative; display: inline-block; width: var(--s, 36px); height: var(--s, 36px); flex: none; }
+.coin .rim { position: absolute; inset: 0; transform: rotate(-90deg); }
+.coin .rim circle { fill: none; stroke-width: 2; }
+.coin .rim .track { stroke: var(--vein); }
+.coin .rim .arc { stroke: var(--marble-dim); stroke-linecap: round; }
+.coin .rim .arc.warn { stroke: var(--gilt); }
+.coin .rim .arc.bad { stroke: var(--amphora); }
+.coin .face {
+  position: absolute; inset: 5px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--slate-2); box-shadow: inset 0 0 0 1px var(--edge);
+  font-family: var(--display); font-size: calc(var(--s, 36px) * 0.42); line-height: 1; color: var(--marble);
+}
+.coin.live::after {
+  content: ""; position: absolute; inset: -3px; border-radius: 50%;
+  box-shadow: 0 0 0 1px rgb(var(--patina-rgb) / 0.55), 0 0 14px rgb(var(--patina-rgb) / 0.35);
+  animation: breathe 2.6s ease-in-out infinite;
+}
+.coin .subs {
+  position: absolute; right: -6px; bottom: -4px; padding: 0 4px; border-radius: 7px;
+  background: var(--patina); color: var(--obsidian); font: 500 9.5px/14px var(--mono);
+}
+@keyframes breathe { 50% { opacity: 0.35; } }
+
+/* ---------- chat ---------- */
+.chat { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto auto; min-width: 0; min-height: 0; }
+.chat-head { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--vein); min-height: 64px; }
+.chat-head .title { font-family: var(--display); font-size: 20px; letter-spacing: 0.02em; }
+.chat-head .subline { font: 11.5px var(--mono); color: var(--vein-text); }
+.chat-head .subline .typing { color: var(--patina); }
+/* column-reverse: the scroll origin is the newest message, so the view starts and stays at the bottom
+   without any JS timing (late font swaps, growing status cards). */
+.msgs { overflow-y: auto; padding: 18px 22px 22px; display: flex; flex-direction: column-reverse; }
+/* chat wallpaper (app.js applyWallpaper): the picture stays put while the messages scroll over it, under a veil of
+   the theme's ground so every theme keeps its contrast */
+.msgs.wall {
+  background: linear-gradient(color-mix(in srgb, var(--obsidian) var(--wall-dim, 55%), transparent), color-mix(in srgb, var(--obsidian) var(--wall-dim, 55%), transparent)),
+    var(--wall-img) center / cover no-repeat;
+}
+.msgs-inner { display: flex; flex-direction: column; gap: 8px; flex: 1 0 auto; }
+.day { align-self: center; margin: 10px 0 4px; font: 10.5px var(--mono); color: var(--vein-text); letter-spacing: 0.06em; text-transform: uppercase; }
+.msg {
+  align-self: flex-start; max-width: min(80%, 700px);
+  padding: 8px 12px 6px; border-radius: 12px 12px 12px 4px; background: var(--slate);
+  overflow-wrap: anywhere;
+}
+.msg.out { align-self: flex-end; background: var(--raised); border-radius: 12px 12px 4px 12px; }
+.msg .who { font-size: 11.5px; font-weight: 700; color: var(--marble-dim); margin-bottom: 2px; }
+.msg .text { white-space: pre-wrap; font-size: 14px; line-height: 1.5; }
+.msg .media { font: 11.5px var(--mono); color: var(--vein-text); }
+.msg .t { display: block; margin-top: 3px; text-align: right; font: 10px var(--mono); color: var(--vein-text); }
+.msg code { font: 12.5px var(--mono); background: var(--well); padding: 1px 4px; border-radius: 4px; }
+.msg pre { font: 12.5px/1.45 var(--mono); background: var(--well); padding: 8px 10px; border-radius: 6px; overflow-x: auto; white-space: pre; margin: 4px 0; }
+.msg blockquote { margin: 4px 0; padding-left: 9px; border-left: 2px solid var(--vein); color: var(--marble-dim); }
+.msg .lnk { color: var(--link); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.msg .spoiler { background: var(--vein-text); color: transparent; border-radius: 3px; }
+.msg .spoiler:hover { background: transparent; color: inherit; }
+.empty { margin: auto; max-width: 380px; text-align: center; color: var(--vein-text); font-size: 13px; }
+.empty strong { display: block; color: var(--marble-dim); font-weight: 500; margin-bottom: 4px; }
+
+.strip {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px;
+  min-height: 34px; padding: 7px 20px; border-top: 1px solid var(--vein); background: var(--basalt);
+  font: 11.5px var(--mono); color: var(--marble-dim);
+}
+.strip .now { color: var(--patina); }
+.strip .now::before {
+  content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 8px; border-radius: 50%;
+  background: var(--patina); vertical-align: 1px; animation: breathe 1.8s ease-in-out infinite;
+}
+.strip .now-plain { color: var(--patina); }
+.strip .warn { color: var(--gilt); }
+.strip .bad { color: var(--amphora); }
+.strip .quiet { color: var(--vein-text); }
+
+/* The composer is one card: the text on top, a slim toolbar (tools left, Send right) inside the same border.
+   Spacing is on a 4/8px grid; the focus ring and Send share the one accent (patina). */
+.composer {
+  position: relative; display: flex; flex-direction: column; margin: 12px 16px 0;
+  background: var(--slate); border: 1px solid var(--vein); border-radius: 12px;
+}
+.composer:focus-within { border-color: var(--patina); box-shadow: 0 0 0 1px rgb(var(--patina-rgb) / 0.45); }
+.composer textarea {
+  display: block; width: 100%; resize: none; min-height: 44px; max-height: var(--composer-max, 220px); padding: 12px 14px 4px;
+  background: none; color: var(--marble); border: 0; border-radius: 12px 12px 0 0; outline: none; overflow-y: auto;
+  font: 14px/1.4 var(--body); scrollbar-gutter: stable;
+}
+/* a scroll cue: the text fades under the card's top edge once it scrolls */
+.composer.scrolled::before {
+  content: ""; position: absolute; z-index: 1; left: 1px; right: 12px; top: 1px; height: 16px; pointer-events: none;
+  border-radius: 11px 11px 0 0; background: linear-gradient(var(--slate), transparent);
+}
+.composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px 8px; }
+.composer-tools { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.send {
+  flex: none; min-width: 64px; height: 32px; padding: 0 16px; border: 0; border-radius: 8px;
+  background: var(--patina); color: var(--obsidian); font: 700 13px var(--body); cursor: pointer;
+}
+.send:hover:not(:disabled) { background: var(--patina-hover); }
+.send:disabled { background: var(--slate-2); color: var(--vein-text); cursor: default; }
+.composer-note { margin: 4px 18px 10px; min-height: 16px; font: 11px var(--mono); color: var(--vein-text); }
+.composer-note.bad { color: var(--amphora); }
+.takeover-button { min-height: 32px; padding: 4px 10px; font: inherit; color: var(--ink); background: var(--basalt); border: 1px solid var(--vein); border-radius: 6px; cursor: pointer; }
+.takeover-button:focus-visible { outline: 2px solid var(--patina); outline-offset: 2px; }
+.takeover-button:disabled { opacity: .6; cursor: default; }
+
+/* ---------- right panel ---------- */
+.panel { background: var(--basalt); border-left: 1px solid var(--vein); display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; }
+.tabs { display: flex; gap: 2px; padding: 6px 10px 0; border-bottom: 1px solid var(--vein); }
+.tab {
+  padding: 8px 10px 9px; border: 0; border-bottom: 2px solid transparent; background: none; cursor: pointer;
+  color: var(--vein-text); font-size: 12.5px; font-weight: 500;
+}
+.tab[aria-selected="true"] { color: var(--marble); border-bottom-color: var(--marble); }
+.tab .later { margin-left: 5px; font: 9.5px var(--mono); color: var(--faint); }
+.pane { overflow-y: auto; padding: 14px 14px 28px; }
+.pane-title { margin: 0 0 12px; font-size: 12px; color: var(--vein-text); }
+.pane-title b { color: var(--marble); font-weight: 500; }
+.section-h { margin: 18px 2px 8px; font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--vein-text); }
+.section-h:first-child { margin-top: 0; }
+
+.card { background: var(--slate); border: 1px solid transparent; border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+.card.mine { border-color: var(--patina-soft); }
+.card-head { display: flex; align-items: baseline; gap: 10px; font: 11px var(--mono); color: var(--vein-text); }
+.card-head .model { color: var(--marble-dim); }
+.card-head .when { margin-left: auto; }
+.state { text-transform: uppercase; letter-spacing: 0.06em; font: 500 10.5px var(--mono); }
+.state.running { color: var(--patina); }
+.state.idle, .state.stopped { color: var(--vein-text); }
+.state.done { color: var(--marble-dim); }
+.state.failed { color: var(--amphora); }
+.state.stale { color: var(--gilt); }
+.card .ask { margin: 6px 0 0; color: var(--marble); font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.card .now { margin: 6px 0 0; font: 12px var(--mono); color: var(--patina); }
+.card .nums { margin: 6px 0 0; font: 11px var(--mono); color: var(--vein-text); }
+.card .nums .warn { color: var(--gilt); }
+.linkbtn { margin-top: 6px; padding: 0; border: 0; background: none; cursor: pointer; font: 11px var(--mono); color: var(--marble-dim); text-decoration: underline; text-underline-offset: 2px; }
+.kids { margin: 8px 0 0 4px; padding-left: 10px; border-left: 1px solid var(--vein); display: flex; flex-direction: column; gap: 6px; }
+.kid { font-size: 12.5px; }
+.kid .line { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.kid .goal { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; color: var(--marble-dim); }
+.kid .nums { margin: 1px 0 0; }
+.tools { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; }
+.tool { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 8px; font: 11px var(--mono); color: var(--vein-text); }
+.tool .tname { color: var(--marble-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tool .ok { color: var(--marble-dim); }
+.tool .err { color: var(--amphora); }
+.tool .run { color: var(--patina); }
+
+.bar { height: 6px; border-radius: 3px; background: var(--vein); overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--marble-dim); }
+.bar > i.warn { background: var(--gilt); }
+.bar > i.bad { background: var(--amphora); }
+.section-bar { display: flex; align-items: center; gap: 10px; margin: 18px 2px 8px; }
+.section-bar:first-child { margin-top: 0; }
+.section-bar .section-h { margin: 0; flex: 1; }
+.quota-refresh { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 6px; border: 1px solid var(--line, rgba(255,255,255,.14)); background: transparent; color: var(--vein-text); font: 11px var(--mono); cursor: pointer; }
+.quota-refresh:hover:not([disabled]) { color: var(--text, inherit); border-color: var(--vein-text); }
+.quota-refresh[disabled] { cursor: progress; opacity: .8; }
+.quota-refresh.is-busy .quota-refresh-ic { display: inline-block; animation: quota-spin 1s linear infinite; }
+.quota-note-inline { font: 10.5px var(--mono); color: var(--vein-text); }
+@keyframes quota-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .quota-refresh.is-busy .quota-refresh-ic { animation: none; } }
+.quota-note { margin: 0 2px 10px; font: 10.5px var(--mono); color: var(--vein-text); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.chip { padding: 1px 7px; border-radius: 10px; font: 10.5px var(--mono); border: 1px solid var(--vein); color: var(--vein-text); }
+.chip.ok { color: var(--patina); border-color: var(--patina-soft); }
+.chip.warn { color: var(--gilt); border-color: var(--gilt-edge); }
+.chip.bad { color: var(--amphora); border-color: var(--amphora-edge); }
+.cronbad { margin-top: 8px; font-size: 12px; color: var(--marble-dim); }
+.cronbad .err { display: block; font: 10.5px var(--mono); color: var(--amphora); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.svc { display: grid; grid-template-columns: minmax(0, 1fr) 84px 64px; gap: 8px; font: 11px var(--mono); color: var(--vein-text); padding: 2px; }
+.svc span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.svc .bad { color: var(--amphora); }
+
+table.tok { width: 100%; border-collapse: collapse; font: 11.5px var(--mono); }
+table.tok th { text-align: right; font-weight: 400; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--vein-text); padding: 4px 6px; border-bottom: 1px solid var(--vein); }
+table.tok th:first-child, table.tok td:first-child { text-align: left; }
+table.tok td { text-align: right; padding: 6px; color: var(--marble-dim); border-bottom: 1px solid var(--line); }
+table.tok td:first-child { color: var(--marble); font-family: var(--body); font-size: 12.5px; }
+.later-pane { max-width: 420px; margin: 40px auto; color: var(--vein-text); font-size: 13px; line-height: 1.6; }
+.later-pane h3 { font-family: var(--display); font-weight: 400; font-size: 18px; color: var(--marble); margin: 0 0 8px; }
+.muted { color: var(--vein-text); }
+
+@media (prefers-reduced-motion: reduce) {
+  .coin.live::after, .strip .now::before { animation: none; }
+}
+
+/* ---------- forms: first-run setup, login, settings ---------- */
+.setup { margin: auto; width: min(440px, 100%); padding: 24px 26px; background: var(--basalt); border: 1px solid var(--vein); border-radius: 14px; }
+.setup h2 { margin: 0 0 8px; font-family: var(--display); font-weight: 400; font-size: 22px; letter-spacing: 0.02em; }
+.setup .intro { margin: 0 0 16px; color: var(--marble-dim); font-size: 13px; line-height: 1.55; }
+.field { display: flex; flex-direction: column; gap: 5px; margin: 0 0 12px; }
+.flabel { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--vein-text); }
+.fhelp { font-size: 11.5px; color: var(--vein-text); }
+.field input, .field select {
+  padding: 9px 11px; border-radius: 8px; border: 1px solid var(--vein); background: var(--slate); color: var(--marble);
+  font: 14px var(--body);
+}
+.field input:focus, .field select:focus { outline: 2px solid rgb(var(--patina-rgb) / 0.55); outline-offset: 0; border-color: transparent; }
+.form-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.btn { padding: 8px 14px; border-radius: 9px; border: 1px solid var(--vein); background: var(--slate); color: var(--marble); font-weight: 500; cursor: pointer; }
+.btn:hover { background: var(--slate-2); }
+.btn.primary { background: var(--marble); color: var(--obsidian); border-color: var(--marble); font-weight: 700; }
+.btn.danger { background: var(--amphora); color: var(--obsidian); border-color: var(--amphora); font-weight: 700; }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.form-error { margin: 8px 0 0; color: var(--amphora); font-size: 12.5px; }
+.form-ok { margin: 0 0 8px; color: var(--patina); font-size: 12.5px; }
+.small { font-size: 12px; line-height: 1.5; }
+.pane .field input, .pane .field select { font-size: 13px; }
+.empty .form-actions { justify-content: center; }
+.flabel.code { text-transform: none; font-family: var(--mono); letter-spacing: 0.02em; }
+
+/* Telegram profile photo inside the coin; the rim stays the context gauge */
+.coin .face.photo { background: var(--obsidian); overflow: hidden; }
+.coin .face img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block; }
+
+/* ---------- resizable columns ---------- */
+.gutter { position: relative; cursor: col-resize; touch-action: none; background: var(--obsidian); }
+.gutter::after { content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 2px; background: transparent; transition: background 0.15s; }
+.gutter:hover::after, .gutter.dragging::after, .gutter:focus-visible::after { background: var(--patina); }
+.gutter:focus-visible { outline: none; }
+body.dragging-col, body.dragging-col * { cursor: col-resize !important; user-select: none; }
+
+/* ---------- collapsible rail sections + compact rail ---------- */
+.rail-top { display: flex; justify-content: flex-end; padding: 2px 2px 0; }
+.rail-toggle { border: 0; background: none; color: var(--vein-text); cursor: pointer; font: 14px var(--mono); padding: 4px 8px; border-radius: 6px; }
+.rail-toggle:hover { background: var(--slate); color: var(--marble); }
+button.eyebrow { width: calc(100% - 16px); border: 0; background: none; cursor: pointer; padding: 0; text-align: left; }
+button.eyebrow:hover { color: var(--marble-dim); }
+.eyebrow .chev { display: inline-block; width: 12px; margin-right: 4px; font-family: var(--mono); }
+body.rail-compact .rail { padding: 6px 4px 16px; overflow-x: hidden; }
+body.rail-compact .rail-top { justify-content: center; }
+body.rail-compact .eyebrow, body.rail-compact .rail-note, body.rail-compact .row.topic { display: none; }
+body.rail-compact .row { grid-template-columns: 38px; justify-content: center; padding: 8px 0; }
+body.rail-compact .row .who, body.rail-compact .row .meta { display: none; }
+
+/* ---------- right panel: collapsible; tabs never wrap ---------- */
+.chat { position: relative; }
+.tabs { overflow-x: auto; overflow-y: hidden; scrollbar-width: none; align-items: flex-end; }
+.tabs::-webkit-scrollbar { display: none; }
+.tab { white-space: nowrap; flex: none; }
+.panel-toggle { flex: none; align-self: center; margin-right: 4px; border: 0; background: none; cursor: pointer; color: var(--vein-text); font: 14px var(--mono); padding: 4px 8px; border-radius: 6px; }
+.panel-toggle:hover { background: var(--slate); color: var(--marble); }
+.panel-open { display: none; position: absolute; top: 18px; right: 14px; z-index: 2; border: 1px solid var(--vein); background: var(--basalt); color: var(--marble-dim); cursor: pointer; font: 14px var(--mono); padding: 4px 9px; border-radius: 8px; }
+.panel-open:hover { color: var(--marble); background: var(--slate); }
+body.panel-closed .panel-open { display: block; }
+body.panel-closed .shell { grid-template-columns: var(--rail-w, 268px) 6px minmax(360px, 1fr) 0 0; }
+body.panel-closed .panel, body.panel-closed #gutter-right { display: none; }
+body.panel-closed .chat-head { padding-right: 64px; }
+
+/* ---------- desktop shell (A9–A11): Settings → Masaüstü switches ---------- */
+.toggle { position: relative; display: grid; grid-template-columns: 36px minmax(0, 1fr); column-gap: 12px; align-items: start; margin: 0 2px 14px; cursor: pointer; }
+.form-actions + .toggle { margin-top: 20px; } /* C5: a switch right under a form's buttons (Telegram > read receipts) */
+.toggle input { position: absolute; left: 0; top: 0; width: 36px; height: 20px; margin: 0; opacity: 0; cursor: pointer; }
+.toggle .sw { position: relative; width: 36px; height: 20px; margin-top: 1px; border-radius: 10px; background: var(--slate-2); border: 1px solid var(--vein); transition: background 0.15s, border-color 0.15s; }
+.toggle .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--vein-text); transition: transform 0.15s, background 0.15s; }
+.toggle input:checked + .sw { background: var(--patina-soft); border-color: var(--patina); }
+.toggle input:checked + .sw::after { transform: translateX(16px); background: var(--patina); }
+.toggle input:focus-visible + .sw { outline: 2px solid var(--patina); outline-offset: 2px; }
+.toggle input:disabled { cursor: default; }
+.toggle input:disabled ~ * { cursor: default; opacity: 0.45; }
+.field:has(> select:disabled) > * { opacity: 0.45; } /* a select that depends on a switch above it (Pet görünümü) dims like a switch */
+.field select:disabled { cursor: default; }
+.toggle .tbody { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.toggle .tlabel { font-size: 13.5px; color: var(--marble); }
+.desk-note { margin: 8px 2px 0; }
+.desk-note code { font: 11px var(--mono); color: var(--marble-dim); }
+@media (prefers-reduced-motion: reduce) { .toggle .sw, .toggle .sw::after { transition: none; } }
+
+/* ===================================================================
+   Direct Hermes connection (bridge): Hermes rail, session controls,
+   approval/question cards and the Settings section.
+   ========================================================================== */
+.field[hidden] { display: none; }
+
+/* rail: Hermes sessions grouped by profile, sub-agents indented */
+.row.hrow.child { padding-left: calc(8px + var(--depth, 1) * 14px); }
+.row.hrow.child .name { font-weight: 400; color: var(--marble-dim); }
+.row.hrow.fold { min-height: 0; padding-top: 3px; padding-bottom: 3px; }
+.row.hrow.fold .name { font: 11.5px var(--mono); color: var(--vein-text); }
+.row .sub.warn { color: var(--gilt); font-family: var(--mono); font-size: 11.5px; }
+.badge.ask { background: var(--gilt); }
+
+/* session controls: Araya gir · Durdur · Model */
+.chat { grid-template-columns: minmax(0, 1fr); } /* no child (a long title, a control row) can widen the chat column */
+.chat-head .head-main { flex: 1 1 auto; min-width: 0; }
+.chat-head .head-main .title, .chat-head .head-main .subline { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hctl-wrap { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.hctl-wrap.at-head { flex: none; max-width: 62%; margin-left: auto; align-items: flex-end; }
+.hctl-wrap.at-head > .hctl { flex-wrap: nowrap; }
+.hctl-wrap.at-card { margin-top: 8px; align-items: flex-start; }
+.hctl { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.btn.mini { padding: 3px 10px; border-radius: 7px; font-size: 11.5px; }
+.btn.mini.on { border-color: var(--patina); color: var(--patina); }
+.btn[aria-pressed="true"] { border-color: var(--patina); color: var(--patina); background: var(--patina-soft); }
+.hctl-note { font: 11px var(--mono); color: var(--patina); }
+.hctl-note.bad { color: var(--amphora); }
+.hctl-col { display: flex; flex-direction: column; gap: 6px; align-items: inherit; }
+.hctl-edit { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; width: min(460px, 100%); }
+.hctl-wrap.at-head .hctl-edit { width: min(540px, 100%); }
+.hctl-input {
+  flex: 1 1 150px; min-width: 0; padding: 6px 9px; border-radius: 7px; border: 1px solid var(--vein);
+  background: var(--slate); color: var(--marble); font: 12.5px var(--body);
+}
+.hctl-input:focus { outline: 2px solid rgb(var(--patina-rgb) / 0.55); outline-offset: 0; border-color: transparent; }
+.hctl-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: 460px; font-size: 12px; color: var(--gilt); }
+
+/* chat column extras */
+.msg.pending { opacity: 0.62; }
+.msg.live .t { color: var(--patina); }
+.msgs-inner .older { align-self: center; margin-bottom: 4px; }
+.msgs-inner .older .linkbtn { margin: 0; padding: 4px 8px; text-decoration: none; color: var(--vein-text); }
+.msgs-inner .older .linkbtn:hover:not(:disabled) { color: var(--marble-dim); text-decoration: underline; }
+.hist-err { align-self: center; margin: 4px 0; font: 11px var(--mono); color: var(--amphora); }
+
+/* approval and question cards in the chat column */
+.hreq {
+  align-self: stretch; margin: 8px 0 2px; padding: 10px 12px; border: 1px solid var(--gilt-edge);
+  border-left: 3px solid var(--gilt); border-radius: 10px; background: var(--gilt-wash);
+}
+.hreq-head { display: flex; gap: 10px; align-items: baseline; font: 11px var(--mono); color: var(--vein-text); }
+.hreq-kind { color: var(--gilt); font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; }
+.hreq-who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hreq-desc { margin: 8px 0 0; font-size: 13px; color: var(--marble); white-space: pre-wrap; overflow-wrap: anywhere; }
+.hreq-cmd {
+  margin: 8px 0 0; padding: 7px 9px; max-height: 180px; overflow-y: auto; border-radius: 6px; background: var(--well);
+  font: 12px/1.45 var(--mono); color: var(--marble-dim); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.hreq .form-actions { margin-top: 10px; }
+.hreq-q + .hreq-q { margin-top: 10px; }
+.hreq .choices { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.hreq-text {
+  width: 100%; margin-top: 4px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--vein);
+  background: var(--slate); color: var(--marble); font: 13px var(--body);
+}
+.hreq-text:focus { outline: 2px solid rgb(var(--patina-rgb) / 0.55); outline-offset: 0; border-color: transparent; }
+
+/* Settings → Doğrudan Hermes bağlantısı */
+.hb-status, .hb-test { margin: 8px 2px 0; font: 11.5px/1.5 var(--mono); color: var(--vein-text); }
+.hb-status:empty, .hb-test:empty { display: none; }
+.hb-status.ok, .hb-test.ok, .small.ok { color: var(--patina); }
+.hb-status.warn { color: var(--gilt); }
+.hb-status.bad, .hb-test.bad { color: var(--amphora); }
+.field.hb-channel { margin-top: 18px; }
+
+/* ---------- top bar: chat channel switch (Telegram | Hermes) ---------- */
+.chan { display: inline-flex; align-self: center; border: 1px solid var(--vein); border-radius: 8px; overflow: hidden; -webkit-app-region: no-drag; }
+/* the top bar is the window's drag handle: anything clickable in it must opt out, or clicks start a window drag */
+.topbar button, .topbar a, .topbar select { -webkit-app-region: no-drag; }
+.chan button { border: 0; background: none; color: var(--vein-text); font: 11px var(--mono); padding: 3px 10px; cursor: pointer; }
+.chan button + button { border-left: 1px solid var(--vein); }
+.chan button:hover { color: var(--marble); }
+.chan button[aria-pressed="true"] { background: var(--slate); color: var(--marble); }
+.chan button:focus-visible { outline: 2px solid var(--patina); outline-offset: -2px; }
+
+/* ---------- rail rows: one line per title (the full title is in the tooltip) ---------- */
+.row .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- Workspace tab: the agent's own browser, live (renderer/workspace.js) ---------- */
+.ws { display: flex; flex-direction: column; gap: 10px; }
+.ws-head { display: flex; align-items: center; gap: 10px; }
+.ws-agent {
+  flex: 1; min-width: 0; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--vein);
+  background: var(--slate); color: var(--marble); font: 500 13px var(--body);
+}
+.ws-agent:focus { outline: 2px solid rgb(var(--patina-rgb) / 0.55); outline-offset: 0; border-color: transparent; }
+.ws-where {
+  display: inline-flex; align-items: center; gap: 6px; flex: none; padding: 3px 10px; border-radius: 11px;
+  border: 1px solid var(--vein); font: 11px var(--mono); color: var(--vein-text); white-space: nowrap;
+}
+.ws-where .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--vein-text); }
+.ws-where.here { color: var(--patina); border-color: var(--patina-soft); }
+.ws-where.here .dot { background: var(--patina); }
+.ws-where.away { color: var(--marble-dim); }
+.ws-where.away .dot { background: var(--marble-dim); }
+
+.ws-tabrow { display: flex; align-items: flex-end; gap: 8px; min-height: 31px; border-bottom: 1px solid var(--vein); }
+.ws-tabrow[hidden], .ws-bar[hidden] { display: none; }
+.ws-tabs { display: flex; gap: 2px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.ws-tabs::-webkit-scrollbar { display: none; }
+.ws-tab {
+  display: inline-flex; align-items: center; flex: none; max-width: 190px; margin-bottom: -1px;
+  border: 1px solid transparent; border-bottom: 0; border-radius: 7px 7px 0 0;
+}
+.ws-tab.shown { background: var(--slate); border-color: var(--vein); }
+.ws-tabbtn {
+  min-width: 0; max-width: 168px; padding: 6px 10px; border: 0; background: none; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px var(--body); color: var(--vein-text);
+}
+.ws-tab.shown .ws-tabbtn { color: var(--marble); }
+.ws-tabx { padding: 0 8px 0 0; border: 0; background: none; cursor: pointer; color: var(--vein-text); font: 13px var(--mono); }
+.ws-tabx:hover { color: var(--amphora); }
+.ws-newtab {
+  flex: none; margin-bottom: 4px; padding: 3px 9px; border-radius: 7px; border: 1px solid var(--vein);
+  background: none; color: var(--marble-dim); font: 11.5px var(--body); cursor: pointer;
+}
+.ws-newtab:hover:not(:disabled) { background: var(--slate); color: var(--marble); }
+.ws-newtab:disabled { opacity: 0.45; cursor: default; }
+
+.ws-bar { display: flex; align-items: center; gap: 4px; }
+.ws-nav {
+  flex: none; width: 30px; height: 30px; border-radius: 8px; border: 0; background: none;
+  color: var(--marble-dim); font: 16px/1 var(--mono); cursor: pointer;
+}
+.ws-nav:hover:not(:disabled) { background: var(--slate); color: var(--marble); }
+.ws-nav:disabled { opacity: 0.35; cursor: default; }
+.ws-url {
+  flex: 1; min-width: 0; margin-left: 4px; padding: 7px 12px; border-radius: 16px; border: 1px solid var(--vein);
+  background: var(--slate); color: var(--marble); font: 12.5px var(--mono);
+}
+.ws-url[readonly] { background: var(--basalt); color: var(--marble-dim); }
+.ws-url:focus { outline: 2px solid rgb(var(--patina-rgb) / 0.55); outline-offset: 0; border-color: transparent; }
+
+.ws-stage { position: relative; overflow: hidden; border-radius: 10px; border: 1px solid var(--vein); background: var(--obsidian); }
+.ws-stage.user { border-color: var(--patina); box-shadow: 0 0 0 1px var(--patina-soft); }
+.ws-view { display: block; width: 100%; height: auto; }
+.ws-view:focus-visible { outline: none; }
+.ws-overlay { position: absolute; inset: 0; display: grid; place-items: center; padding: 18px; background: rgb(var(--obsidian-rgb) / 0.9); }
+.ws-overlay[hidden] { display: none; }
+.ws-card { max-width: 380px; text-align: center; color: var(--vein-text); font-size: 13px; line-height: 1.55; }
+.ws-card h3 { margin: 0 0 6px; font-family: var(--display); font-weight: 400; font-size: 17px; color: var(--marble); }
+.ws-card p { margin: 0 0 12px; }
+
+.ws-foot { display: flex; align-items: center; gap: 12px; min-height: 36px; }
+.ws-status { flex: 1; min-width: 0; margin: 0; font: 11.5px/1.45 var(--mono); color: var(--marble-dim); }
+.ws-status .dot { display: inline-block; width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: var(--vein-text); vertical-align: 1px; }
+.ws-status.live { color: var(--patina); }
+.ws-status.live .dot { background: var(--patina); animation: breathe 1.8s ease-in-out infinite; }
+.ws-status.warn { color: var(--gilt); }
+.ws-status.warn .dot { background: var(--gilt); }
+.ws-status.bad { color: var(--amphora); }
+.ws-status.bad .dot { background: var(--amphora); }
+.ws-control { flex: none; }
+.ws-control:not(.primary) { border-color: var(--patina-soft); color: var(--patina); }
+.ws-msg { margin: 0; color: var(--amphora); font-size: 12px; }
+.ws-note { margin: 0; font: 10.5px var(--mono); color: var(--vein-text); }
+
+/* Settings > Bu cihaz: a help line under a switch (outside its label): lined up with the label text like a
+   switch's own .fhelp (track 36px + gap 12px + the label's 2px margin), 2px under the label text as in .tbody */
+.toggle + .toggle-help { margin: -14px 2px 14px 50px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ws-status.live .dot { animation: none; }
+}
+
+/* ---------- Hermes rail: + Yeni oturum ---------- */
+.row.new-session { grid-template-columns: 38px minmax(0, 1fr); color: var(--vein-text); font-size: 13px; padding-top: 6px; padding-bottom: 6px; }
+.row.new-session .plus { display: grid; place-items: center; width: 30px; height: 30px; margin-left: 4px; border: 1px dashed var(--vein); border-radius: 50%; font: 16px var(--mono); }
+.row.new-session:hover { color: var(--marble); }
+.row.new-session:hover .plus { border-color: var(--patina); color: var(--patina); }

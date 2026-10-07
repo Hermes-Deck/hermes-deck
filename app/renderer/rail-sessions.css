@@ -1,0 +1,13 @@
+/* Hermes sessions: titles first, with status rather than decorative avatars. */
+.row.rail-session { grid-template-columns: minmax(0, 1fr) auto; column-gap: 8px; min-height: 52px; }
+.row.rail-session .name { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.rail-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-monogram { display: none; }
+.rail-live-dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--patina); animation: rail-live 1.6s ease-in-out infinite; }
+@keyframes rail-live { 50% { opacity: 0.45; } }
+.rail-context.warn { color: var(--gilt); }
+.rail-context.bad { color: var(--amphora); }
+body.rail-compact .row.rail-session { grid-template-columns: 38px; padding: 8px 0; min-height: 52px; }
+body.rail-compact .rail-monogram { display: flex; align-items: center; justify-content: center; gap: 4px; height: 36px; color: var(--marble-dim); font-size: 13px; font-weight: 500; }
+body.rail-compact .row.rail-session[aria-current="true"] .rail-monogram { color: var(--patina); }
+@media (prefers-reduced-motion: reduce) { .rail-live-dot { animation: none; } }

@@ -1,0 +1,147 @@
+/* Hermes Deck — Settings (settings-view.js). A full view over the chat column, like the All sessions browser:
+   section list left, grouped rows right (label left, control right). Tokens from styles.css only. */
+
+/* ---------- the top bar's gear ---------- */
+.topbar-gear { display: grid; place-items: center; width: 28px; height: 24px; margin-left: -6px; padding: 0; border: 0; border-radius: 6px; background: none; color: var(--vein-text); cursor: pointer; }
+.topbar-gear:hover { background: var(--slate); color: var(--marble); }
+.topbar-gear[aria-pressed="true"] { color: var(--patina); }
+.topbar-gear[hidden] { display: none; }
+
+/* ---------- the overlay ---------- */
+.sv { position: absolute; inset: 0; z-index: 7; display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; background: var(--obsidian); container-type: inline-size; }
+.sv[hidden] { display: none; }
+.sv-head .sv-note { margin-left: auto; }
+.sv-body { display: grid; grid-template-columns: 196px minmax(0, 1fr); min-height: 0; }
+
+.sv-nav { display: flex; flex-direction: column; gap: 2px; padding: 14px 10px; border-right: 1px solid var(--vein); overflow-y: auto; }
+.sv-nav-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 10px; border: 0; border-radius: var(--r); background: none; color: var(--marble-dim); text-align: left; cursor: pointer; white-space: nowrap; }
+.sv-nav-item svg { flex: none; color: var(--vein-text); }
+.sv-nav-item:hover { background: var(--slate); color: var(--marble); }
+.sv-nav-item[aria-current="page"] { background: var(--slate-2); color: var(--marble); }
+.sv-nav-item[aria-current="page"] svg { color: var(--patina); }
+.sv-nav-item:focus-visible { outline: 2px solid var(--patina); outline-offset: -2px; }
+
+.sv-main { position: relative; min-width: 0; min-height: 0; }
+.sv-section { height: 100%; overflow-y: auto; padding: 22px 28px 48px; scrollbar-color: var(--vein) transparent; }
+.sv-section[hidden] { display: none; }
+.sv-section > * { max-width: 680px; }
+.sv-title { margin: 0 0 20px; font: 400 18px var(--display); letter-spacing: 0.02em; }
+
+/* ---------- groups and rows ---------- */
+.sv-group-wrap { margin: 0 0 24px; }
+.sv-group-title { display: flex; align-items: baseline; gap: 8px; margin: 0 0 8px 2px; font-size: 12.5px; font-weight: 500; color: var(--marble-dim); }
+.sv-group { border: 1px solid var(--vein); border-radius: 10px; background: var(--basalt); }
+.sv-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; min-height: 46px; margin: 0; padding: 8px 14px; }
+.sv-group > * + * { border-top: 1px solid var(--vein); }
+.sv-label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; font-size: 13.5px; color: var(--marble); }
+.sv-label.code { font: 12.5px var(--mono); letter-spacing: 0.02em; }
+.sv-value { font-size: 13.5px; color: var(--marble); }
+.sv-ctl { display: flex; align-items: center; gap: 8px; min-width: 0; margin-left: auto; }
+.sv-end { justify-content: flex-end; min-height: 40px; }
+.sv-row.off > * { opacity: 0.45; }
+.sv-block { display: block; padding: 4px 14px; }
+.sv-inline { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px 12px; min-width: 0; }
+.sv-path { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px var(--mono); color: var(--marble-dim); }
+.sv-link { margin: 0; font: 12px var(--body); text-decoration: none; color: var(--marble-dim); }
+.sv-link:hover { color: var(--marble); text-decoration: underline; }
+.sv-actions { margin: 10px 0 0; justify-content: flex-end; align-items: center; }
+.sv-warn { margin: 10px 2px 0; }
+
+.sv-ctl input:not([type="checkbox"]):not([type="radio"]), .sv-ctl select,
+.sv-legacy .field input, .sv-legacy .field select {
+  width: 280px; max-width: 100%; padding: 6px 10px; border: 1px solid var(--vein); border-radius: 8px;
+  background: var(--obsidian); color: var(--marble); font: 13px var(--body);
+}
+.sv-ctl input::placeholder, .sv-legacy .field input::placeholder { color: var(--vein-text); }
+.sv-ctl input:focus-visible, .sv-ctl select:focus-visible, .sv-legacy .field input:focus-visible, .sv-legacy .field select:focus-visible { outline: 2px solid var(--patina); outline-offset: 0; border-color: transparent; }
+.sv-ctl select:disabled { cursor: default; }
+
+/* switches: label left, switch right */
+.sv .toggle.sv-row, .sv-legacy .toggle { display: flex; flex-direction: row-reverse; justify-content: space-between; align-items: center; margin: 0; }
+.sv .toggle.sv-row input, .sv-legacy .toggle input { left: auto; right: 14px; top: 50%; transform: translateY(-50%); }
+.sv .toggle .sw { margin-top: 0; flex: none; }
+
+/* the 2-option segmented control (Queue | Steer) */
+.sv-seg { border-radius: 8px; }
+.sv-seg button { padding: 5px 14px; font: 12.5px var(--body); }
+
+/* ---------- the inline "Saved" note ---------- */
+.sv-note { display: inline-flex; }
+.sv-note:empty { display: none; }
+.sv-msg { font: 400 11.5px var(--body); letter-spacing: 0; text-transform: none; color: var(--patina); transition: opacity 150ms cubic-bezier(0.16, 1, 0.3, 1); }
+.sv-msg.bad { color: var(--amphora); }
+.sv-msg.out { opacity: 0; }
+.form-actions > .sv-msg { align-self: center; }
+
+/* ---------- chat modes inside a group: rows, not cards ---------- */
+.sv .chat-mode-editor { margin: 0; gap: 0; }
+.sv .chat-mode-card { padding: 10px 0; border: 0; border-radius: 0; background: none; }
+.sv .chat-mode-card + .chat-mode-card, .sv .chat-mode-editor > .field { border-top: 1px solid var(--vein); }
+.sv .chat-mode-choice { align-items: center; }
+.sv .chat-mode-choice input { margin-top: 0; }
+.sv .chat-mode-choice strong { font-size: 13.5px; font-weight: 400; }
+.sv .chat-mode-choice small { display: none; }
+.sv .chat-mode-editor > .field { display: flex; flex-direction: row; align-items: center; justify-content: space-between; margin: 0; padding: 8px 0; }
+.sv .chat-mode-editor .flabel { font-size: 13.5px; letter-spacing: 0; text-transform: none; color: var(--marble); }
+.sv .chat-mode-editor select { width: 180px; padding: 6px 10px; border: 1px solid var(--vein); border-radius: 8px; background: var(--obsidian); color: var(--marble); font: 13px var(--body); }
+.sv .chat-mode-editor .form-error { margin: 0 0 8px; }
+
+/* ---------- forms owned by other modules (Hermes connection, This device), drawn as rows ---------- */
+.sv-legacy { display: flex; flex-direction: column; }
+.sv-legacy > * { margin: 0; padding: 8px 14px; }
+.sv-legacy > * + * { border-top: 1px solid var(--vein); }
+.sv-legacy > [hidden], .sv-legacy > :empty { display: none; }
+.sv-legacy .field { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; min-height: 46px; margin: 0; }
+.sv-legacy .flabel, .sv-legacy .bs-set-label { margin: 0; font-size: 13.5px; letter-spacing: 0; text-transform: none; color: var(--marble); }
+.sv-legacy .fhelp { display: none; }
+.sv-legacy > .toggle.bs-toggle, .sv-legacy > .bs-set-label, .sv-legacy > .bs-live-lines { margin: 0; }
+.sv-legacy > .toggle.bs-toggle { align-items: center; }
+.sv-legacy > .bs-set-label { padding-bottom: 2px; border-top: 1px solid var(--vein); }
+.sv-legacy > .bs-set-label + * { border-top: 0; }
+.sv-legacy .bs-allow { padding-top: 0; }
+.sv-legacy .form-actions { margin: 0; align-items: center; justify-content: flex-end; }
+.sv-legacy .hb-status, .sv-legacy .hb-test { font-size: 12.5px; }
+.sv-adv > summary { padding: 4px 0; font-size: 12.5px; color: var(--marble-dim); cursor: pointer; }
+.sv-adv > summary:hover { color: var(--marble); }
+.sv-adv[open] > summary { margin-bottom: 4px; }
+.sv-adv .field { padding: 6px 0; }
+.sv-adv .field + .field { border-top: 1px solid var(--vein); }
+.sv-adv[hidden] { display: none; }
+
+/* ---------- a narrow chat column: icons only in the section list ---------- */
+@container (max-width: 640px) {
+  .sv-body { grid-template-columns: 56px minmax(0, 1fr); }
+  .sv-nav { padding: 12px 8px; }
+  .sv-nav-item { justify-content: center; padding: 8px 0; }
+  .sv-nav-item span { display: none; }
+  .sv-section { padding: 18px 16px 40px; }
+  .sv-ctl input:not([type="checkbox"]):not([type="radio"]), .sv-ctl select, .sv-legacy .field input, .sv-legacy .field select { width: 220px; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .sv-nav-item, .topbar-gear { transition: background-color 120ms cubic-bezier(0.16, 1, 0.3, 1), color 120ms cubic-bezier(0.16, 1, 0.3, 1); }
+}
+@media (prefers-reduced-motion: reduce) { .sv-msg { transition: none; } }
+/* the wallpaper's dimming slider */
+.sv-ctl .sv-inline input.s-wall-dim[type="range"] { width: 110px; flex: none; padding: 0; border: 0; background: none; accent-color: var(--patina); }
+.sv-ctl .sv-inline:has(.s-wall-dim) { flex-wrap: nowrap; }
+/* Settings > General > Updates */
+.upd-state { font-size: 13px; color: var(--marble-dim); text-align: right; }
+.upd-state.new { color: var(--gilt); }
+.upd-state.bad { color: var(--amphora); }
+/* host versions (Settings › Relay / › Hermes): drift warns, a protocol mismatch blocks */
+.hostver { margin: 0; font-size: 13px; color: var(--marble-dim); }
+.hostver.warn { color: var(--gilt); }
+.hostver.block { color: var(--amphora); }
+.hostver-cmd { margin: 4px 0 0; font-size: 12px; color: var(--marble-dim); user-select: text; }
+.hostver-cmd code { user-select: all; }
+/* in the top bar (a flex row with a fixed height): one line, clipped, clickable inside the drag region */
+.hostver-banner { min-width: 0; flex: 0 1 auto; display: flex; gap: 12px; color: var(--amphora); font-size: 12px; -webkit-app-region: no-drag; }
+.hostver-banner p { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hostver-banner[hidden] { display: none; }
+.upd-commits { margin: 0; padding: 0 0 0 4px; list-style: none; font-size: 12.5px; color: var(--marble-dim); }
+.upd-commits li { padding: 3px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upd-commits code { font: 11.5px var(--mono); color: var(--vein-text); }
+.upd-more { margin: 4px 0 0; font-size: 12px; color: var(--vein-text); }
+.upd-adv summary { cursor: pointer; padding: 6px 0; color: var(--vein-text); font-size: 12.5px; }
+.upd-adv .sv-row { padding-left: 0; padding-right: 0; }
+.sv-ctl .sv-inline select.s-wall-choice { width: 160px; }

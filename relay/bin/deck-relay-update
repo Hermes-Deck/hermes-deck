@@ -1,0 +1,10 @@
+#!/usr/bin/env node
+"use strict";
+// Hermes Deck relay updater: `deck-relay-update --check | apply | init DIR` (relay/tools/update.js, docs/updating.md).
+require("../tools/update")
+  .main(process.argv.slice(2))
+  .then((code) => process.exit(code))
+  .catch((e) => {
+    console.error(`deck-relay-update: ${e.message}`);
+    process.exit(1);
+  });

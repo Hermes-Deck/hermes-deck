@@ -1,0 +1,26 @@
+name: hermes-deck
+kind: standalone
+version: "1.0.0"
+description: >-
+  Live sessions and controls over SSH/WSL, plus relay events and an opt-in desktop-control fence.
+  Private runtime files under <HERMES_HOME>/hermes-deck/. No network listener.
+author: Hermes Deck
+provides_hooks:
+  - pre_llm_call
+  - post_llm_call
+  - pre_tool_call
+  - post_tool_call
+  - post_api_request
+  - api_request_error
+  - pre_transcription
+  - post_auxiliary_call
+  - subagent_start
+  - subagent_stop
+  - on_session_start
+  - on_session_end
+  - agent_loop_stopped
+config_schema:
+  bridge:
+    type: bool
+    default: true
+    description: Live sessions and controls for Hermes Deck's direct connection (stream.py). Off leaves only the events part.

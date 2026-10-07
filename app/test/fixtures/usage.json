@@ -1,0 +1,24 @@
+{
+  "_comment": "Synthetic subscription quotas and all-surface accounting; no real accounts or host data.",
+  "dialogs": { "bots": [{ "key": "u7001", "id": "7001", "title": "Primary", "username": "example_fixture_bot", "unread": 0 }], "topics": [] },
+  "messages": { "u7001": [{ "id": 1, "ago": 120, "from": "Primary", "fromBot": true, "text": "Tüm arayüzlerin kullanımı Filo ve Token sekmelerinde." }] },
+  "relay": {
+    "agents": {
+      "Primary": { "name": "Primary", "profile": "default", "bot": "example_fixture_bot", "emoji": "◇", "today": { "n": 82, "in": 250000, "cr": 2300000, "cw": 80000, "out": 55000, "rs": 11000, "usd": 8.42, "estimated": true, "cost_label": "API list-price equivalent", "source": "state.db" } },
+      "Secondary": { "name": "Secondary", "profile": "profile-b", "emoji": "○", "today": { "n": 36, "in": 120000, "cr": 870000, "cw": 0, "out": 24000, "rs": 7000, "usd": 0, "source": "state.db" } }
+    },
+    "sessions": [],
+    "fleet": {
+      "profiles": {}, "launchd": [],
+      "quotas": {
+        "claude": { "provider": "claude", "ok": true, "source": "hermes-account-usage", "windows": [{ "minutes": 300, "used": 87, "resetsAt": "2030-01-01T14:00:00Z" }, { "minutes": 10080, "used": 56, "resetsAt": "2030-01-06T10:00:00Z" }] },
+        "codex": { "provider": "codex", "ok": true, "source": "hermes-account-usage", "windows": [{ "minutes": 300, "used": 0, "resetsAt": "2030-01-01T16:00:00Z" }, { "minutes": 10080, "used": 44, "resetsAt": "2030-01-07T12:00:00Z" }] }
+      },
+      "usage": { "source": "state.db", "attribution": "session-start", "profiles": { "default": { "ok": true }, "profile-b": { "ok": true } } }
+    },
+    "tokens": [
+      { "day": "2030-01-01", "agent": "Primary", "model": "claude-example", "n": 82, "in": 250000, "cr": 2300000, "cw": 80000, "out": 55000, "rs": 11000, "usd": 8.42, "estimated": true, "cost_label": "API list-price equivalent", "source": "state.db" },
+      { "day": "2030-01-01", "agent": "Secondary", "model": "codex-example", "n": 36, "in": 120000, "cr": 870000, "cw": 0, "out": 24000, "rs": 7000, "usd": 0, "source": "state.db" }
+    ]
+  }
+}

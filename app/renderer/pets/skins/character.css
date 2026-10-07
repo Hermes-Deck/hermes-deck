@@ -1,0 +1,11 @@
+/* Karakter (pets/skins/character.js): where its hit area and badges sit, per pose. Shared sprite rules: sprite.css. */
+/* the hit area and the badges follow the pose (stage px: the figure stands on y = 135). During a transition
+   strip the hit area is the taller pose's at once, while the badges glide to the new pose over the strip's
+   length (character.js sets data-badge and --badge-ms), so they move with the figure instead of ahead of it. */
+.pet-slot[data-skin="character"][data-pose="sit"] { --hit-w: 66px; --hit-h: 90px; --hit-b: 6px; }
+.pet-slot[data-skin="character"][data-pose="stand"] { --hit-w: 60px; --hit-h: 120px; --hit-b: 6px; }
+.pet-slot[data-skin="character"][data-pose="lie"] { --hit-w: 82px; --hit-h: 64px; --hit-b: 6px; }
+.pet-slot[data-skin="character"][data-badge="sit"] { --count-top: 42px; --count-left: 80px; --runs-top: 120px; --runs-right: 4px; }
+.pet-slot[data-skin="character"][data-badge="stand"] { --count-top: 14px; --count-left: 78px; --runs-top: 120px; --runs-right: 12px; }
+.pet-slot[data-skin="character"][data-badge="lie"] { --count-top: 60px; --count-left: 88px; --runs-top: 120px; --runs-right: 2px; }
+

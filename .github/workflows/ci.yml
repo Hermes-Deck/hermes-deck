@@ -1,0 +1,133 @@
+name: CI
+
+# Fast checks on every push and pull request: JS syntax, app and relay tests, Hermes plugin tests.
+# Installers are built only by release.yml, which also calls this workflow as its test gate.
+on:
+  push:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# github.workflow is the caller's name when release.yml calls this file, so a release's test gate never
+# cancels (or is cancelled by) the ordinary CI run of the same commit.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  js:
+    name: JS syntax + app/relay tests (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: |
+            app/package-lock.json
+            relay/package-lock.json
+
+      - name: node --check (app + relay)
+        run: |
+          find app relay -name '*.js' -not -path '*/node_modules/*' -not -path '*/dist/*' -print0 \
+            | xargs -0 -n1 node --check
+          echo "node --check passed for $(find app relay -name '*.js' -not -path '*/node_modules/*' -not -path '*/dist/*' | wc -l) files"
+
+      # The app's tests load teleproto (the Telegram serializers), so its dependencies are installed. That also
+      # checks the lockfile and the postinstall step on Linux, and lets the relay's CDP tests drive the app's
+      # own tunnel half (app/main/cdp-tunnel.js) instead of their stand-in. Electron 44+ downloads no binary here.
+      # The app's browser-transfer fixture also loads the relay, so install both before testing either.
+      - name: Install relay dependencies
+        working-directory: relay
+        run: npm ci
+
+      - name: App tests
+        working-directory: app
+        run: |
+          npm ci
+          npm test
+
+      - name: Relay tests
+        working-directory: relay
+        run: npm test
+
+  plugin:
+    name: Hermes plugin tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # the installer edits config.yaml with PyYAML, which Hermes' own Python always has
+      - name: PyYAML
+        run: python -m pip install pyyaml
+
+      - name: hermes-deck plugin tests
+        working-directory: hermes-plugin/hermes-deck
+        run: python -m unittest discover -p 'test_*.py'
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan PR diff or pushed commits
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          range="$HEAD_SHA"
+          # A force push (e.g. a rewritten history) has a "before" commit this clone does not contain: scan HEAD's history.
+          if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] && [[ ! "$BASE_SHA" =~ ^0+$ ]] && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            range="$BASE_SHA..$HEAD_SHA"
+          fi
+          # Trust only the read-only checkout mount, even when container and runner owners differ.
+          # Gitleaks can exit zero on a git read error, so require an error-free scan log as well.
+          docker run --rm -v "$PWD:/repo:ro" \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            git /repo --config /repo/.gitleaks.toml --redact --log-opts="$range" \
+            2>&1 | tee "$RUNNER_TEMP/gitleaks.log"
+          if grep -q 'ERR' "$RUNNER_TEMP/gitleaks.log"; then
+            echo '::error::Gitleaks could not scan the requested commits.'
+            exit 1
+          fi
+
+  hygiene:
+    name: Public content and file sizes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Public content checker tests
+        run: python3 -m unittest discover -s scripts -p 'test_check_public.py'
+      - name: Check tracked public content
+        run: bash scripts/check-public.sh

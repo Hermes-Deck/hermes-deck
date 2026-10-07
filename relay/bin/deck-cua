@@ -1,0 +1,33 @@
+#!/bin/sh
+# Hermes Deck bot screen: point HERMES_CUA_DRIVER_CMD at this file (directly or through a symlink).
+# It runs deck-cua.js next to it with Node; see that file and docs/bot-screen-protocol.md.
+self="$0"
+case "$self" in
+  /*) ;;
+  *) self="$(pwd)/$self" ;;
+esac
+target="$self"
+while [ -L "$target" ]; do
+  link="$(readlink "$target")"
+  case "$link" in
+    /*) target="$link" ;;
+    *) target="$(dirname "$target")/$link" ;;
+  esac
+done
+dir="$(cd "$(dirname "$target")" && pwd)"
+node="${DECK_NODE:-}"
+[ -n "$node" ] || node="$(command -v node 2>/dev/null || true)"
+if [ -z "$node" ]; then
+  # a service manager's PATH may not include Node: try the usual places
+  for c in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
+    if [ -x "$c" ]; then
+      node="$c"
+      break
+    fi
+  done
+fi
+if [ -z "$node" ]; then
+  echo "deck-cua: Node.js not found on the agent host (set DECK_NODE)" >&2
+  exit 127
+fi
+DECK_CUA_SELF="$self" exec "$node" "$dir/deck-cua.js" "$@"

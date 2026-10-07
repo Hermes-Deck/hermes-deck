@@ -1,0 +1,17 @@
+# systemd user unit for Linux relay hosts.
+#   cp install/hermes-deck-relay.service ~/.config/systemd/user/
+#   edit WorkingDirectory/ExecStart to your checkout path, then:
+#   systemctl --user daemon-reload && systemctl --user enable --now hermes-deck-relay
+#   loginctl enable-linger "$USER"   # keep it running while you are logged out
+[Unit]
+Description=Hermes Deck relay
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/hermes-deck/relay
+ExecStart=/usr/bin/env node src/index.js
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

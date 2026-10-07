@@ -1,0 +1,35 @@
+/* Images and files the user sent, in the Hermes chat view (media-preview.js). The lightbox reuses .lightbox / .lb-*. */
+.mmedia { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; max-width: 100%; }
+.msg .text + .mmedia { margin-top: 8px; }
+.mmedia > .hfile { flex: 1 1 100%; }
+
+.mthumb, .mthumb-ph {
+  flex: none; display: grid; place-items: center; padding: 0; overflow: hidden; border-radius: 8px;
+  background: var(--basalt); border: 1px solid var(--vein);
+}
+.mthumb { cursor: zoom-in; max-width: 100%; }
+.mthumb:hover { border-color: var(--vein-text); }
+.mthumb-img { display: block; max-width: 240px; max-height: 240px; width: auto; height: auto; object-fit: contain; }
+.mthumb.many .mthumb-img { max-width: 160px; max-height: 160px; }
+/* the stand-in keeps a fixed footprint so the list does not jump when the picture arrives */
+.mthumb-ph { width: 160px; height: 120px; }
+.mthumb-ph.many { width: 120px; height: 90px; }
+.mthumb-ph::after {
+  content: ""; width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--vein); border-top-color: var(--vein-text);
+  animation: mthumb-spin 0.9s linear infinite;
+}
+
+/* neutral chip: the picture is missing, refused or not an image */
+.mchip {
+  display: flex; align-items: center; gap: 9px; min-width: 0; max-width: 100%; padding: 7px 10px;
+  border: 1px dashed var(--vein); border-radius: 8px; background: rgb(var(--hi-rgb) / 0.025); color: var(--marble-dim);
+}
+.mchip-ico { flex: none; font-size: 18px; color: var(--vein-text); }
+.mchip-text { display: flex; flex-direction: column; min-width: 0; }
+.mchip-title { font-size: 12px; color: var(--marble-dim); }
+.mchip-name { font: 11.5px var(--mono); color: var(--vein-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+
+@keyframes mthumb-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .mthumb-ph::after { animation: none; border-top-color: var(--vein); }
+}

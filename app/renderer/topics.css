@@ -1,0 +1,53 @@
+/* Hermes Deck — forum topics in the rail (topics.js): the header's "+", the inline create/rename form,
+   closed and pinned marks, the delete confirmation. Uses the tokens from styles.css. */
+
+/* header: the collapse toggle keeps its width, "+" sits at its right */
+.eyebrow-row { display: flex; align-items: flex-end; }
+.eyebrow-row > button.eyebrow { flex: 1; width: auto; margin-right: 4px; }
+.topic-add {
+  flex: none; margin: 0 6px 3px 0; padding: 0 7px; border: 0; border-radius: 6px; background: none;
+  color: var(--vein-text); font: 15px/20px var(--mono); cursor: pointer;
+}
+.topic-add:hover, .topic-add[aria-expanded="true"] { background: var(--slate); color: var(--marble); }
+
+/* rows: the topic's own colour on its hash; closed = greyed with a lock; pinned = a pin */
+.row.topic .hash { color: color-mix(in srgb, var(--tc, var(--vein-text)) 70%, var(--vein-text)); }
+.row.topic .meta { flex-direction: row; align-items: center; gap: 6px; }
+.row.topic.closed .name, .row.topic.closed .hash { color: var(--vein-text); opacity: 0.7; }
+.tmarks { display: inline-flex; gap: 4px; }
+.ticon { width: 12px; height: 12px; fill: none; stroke: var(--vein-text); stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+
+/* inline form under the header (create) or under a row (rename) */
+.topic-form {
+  display: flex; flex-direction: column; gap: 8px; margin: 2px 8px 10px; padding: 10px;
+  border: 1px solid var(--vein); border-radius: 10px; background: var(--slate);
+}
+.topic-form input {
+  padding: 7px 9px; border-radius: 7px; border: 1px solid var(--vein); background: var(--basalt);
+  color: var(--marble); font: 13px var(--body);
+}
+.topic-form input:focus { outline: 2px solid rgb(var(--patina-rgb) / 0.55); outline-offset: 0; border-color: transparent; }
+.tf-colors { display: flex; gap: 9px; padding: 2px 2px 0; }
+.tf-swatch {
+  width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; background: var(--sw); cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgb(var(--shade-rgb) / 0.25);
+}
+.tf-swatch[aria-checked="true"] { box-shadow: 0 0 0 2px var(--slate), 0 0 0 4px var(--marble); }
+.tf-actions { display: flex; gap: 6px; }
+.tf-error { margin: 0; font-size: 12px; color: var(--amphora); }
+.tf-error:empty { display: none; }
+body.rail-compact .eyebrow-row, body.rail-compact .topic-form { display: none; }
+
+/* delete confirmation */
+.cd-back {
+  position: fixed; inset: var(--top) 0 0 0; z-index: 70; display: grid; place-items: center;
+  background: rgb(var(--obsidian-rgb) / 0.72); -webkit-app-region: no-drag;
+}
+.cd {
+  width: min(420px, calc(100% - 32px)); padding: 20px 22px; border-radius: 14px;
+  background: var(--basalt); border: 1px solid var(--vein); box-shadow: 0 18px 48px rgb(var(--shade-rgb) / 0.55);
+}
+.cd h2 { margin: 0 0 8px; font-family: var(--display); font-weight: 400; font-size: 20px; letter-spacing: 0.02em; }
+.cd p { margin: 0; color: var(--marble-dim); font-size: 13px; line-height: 1.55; }
+.cd strong { color: var(--marble); font-weight: 700; }
+.cd .form-actions { justify-content: flex-end; }

@@ -1,0 +1,72 @@
+name: Bug report
+description: Report a reproducible problem with Hermes Deck.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove tokens, API keys, private hostnames, addresses and conversation content from logs and screenshots.
+        For vulnerabilities, use SECURITY.md and private security advisories instead of a public issue.
+  - type: input
+    id: deck-version
+    attributes:
+      label: Deck version
+    validations:
+      required: true
+  - type: input
+    id: relay-version
+    attributes:
+      label: Relay version
+      description: Enter "not used" if there is no relay.
+    validations:
+      required: true
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+    validations:
+      required: true
+  - type: input
+    id: hermes-version
+    attributes:
+      label: Hermes Agent version
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating systems
+      description: Deck device OS and version; Hermes host OS and version.
+    validations:
+      required: true
+  - type: dropdown
+    id: connection
+    attributes:
+      label: Connection mode
+      options:
+        - SSH
+        - WSL
+        - Local
+        - Relay WebSocket
+    validations:
+      required: true
+  - type: dropdown
+    id: relay
+    attributes:
+      label: Is a relay in use?
+      options:
+        - "Yes"
+        - "No"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include expected and actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or screenshots
+      description: Remove tokens and private content before posting. Use synthetic data for screenshots.

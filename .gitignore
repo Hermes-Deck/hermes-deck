@@ -1,0 +1,46 @@
+# dependencies and build output
+node_modules/
+dist/
+out/
+__pycache__/
+*.pyc
+
+# generated at install time (npm postinstall copies fonts out of @fontsource)
+app/renderer/fonts/
+app/renderer/fonts.css
+
+# per-install secrets and state: never commit
+.env
+.env.*
+!.env.example
+*.session
+*.session.*
+relay/agents.json
+relay/devices.json
+relay/data/
+relay/logs/
+
+# screenshots (they can contain private chats); docs/ holds vetted ones only
+*.png
+!docs/*.png
+# the status pet's artwork (original)
+!app/art/pet-*/**/*.png
+!app/art/pet-*/*.png
+!app/renderer/pets/*/*.png
+
+.DS_Store
+Thumbs.db
+!app/build/*.png
+
+# local agent worktrees / tooling
+.claude/
+
+# Native generated binaries, private signing/app credentials and local proof
+work/
+*.xcuserstate
+xcuserdata/
+
+# Local Firebase client configuration
+
+# written by scripts/build-info.js for packaged builds
+app/main/build-info.json

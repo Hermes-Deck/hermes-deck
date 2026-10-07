@@ -1,0 +1,61 @@
+/* Inline voice-note player (voice-bubble.js). Theme variables only (basalt / marble / aegean set them); colour does
+   state jobs: patina = playing / played part, amphora = error. */
+.vb-wrap { display: flex; flex-direction: column; gap: 3px; margin: 2px 0 4px; max-width: 100%; }
+.vb-note { font: 11px var(--mono); color: var(--vein-text); }
+.vb {
+  position: relative; display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; align-items: center; gap: 4px 10px;
+  width: 340px; max-width: 100%; margin: 2px 0 4px; padding: 7px 10px 7px 8px; border-radius: 14px;
+  background: rgb(var(--hi-rgb) / 0.035); border: 1px solid var(--vein);
+}
+.vb-wrap > .vb { margin: 0; }
+.vb-play {
+  grid-row: 1; width: 40px; height: 40px; border-radius: 50%; padding: 0; display: grid; place-items: center;
+  border: 1px solid var(--edge); background: var(--slate); color: var(--marble); cursor: pointer;
+}
+.vb-play:hover:not(:disabled) { background: var(--hover); }
+.vb-play:focus-visible, .vb-wave:focus-visible, .vb-rate:focus-visible, .vb-more:focus-visible, .vb-item:focus-visible {
+  outline: 2px solid var(--patina); outline-offset: 2px;
+}
+.vb-play::before { content: ""; width: 0; height: 0; margin-left: 3px; border-left: 11px solid currentColor; border-top: 7px solid transparent; border-bottom: 7px solid transparent; }
+.vb[data-state="playing"] .vb-play { border-color: var(--patina); color: var(--patina); }
+.vb[data-state="playing"] .vb-play::before { margin: 0; width: 12px; height: 14px; border: 0; background: linear-gradient(90deg, currentColor 0 4px, transparent 4px 8px, currentColor 8px 12px); }
+.vb[data-state="loading"] .vb-play::before { border-left-color: var(--vein-text); }
+.vb[data-state="error"] .vb-play { border-color: var(--amphora); color: var(--amphora); }
+.vb:is(.pending) { opacity: 0.6; }
+.vb-play:disabled { cursor: default; }
+
+.vb-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.vb-name { font-size: 12px; color: var(--marble-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vb-wave { position: relative; height: 30px; cursor: pointer; touch-action: none; border-radius: 6px; user-select: none; }
+.vb-bars { position: absolute; inset: 0; display: flex; align-items: center; gap: 2px; }
+.vb-bar { flex: 1 1 0; min-width: 1px; height: var(--h, 12%); min-height: 3px; border-radius: 2px; background: var(--faint); }
+.vb-on { clip-path: inset(0 calc(100% - var(--p, 0%)) 0 0); }
+.vb-on .vb-bar { background: var(--patina); }
+.vb.flat .vb-bar { height: 3px; }
+.vb[data-state="loading"] .vb-bars:not(.vb-on) { animation: vb-pulse 1.2s ease-in-out infinite; }
+
+.vb-side { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.vb-time { font: 11.5px var(--mono); color: var(--vein-text); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.vb-ctl { display: flex; align-items: center; gap: 2px; }
+.vb-rate, .vb-more {
+  min-width: 34px; height: 24px; padding: 0 7px; border-radius: 12px; border: 1px solid var(--vein); background: transparent;
+  color: var(--marble-dim); font: 500 11px var(--mono); cursor: pointer;
+}
+.vb-more { min-width: 26px; padding: 0 5px; font-size: 14px; line-height: 1; }
+.vb-rate:hover:not(:disabled), .vb-more:hover { background: var(--hover); color: var(--marble); }
+.vb-rate:disabled { cursor: default; }
+.vb-err { grid-column: 2 / -1; font: 11px var(--mono); color: var(--amphora); }
+.vb-err[hidden] { display: none; }
+
+.vb-menu {
+  position: absolute; z-index: 20; right: 8px; top: calc(100% - 6px); min-width: 160px; padding: 4px; display: flex; flex-direction: column;
+  border-radius: 10px; border: 1px solid var(--edge); background: var(--slate); box-shadow: 0 8px 24px rgb(var(--shade-rgb) / 0.35);
+}
+.vb-item { text-align: left; padding: 6px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--marble); font-size: 12.5px; cursor: pointer; }
+.vb-item:hover:not(:disabled) { background: var(--hover); }
+.vb-item:disabled { color: var(--faint); cursor: default; }
+
+@keyframes vb-pulse { 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .vb[data-state="loading"] .vb-bars:not(.vb-on) { animation: none; } }
+/* a user turn sits on the raised ground: keep the track legible there */
+.msg.out .vb { background: rgb(var(--hi-rgb) / 0.05); }

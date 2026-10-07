@@ -1,0 +1,143 @@
+/* Status pet (A10): the shell around the skins in pets/skins/. Tokens and fonts come from styles.css.
+   The window is transparent: only the pet, its bar (on hover) and a speech bubble (on events) are drawn.
+   Layout (main/pet-model.js has the same numbers): a 88 px band for the bubble on top, then a 144 px row
+   with the 112 px pet box at the window's end and the bar opening toward the middle of the screen. */
+html, body.pet-page { height: 100%; margin: 0; background: transparent; overflow: hidden; }
+body.pet-page { user-select: none; cursor: default; }
+[hidden] { display: none !important; }
+
+.pet { display: flex; flex-direction: column; height: 100%; }
+.pet-band { position: relative; flex: none; height: 88px; }
+.pet-row { flex: none; height: 144px; display: flex; align-items: flex-end; justify-content: flex-end; }
+body.side-left .pet-row { flex-direction: row-reverse; }
+
+/* ---------- the pet's box: the skin's stage, the hit area, the badges ---------- */
+.pet-slot { position: relative; flex: none; width: 112px; height: 144px; }
+.pet-stage {
+  /* the skins draw into a 144 px square standing on the box's bottom edge (wider than the box: the
+     character's transparent margins hang over its sides) */
+  position: absolute; left: 50%; bottom: 0; width: 144px; height: 144px; margin-left: -72px;
+  pointer-events: none; transform-origin: 50% 100%;
+}
+.pet-hit {
+  /* each skin and pose sizes it to the figure (the rest of the box stays click-through) */
+  position: absolute; left: 50%; bottom: var(--hit-b, 6px); width: var(--hit-w, 70px); height: var(--hit-h, 90px);
+  margin: 0 0 0 calc(var(--hit-w, 70px) / -2); padding: 0; border: 0; border-radius: 18px;
+  background: none; color: inherit; cursor: pointer;
+}
+.pet-hit:focus { outline: none; } /* the window never takes focus */
+body.dragging .pet-hit { cursor: grabbing; }
+
+/* badges: what needs you (answers, else new replies), and running agents "+sub-agents"; skins place them */
+.pet-count, .pet-runs {
+  position: absolute; display: block; color: var(--obsidian); text-align: center; white-space: nowrap; pointer-events: none;
+  box-shadow: 0 0 0 1.5px var(--obsidian);
+  /* --badge-ms: the length of a transition strip while one plays (Karakter), so a badge moves with the figure */
+  transition: top var(--badge-ms, 0.25s) ease-in-out, left var(--badge-ms, 0.25s) ease-in-out, right var(--badge-ms, 0.25s) ease-in-out;
+}
+.pet-count {
+  top: var(--count-top, 30px); left: var(--count-left, 78px);
+  min-width: 19px; height: 19px; padding: 0 5px; border-radius: 10px; background: var(--amphora); font: 700 10.5px/19px var(--mono);
+}
+body[data-mode="waiting"] .pet-count { background: var(--gilt); }
+.pet-runs {
+  top: var(--runs-top, 118px); right: var(--runs-right, 4px); /* grows leftward: never past the window edge */
+  height: 16px; padding: 0 5px; border-radius: 8px; background: var(--patina); font: 700 10px/16px var(--mono);
+}
+.pet-runs .plus { opacity: 0.7; }
+
+/* one-shot event moves, shared by every skin: reply = hop, done = happy double hop, ask = gentle shake */
+.pet-stage.fx-hop { animation: pet-hop 0.56s cubic-bezier(0.3, 0.7, 0.4, 1); }
+.pet-stage.fx-happy { animation: pet-happy 0.72s ease-out; }
+.pet-stage.fx-shake { animation: pet-shake 0.9s ease-in-out; }
+@keyframes pet-hop {
+  0% { transform: translateY(0) scale(1, 1); }
+  12% { transform: translateY(0) scale(1.04, 0.95); }
+  40% { transform: translateY(-14px) scale(0.98, 1.03); }
+  66% { transform: translateY(0) scale(1.03, 0.97); }
+  80% { transform: translateY(-3px) scale(1, 1); }
+  100% { transform: translateY(0) scale(1, 1); }
+}
+@keyframes pet-happy {
+  0% { transform: translateY(0); }
+  18% { transform: translateY(-9px); }
+  36% { transform: translateY(0) scale(1.03, 0.97); }
+  56% { transform: translateY(-6px); }
+  76% { transform: translateY(0) scale(1.02, 0.98); }
+  100% { transform: translateY(0); }
+}
+@keyframes pet-shake {
+  /* sways from the feet and a little sideways (a plain rotation would not show on the round skins) */
+  0%, 100% { transform: translateX(0) rotate(0); }
+  12% { transform: translateX(-4px) rotate(-4deg); }
+  28% { transform: translateX(3.5px) rotate(3.5deg); }
+  44% { transform: translateX(-2.5px) rotate(-2.5deg); }
+  60% { transform: translateX(1.8px) rotate(1.8deg); }
+  76% { transform: translateX(-0.8px) rotate(-0.8deg); }
+}
+
+/* ---------- the speech bubble: an agent's reply or question, for a few seconds ---------- */
+.pet-bubble {
+  position: absolute; bottom: 12px; right: 6px; display: flex; flex-direction: column; gap: 2px;
+  width: max-content; min-width: 120px; max-width: 250px; padding: 8px 12px 9px; margin: 0;
+  border-radius: 14px; border: 1px solid var(--vein); background: var(--basalt); color: var(--marble);
+  box-shadow: 0 8px 22px rgb(var(--shade-rgb) / 0.45); text-align: left; cursor: pointer;
+  opacity: 0; transform: translateY(6px); transition: opacity 0.18s ease, transform 0.18s ease;
+}
+body.side-left .pet-bubble { right: auto; left: 6px; }
+.pet-bubble.show { opacity: 1; transform: none; }
+.pet-bubble:hover { border-color: var(--vein-text); }
+.pet-bubble:focus { outline: none; }
+.pet-bubble::after {
+  /* the tail points down at the pet (its box is centred 56 px from the window's edge) */
+  content: ""; position: absolute; bottom: -6px; right: 43px; width: 10px; height: 10px;
+  background: var(--basalt); border-right: 1px solid var(--vein); border-bottom: 1px solid var(--vein);
+  transform: rotate(45deg);
+}
+body.side-left .pet-bubble::after { right: auto; left: 43px; }
+/* the name is one line: a long one without spaces (a snake_case id) ends in an ellipsis inside the bubble */
+.pet-bubble .who { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font: 13px/1.2 var(--display); letter-spacing: 0.03em; color: var(--marble); }
+.pet-bubble .who::before { content: ""; display: inline-block; vertical-align: middle; width: 7px; height: 7px; margin: -2px 6px 0 0; border-radius: 50%; background: var(--amphora); }
+.pet-bubble[data-tone="gilt"] .who::before { background: var(--gilt); }
+.pet-bubble .say {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+  font: 12px/1.35 var(--body); color: var(--marble-dim); overflow-wrap: anywhere;
+}
+
+/* ---------- the bar: hover or right-click ---------- */
+.pet-bar {
+  display: flex; align-items: center; gap: 6px; height: 40px; max-width: 488px; /* 610 px page (pet-model W) minus the box and gaps; not vw, which the size zoom would shrink twice */
+  margin: 0 4px 30px; padding: 0 5px 0 15px; border-radius: 20px;
+  background: var(--basalt); border: 1px solid var(--vein); box-shadow: 0 8px 22px rgb(var(--shade-rgb) / 0.5);
+  white-space: nowrap;
+  opacity: 0; transform: translateX(8px); pointer-events: none;
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+body.side-left .pet-bar { transform: translateX(-8px); }
+body.open .pet-bar { opacity: 1; transform: none; pointer-events: auto; }
+.pet-text { flex: 1 1 auto; min-width: 0; margin-right: 6px; overflow: hidden; text-overflow: ellipsis; font: 12.5px var(--body); color: var(--marble-dim); }
+.pet-text .name { font: 14px var(--display); letter-spacing: 0.04em; color: var(--marble); }
+.pet-text .sep { margin: 0 6px; color: var(--vein-text); }
+.pet-text .patina { color: var(--patina); }
+.pet-text .amphora { color: var(--amphora); }
+.pet-text .gilt { color: var(--gilt); }
+.pet-text .dim { color: var(--vein-text); }
+.pet-btn {
+  flex: none; height: 28px; padding: 0 12px; border-radius: 14px;
+  border: 1px solid var(--vein); background: var(--slate); color: var(--marble);
+  font: 500 12px var(--body); cursor: pointer;
+}
+.pet-btn:hover { background: var(--slate-2); }
+.pet-btn.primary { background: var(--marble); border-color: var(--marble); color: var(--obsidian); font-weight: 700; }
+.pet-btn.primary:hover { background: var(--marble-hover); }
+
+/* ---------- motion off, hidden, dev captures ---------- */
+/* "Pet animasyonları" off or the system asks for reduced motion: the skins show stills (body.still) */
+body.still .pet-stage { animation: none !important; }
+/* the window is hidden, minimized or covered: nothing moves until it is back */
+body.paused *, body.paused *::before, body.paused *::after { animation-play-state: paused !important; }
+/* --shot-pet still captures: every animation and transition on its first frame */
+body.shot-still *, body.shot-still *::before, body.shot-still *::after { animation: none !important; transition: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  .pet-bar, .pet-bubble, .pet-count, .pet-runs { transition: none; }
+}

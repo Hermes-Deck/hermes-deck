@@ -1,0 +1,11 @@
+/* Chat mode editor is shared by first run and Settings. */
+.chat-mode-editor { display: grid; gap: 10px; margin: 14px 0; }
+.chat-mode-card { border: 1px solid var(--vein); border-radius: 10px; padding: 14px; background: var(--slate); }
+.chat-mode-card:has(input:checked) { border-color: var(--patina); }
+.chat-mode-choice { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; }
+.chat-mode-choice input, .chat-mode-default input { accent-color: var(--patina); margin-top: 3px; }
+.chat-mode-choice strong { display: block; font-size: 14px; color: var(--marble); }
+.chat-mode-choice small { display: block; margin-top: 5px; color: var(--vein-text); line-height: 1.5; }
+.chat-mode-default { display: flex; align-items: center; gap: 8px; margin: 10px 0 0 26px; font-size: 12px; color: var(--marble-dim); }
+.chat-mode-editor .form-error:empty { display: none; }
+.chat-mode-editor .field { margin-top: 4px; }

@@ -1,0 +1,250 @@
+name: Release
+
+# Builds the installers and PUBLISHES them, with SHA256SUMS.txt, as the GitHub release v<app/package.json version>.
+# The Deck's in-app updater reads releases/latest, which never lists drafts, so a release must be published to reach
+# installed Decks.
+#   - push to main: releases automatically when app/package.json carries a version that has no published release
+#     yet. A push that does not bump the version does nothing. If tag v<version> already exists on this commit, the
+#     tag's own run releases it; if it points at another commit, the run is skipped with a warning (bump the version
+#     instead of moving a tag).
+#   - push a tag vX.Y.Z (it must match app/package.json "version"): releases that tagged commit.
+#   - run it by hand (Actions > Release > Run workflow): same as a main push, for the selected ref; "draft" keeps the
+#     result as a draft for review instead of publishing it.
+# Every release first runs the full CI suite (ci.yml) on the commit it ships.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      draft:
+        description: "Leave the release as a draft instead of publishing it"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      release: ${{ steps.v.outputs.release }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - id: v
+        name: Tag from app/package.json, and whether it still needs a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v$(node -p "require('./app/package.json').version")"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          skip() { echo "$1"; echo "release=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "$tag" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match app/package.json ($tag). Bump the version, then tag."
+            exit 1
+          fi
+          # a published release is visible to a read-only token; drafts may not be, which only means "not published"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null | grep -qx false; then
+            skip "Release $tag is already published: nothing to do. Bump app/package.json for a new release."
+          fi
+          # on an error (no such tag: HTTP 422) gh api prints the JSON error body on stdout and ignores --jq,
+          # so only a bare commit SHA counts as "the tag exists"
+          tagged="$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$tag" --jq .sha 2>/dev/null || true)"
+          [[ "$tagged" =~ ^[0-9a-f]{40}$ ]] || tagged=""
+          if [ -n "$tagged" ] && [ "$tagged" != "$GITHUB_SHA" ]; then
+            if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+              echo "::error::Tag $tag resolves to $tagged, not the commit being built ($GITHUB_SHA)."
+              exit 1
+            fi
+            echo "::warning::Tag $tag already points at $tagged (not this commit) and has no published release. Bump app/package.json to release this commit."
+            skip "Skipped: version $tag belongs to another commit."
+          fi
+          if [ -n "$tagged" ] && [ "$GITHUB_REF_TYPE" = "branch" ] && [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            skip "Tag $tag is on this commit: the tag's own run releases it."
+          fi
+          echo "Releasing $tag from $GITHUB_SHA"
+          echo "release=true" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: CI gate
+    needs: version
+    if: needs.version.outputs.release == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build (${{ matrix.os }})
+    needs: [version, test]
+    if: needs.version.outputs.release == 'true'
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest # NSIS installer + zip, x64
+            dist: dist:win
+          - os: macos-latest # dmg + zip, arm64 and x64, ad-hoc signed
+            dist: dist:mac
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Build installers
+        run: npm run ${{ matrix.dist }}
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false" # unsigned builds: never pick up a keychain certificate
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hermes-deck-${{ runner.os }}
+          path: |
+            app/dist/*.exe
+            app/dist/*.dmg
+            app/dist/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish release
+    needs: [version, build]
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: hermes-deck-*
+          path: release
+          merge-multiple: true
+
+      - name: Source archive
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          version="${TAG#v}"
+          git archive --format=tar.gz --prefix="hermes-deck-$version/" HEAD \
+            > "release/hermes-deck-$version-source.tar.gz"
+
+      - name: SHA256SUMS.txt
+        run: |
+          # The installer checksum helper accepts exe/dmg/zip, not tar.gz. Append the source checksum explicitly.
+          node app/scripts/checksums.js release
+          (cd release && sha256sum hermes-deck-*-source.tar.gz >> SHA256SUMS.txt)
+          (cd release && sha256sum --check SHA256SUMS.txt)
+
+      - name: Changelog section
+        id: changelog
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+          version = os.environ["TAG"].removeprefix("v")
+          path = pathlib.Path("CHANGELOG.md")
+          text = path.read_text() if path.exists() else ""
+          heading = re.search(r"^## \[" + re.escape(version) + r"\] - [^\n]+$", text, re.M)
+          section = ""
+          if heading:
+              remaining = text[heading.end():]
+              section = re.split(r"^## ", remaining, maxsplit=1, flags=re.M)[0].strip()
+          pathlib.Path("release-changelog.md").write_text(section)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("present=" + ("true" if section else "false") + "\n")
+          PY
+
+      # GitHub stores attestations only for public repositories (or Enterprise); on a private repository the step
+      # fails with "Feature not available for user-owned private repositories", so it runs once the repo is public.
+      - name: Attest all release files
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: release/*
+
+      - name: Create or update the release, then publish it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          KEEP_DRAFT: ${{ inputs.draft == true && 'true' || 'false' }}
+        run: |
+          cat > notes.md <<'EOF'
+          Hermes Deck installers and source archive. Unsigned builds: see [README Install](https://github.com/${{ github.repository }}/blob/${{ needs.version.outputs.tag }}/README.md#install)
+          for the one-time SmartScreen / Gatekeeper step and which file to pick.
+          See [Updating](https://github.com/${{ github.repository }}/blob/${{ needs.version.outputs.tag }}/docs/updating.md) for host and desktop updates.
+
+          - Windows: `Hermes-Deck-<version>-Setup.exe` (installer) or `-win-x64.zip` (no install)
+          - macOS: `-mac-arm64.dmg` (Apple Silicon) or `-mac-x64.dmg` (Intel)
+
+          Check a download against `SHA256SUMS.txt` before running it.
+          EOF
+          # Prefer this version's Keep a Changelog section; retain the commit-list fallback.
+          if [ -s release-changelog.md ]; then
+            printf '\n## Changes in %s\n\n' "$TAG" >> notes.md
+            cat release-changelog.md >> notes.md
+          else
+            prev="$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName // ""' 2>/dev/null || true)"
+            if [ -n "$prev" ] && [ "$prev" != "$TAG" ]; then
+              log="$(gh api "repos/$GITHUB_REPOSITORY/compare/$prev...$GITHUB_SHA" \
+                --jq '.commits[] | select(.parents | length == 1) | "- " + (.commit.message | split("\n")[0])' 2>/dev/null | tail -n 200 || true)"
+              # gh api prints an error body on stdout on failure: keep only changelog lines.
+              log="$(printf '%s\n' "$log" | grep '^- ' || true)"
+              if [ -n "$log" ]; then printf '\n## Changes since %s\n\n%s\n' "$prev" "$log" >> notes.md; fi
+            else
+              git log --no-merges -n 200 --format='- %s' HEAD >> notes.md
+            fi
+          fi
+          state="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq 'if .isDraft then "draft" else "published" end' 2>/dev/null || echo none)"
+          case "$state" in
+            none)
+              gh release create "$TAG" release/* --repo "$GITHUB_REPOSITORY" --draft \
+                --title "Hermes Deck $TAG" --notes-file notes.md --target "$GITHUB_SHA" ;;
+            draft)
+              echo "Draft $TAG exists: replacing its files and notes"
+              gh release upload "$TAG" release/* --repo "$GITHUB_REPOSITORY" --clobber
+              gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md --target "$GITHUB_SHA" ;;
+            *)
+              echo "::error::Release $TAG was published while this run was building. Bump app/package.json for a new build."
+              exit 1 ;;
+          esac
+          if [ "$KEEP_DRAFT" = "true" ]; then
+            echo "Left $TAG as a draft (manual run with draft=true)."
+          else
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+            echo "Published $TAG"
+          fi

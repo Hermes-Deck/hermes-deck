@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; media-src 'self' data: blob:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Hermes Deck</title>
+  <script src="theme.js"></script>
+  <link rel="stylesheet" href="fonts.css">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="messages.css">
+  <link rel="stylesheet" href="reactions.css">
+  <link rel="stylesheet" href="topics.css">
+  <link rel="stylesheet" href="agents.css">
+  <link rel="stylesheet" href="workspace.css">
+  <link rel="stylesheet" href="attach.css">
+  <link rel="stylesheet" href="voice.css">
+  <link rel="stylesheet" href="media-preview.css">
+  <link rel="stylesheet" href="voice-bubble.css">
+  <link rel="stylesheet" href="botscreen.css">
+  <link rel="stylesheet" href="bots.css">
+  <link rel="stylesheet" href="usage.css">
+  <link rel="stylesheet" href="activity.css">
+  <link rel="stylesheet" href="tokens.css">
+  <link rel="stylesheet" href="chat-modes.css">
+  <link rel="stylesheet" href="outbox.css">
+  <link rel="stylesheet" href="sessions-browser.css">
+  <link rel="stylesheet" href="rail-sessions.css">
+  <link rel="stylesheet" href="settings-view.css">
+  <link rel="stylesheet" href="live-activity.css">
+  <link rel="stylesheet" href="model-picker.css">
+  <link rel="stylesheet" href="think-block.css">
+</head>
+<body>
+  <header class="topbar">
+    <span class="wordmark">Hermes Deck</span>
+    <span class="pulse-sum" id="sum"></span>
+    <span class="conn" id="conn"></span>
+  </header>
+  <div class="shell">
+    <nav class="rail" id="rail" aria-label="Agents and group topics" data-i18n-aria-label="html.rail"></nav>
+    <div class="gutter" id="gutter-left" role="separator" aria-orientation="vertical" aria-label="Sidebar width" data-i18n-aria-label="html.sidebarWidth" tabindex="0"></div>
+    <main class="chat" id="chat">
+      <button class="panel-open" id="panel-open" type="button" title="Open right panel (Ctrl+J)" data-i18n-title="html.openRightShortcut" aria-label="Open right panel" data-i18n-aria-label="html.openRight">«</button>
+      <header class="chat-head" id="head"></header>
+      <div class="msgs" id="msgs"><div class="msgs-inner" id="msgs-inner" aria-live="polite"></div></div>
+      <div class="strip" id="strip"></div>
+      <div class="composer">
+        <label class="sr-only" for="input" data-i18n="A0360">Message</label>
+        <textarea id="input" rows="1" placeholder="Write a message · Enter sends, Shift+Enter adds a line" data-i18n-placeholder="U0579"></textarea>
+        <div class="composer-bar">
+          <div class="composer-tools" role="group" aria-label="Message tools" data-i18n-aria-label="composer.attachGroup"></div>
+          <button class="send" id="send" type="button" disabled title="Send (Enter)" data-i18n-title="composer.sendHelp" data-i18n="U0616">Send</button>
+        </div>
+      </div>
+      <p class="composer-note" id="note"></p>
+      <section class="detail" id="detail" hidden aria-label="Session details" data-i18n-aria-label="U0373"></section>
+    </main>
+    <div class="gutter" id="gutter-right" role="separator" aria-orientation="vertical" aria-label="Right panel width" data-i18n-aria-label="html.rightWidth" tabindex="0"></div>
+    <section class="panel" aria-label="Details" data-i18n-aria-label="U0862">
+      <div class="tabs" role="tablist" id="tabs"></div>
+      <div class="pane" id="pane" role="tabpanel"></div>
+    </section>
+  </div>
+  <script src="i18n.js"></script>
+  <script src="drafts.js"></script>
+  <script src="takeover.js"></script>
+  <script src="history-window.js"></script>
+  <script src="chime.js"></script>
+  <script src="markdown.js"></script>
+  <script src="reactions.js"></script>
+  <script src="echo-match.js"></script>
+  <script src="voice-bubble.js"></script>
+  <script src="msgview.js"></script>
+  <script src="topics.js"></script>
+  <script src="attach.js"></script>
+  <script src="voice.js"></script>
+  <script src="hermes-files.js"></script>
+  <script src="media-preview.js"></script>
+  <script src="agents.js"></script>
+  <script src="ws-relay.js"></script>
+  <script src="ws-view.js"></script>
+  <script src="workspace.js"></script>
+  <script src="readsync.js"></script>
+  <script src="space-panel.js"></script>
+  <script src="botscreen.js"></script>
+  <script src="botface.js"></script>
+  <script src="bots.js"></script>
+  <script src="usage-view.js"></script>
+  <script src="activity-view.js"></script>
+  <script src="tokens-view.js"></script>
+  <script src="chat-modes.js"></script>
+  <script src="outbox.js"></script>
+  <script src="live-activity.js"></script>
+  <script src="think-block.js"></script>
+  <script src="busy-send.js"></script>
+  <script src="model-picker.js"></script>
+  <script src="sessions-browser.js"></script>
+  <script src="rail-sessions.js"></script>
+  <script src="pets/catalog.js"></script>
+  <script src="settings-view.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

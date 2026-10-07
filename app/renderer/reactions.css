@@ -1,0 +1,39 @@
+/* Hermes Deck — message reactions (reactions.js, C9): chips under a bubble and the quick picker.
+   The user's own reaction takes the patina accent (the deck's "yours/live" colour); stars keep gilt. */
+.reacts { display: flex; flex-wrap: wrap; gap: 4px; margin: 7px 0 1px; }
+.react-chip {
+  display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px 0 6px;
+  border: 1px solid transparent; border-radius: 13px; background: rgb(var(--hi-rgb) / 0.07);
+  color: var(--marble-dim); font: 12px/1 var(--mono); cursor: pointer;
+}
+.react-chip:hover:not(:disabled) { background: rgb(var(--hi-rgb) / 0.12); }
+.react-chip:focus-visible { outline: 2px solid var(--patina); outline-offset: 1px; }
+.react-chip:disabled { cursor: progress; opacity: 0.85; }
+.react-chip.mine { background: var(--patina-soft); border-color: var(--patina); color: var(--marble); }
+.react-chip.paid { border-color: color-mix(in srgb, var(--gilt) 45%, transparent); }
+.react-chip.paid.mine { background: color-mix(in srgb, var(--gilt) 22%, var(--slate-2)); border-color: var(--gilt); }
+.react-ico { font: 15px/1 var(--body); }
+img.react-ico { width: 18px; height: 18px; object-fit: contain; display: block; }
+.react-star { color: var(--gilt); font-size: 14px; }
+/* a custom emoji whose picture is not here (yet): a quiet round stand-in */
+.react-ph { display: inline-block; width: 16px; height: 16px; border-radius: 50%; background: rgb(var(--hi-rgb) / 0.16); box-shadow: inset 0 0 0 1px rgb(var(--hi-rgb) / 0.12); }
+.react-n { font-variant-numeric: tabular-nums; }
+.react-who { display: inline-flex; padding-left: 1px; }
+.react-av {
+  width: 20px; height: 20px; flex: none; border-radius: 50%; overflow: hidden; margin-left: -6px;
+  display: grid; place-items: center; font: 10px/1 var(--display);
+  background: color-mix(in srgb, var(--c, var(--vein-text)) 26%, var(--slate-2)); color: var(--c, var(--marble-dim));
+  box-shadow: 0 0 0 1.5px var(--slate);
+}
+.react-av:first-child { margin-left: 0; }
+.msg.out .react-av { box-shadow: 0 0 0 1.5px var(--raised); }
+.react-chip.mine .react-av { box-shadow: 0 0 0 1.5px var(--patina-soft); }
+.react-av img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* the quick picker: the context menu as a grid of icons */
+.ctx.ctx-react { display: grid; grid-template-columns: repeat(7, 36px); gap: 2px; min-width: 0; max-height: 236px; overflow-y: auto; }
+.ctx.ctx-react button { width: 36px; height: 36px; padding: 0; display: grid; place-items: center; text-align: center; border-radius: 8px; }
+.ctx.ctx-react button[aria-pressed="true"] { background: var(--patina-soft); box-shadow: inset 0 0 0 1px var(--patina); }
+.react-pick { font: 20px/1 var(--body); }
+img.react-pick { width: 24px; height: 24px; object-fit: contain; }
+.ctx.ctx-react .react-ph.react-pick { width: 20px; height: 20px; }

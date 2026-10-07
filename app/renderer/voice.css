@@ -1,0 +1,19 @@
+/* Dictation button in the composer (voice.js) and the file chips of Hermes messages (hermes-files.js). */
+.voice-btn { width: auto; min-width: 32px; gap: 6px; padding: 0 8px; grid-auto-flow: column; }
+.voice-btn .voice-time { font: 11px var(--mono); color: var(--marble); }
+.voice-btn.recording { border-color: var(--amphora); color: var(--marble); background: rgb(var(--amphora-rgb) / 0.16); }
+.voice-btn.recording svg { animation: voice-pulse 1.2s ease-in-out infinite; }
+.voice-btn.busy { opacity: 0.7; cursor: progress; }
+
+.hfiles { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.hfile { grid-template-columns: 42px minmax(0, 1fr) auto; }
+.hfile .facts { grid-column: 3; grid-row: 1 / span 2; justify-content: flex-end; }
+.hfile .att-bar { grid-column: 1 / -1; margin-top: 2px; }
+.hfile .ferr { grid-column: 1 / -1; }
+
+.dl-folder { margin: 6px 0 10px; font: 12px var(--mono); color: var(--marble-dim); word-break: break-all; }
+
+@keyframes voice-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+  .voice-btn.recording svg { animation: none; }
+}

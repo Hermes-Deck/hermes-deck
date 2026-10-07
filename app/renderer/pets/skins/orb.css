@@ -1,0 +1,99 @@
+/* Küre skin (pets/skins/orb.js): an 80 px orb standing on the stage's floor. --orb-c is registered so the
+   gradient, the glow and the rim flow from one state's colour into the next. */
+@property --orb-c {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #b9b5ae;
+}
+
+.orb { position: absolute; inset: 0; --orb-c: var(--marble-dim); transition: --orb-c 0.7s ease; }
+.orb[data-s="working"] { --orb-c: var(--patina); }
+.orb[data-s="reply"] { --orb-c: var(--amphora); }
+.orb[data-s="waiting"] { --orb-c: var(--gilt); }
+.orb[data-s="offline"] { --orb-c: #5b6168; }
+
+.orb-float {
+  position: absolute; left: 32px; top: 50px; width: 80px; height: 80px; transform-origin: 50% 100%;
+  animation: orb-breathe 3.8s ease-in-out infinite;
+}
+/* resting states: the breath pauses where it is (running, it redraws the window every vsync); idle still blinks */
+.orb[data-s="idle"] .orb-float, .orb[data-s="offline"] .orb-float { animation-play-state: paused; }
+@keyframes orb-breathe {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-1.5px) scale(1.025); }
+}
+
+/* glow around the orb: soft at idle, pulsing while an answer waits, faint when the relay is away */
+.orb-halo {
+  position: absolute; inset: -18px; border-radius: 50%; pointer-events: none;
+  background: radial-gradient(circle, color-mix(in srgb, var(--orb-c) 60%, transparent) 0%, color-mix(in srgb, var(--orb-c) 22%, transparent) 45%, transparent 70%);
+  opacity: 0.5; transition: opacity 0.6s ease;
+}
+.orb[data-s="working"] .orb-halo { opacity: 0.7; }
+.orb[data-s="waiting"] .orb-halo { opacity: 0.85; animation: orb-pulse 1.5s ease-in-out infinite; }
+.orb[data-s="offline"] .orb-halo { opacity: 0.12; }
+@keyframes orb-pulse {
+  0%, 100% { transform: scale(0.94); opacity: 0.55; }
+  50% { transform: scale(1.12); opacity: 1; }
+}
+
+/* the body: lit from the top left, rimmed in its own colour */
+.orb-ball {
+  position: absolute; inset: 0; border-radius: 50%; overflow: hidden;
+  background: radial-gradient(circle at 34% 30%, color-mix(in srgb, var(--orb-c) 28%, #fff) 0%, var(--orb-c) 44%, color-mix(in srgb, var(--orb-c) 42%, #0d0e10) 100%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--orb-c) 55%, #0d0e10), 0 6px 14px rgba(0, 0, 0, 0.42);
+}
+.orb-shine {
+  position: absolute; left: 17%; top: 11%; width: 36%; height: 22%; border-radius: 50%; pointer-events: none;
+  background: radial-gradient(ellipse, rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0) 70%);
+}
+/* working: a patina swirl turning inside */
+.orb-swirl {
+  position: absolute; inset: -12%; border-radius: 50%; opacity: 0; filter: blur(3px);
+  background: conic-gradient(from 0deg, transparent 0 16%, color-mix(in srgb, var(--orb-c) 25%, #fff) 30%, transparent 46% 62%, color-mix(in srgb, var(--orb-c) 40%, #fff) 76%, transparent 92%);
+  transition: opacity 0.6s ease;
+}
+.orb[data-s="working"] .orb-swirl { opacity: 0.6; animation: orb-spin 2.8s linear infinite; }
+@keyframes orb-spin { to { transform: rotate(1turn); } }
+
+/* eyes: blink now and then, follow the pointer on hover (--lx/--ly from orb.js), close when offline */
+.orb-face {
+  position: absolute; left: 0; right: 0; top: 35%; display: flex; justify-content: center; gap: 15px;
+  transform: translate(var(--lx, 0px), var(--ly, 0px)); transition: transform 0.18s ease-out;
+}
+.orb-eye {
+  width: 9px; height: 14px; border-radius: 5px; background: #121417;
+  animation: orb-blink 5.2s infinite; transition: transform 0.4s ease, height 0.4s ease, margin 0.4s ease;
+}
+@keyframes orb-blink {
+  0%, 90%, 96%, 100% { transform: scaleY(1); }
+  93% { transform: scaleY(0.1); }
+}
+.orb[data-s="waiting"] .orb-eye { height: 16px; margin-top: -1px; }
+.orb[data-s="reply"] .orb-eye { height: 12px; margin-top: 1px; }
+.orb[data-s="offline"] .orb-eye { animation: none; transform: scaleY(0.14); margin-top: 3px; }
+.orb[data-s="offline"] .orb-face { transform: none; }
+
+/* reply: amphora ripples and a bounce. The rings sit inside .orb-float, so the bounce's 1.05 scales them too:
+   80 px x 1.3 x 1.05 = 109 px stays inside the 112 px pet box, whose outer side is the window's edge */
+.orb-ripple {
+  position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--amphora); opacity: 0; pointer-events: none;
+}
+.orb[data-s="reply"] .orb-ripple { animation: orb-ripple 1.8s ease-out infinite; }
+.orb[data-s="reply"] .orb-ripple.r2 { animation-delay: 0.9s; }
+@keyframes orb-ripple {
+  0% { transform: scale(1); opacity: 0.75; }
+  100% { transform: scale(1.3); opacity: 0; }
+}
+.orb[data-s="reply"] .orb-float { animation: orb-bounce 1.8s ease-in-out infinite; }
+@keyframes orb-bounce {
+  0%, 46%, 100% { transform: translateY(0) scale(1, 1); }
+  8% { transform: translateY(0) scale(1.05, 0.95); }
+  22% { transform: translateY(-8px) scale(0.98, 1.03); }
+  36% { transform: translateY(0) scale(1.04, 0.96); }
+}
+
+/* motion off: the state's look, nothing moving */
+.orb.still *, .orb.still { animation: none !important; }
+
+.pet-slot[data-skin="orb"] { --hit-w: 84px; --hit-h: 84px; --hit-b: 12px; --count-top: 44px; --count-left: 80px; --runs-top: 114px; --runs-right: 8px; }

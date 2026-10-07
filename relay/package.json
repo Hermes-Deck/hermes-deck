@@ -1,0 +1,22 @@
+{
+  "name": "deck-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Hermes Deck relay: tails Hermes deck-events + Dispatch transcripts, keeps a live agent/session/token model, serves it over an authenticated WebSocket on the tailnet.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Hermes-Deck/hermes-deck.git"
+  },
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "libsodium-wrappers": "0.8.4",
+    "ws": "^8.18.0"
+  }
+}

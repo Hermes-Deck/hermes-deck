@@ -1,0 +1,276 @@
+/* Hermes Deck — message view: media, group senders, replies, inline buttons, markdown, context menu,
+   reply bar, lightbox and toasts (msgview.js, markdown.js). Uses the tokens from styles.css.
+   Sender colours are their own small palette: patina, gilt and amphora keep their single meanings
+   (live, warning, failure) and never mark a person. */
+:root {
+  --who-0: #8fb3e8; /* lapis */
+  --who-1: #aeacf2; /* periwinkle */
+  --who-2: #c6a0e8; /* amethyst */
+  --who-3: #e3a0d8; /* orchid */
+  --who-4: #eba2b6; /* rose */
+  --who-5: #b9d690; /* lichen */
+}
+.hue-0 { --c: var(--who-0); }
+.hue-1 { --c: var(--who-1); }
+.hue-2 { --c: var(--who-2); }
+.hue-3 { --c: var(--who-3); }
+.hue-4 { --c: var(--who-4); }
+.hue-5 { --c: var(--who-5); }
+.hue-me { --c: var(--marble-dim); }
+
+.chat { position: relative; }
+
+/* service lines: topic created/closed, pins, joins */
+.svcmsg {
+  align-self: center; max-width: 80%; margin: 2px 0; padding: 3px 12px; border-radius: 11px;
+  background: rgb(var(--hi-rgb) / 0.04); font-size: 12px; color: var(--vein-text); text-align: center; overflow-wrap: anywhere;
+}
+.msg:focus { outline: none; }
+.msg:focus-visible { outline: 2px solid var(--patina); outline-offset: 2px; }
+
+/* ---------- group senders ---------- */
+.msg-row { align-self: flex-start; display: flex; align-items: flex-end; gap: 8px; max-width: min(86%, 744px); min-width: 0; }
+.msg-row > .msg { align-self: auto; max-width: 100%; min-width: 0; }
+.sav {
+  width: 30px; height: 30px; flex: none; border-radius: 50%; overflow: hidden;
+  display: grid; place-items: center;
+  background: color-mix(in srgb, var(--c, var(--vein-text)) 22%, var(--slate-2));
+  color: var(--c, var(--marble-dim)); font: 14px/1 var(--display);
+  box-shadow: inset 0 0 0 1px var(--edge);
+}
+.sav img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.sav-gap { width: 30px; flex: none; }
+.msg .who { display: flex; align-items: baseline; gap: 7px; min-width: 0; color: var(--c, var(--marble-dim)); }
+.msg .who-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.role {
+  flex: none; padding: 0 6px; border-radius: 6px; border: 1px solid var(--vein);
+  font: 500 9.5px/15px var(--mono); letter-spacing: 0.04em; color: var(--marble-dim); text-transform: lowercase;
+}
+.role.owner { border-color: var(--edge-2); color: var(--marble); }
+
+/* ---------- reply quote + jump highlight ---------- */
+.rq {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px; width: 100%; min-width: 0;
+  margin: 2px 0 6px; padding: 3px 9px; border: 0; border-left: 2px solid var(--c, var(--vein-text)); border-radius: 4px;
+  background: rgb(var(--hi-rgb) / 0.045); text-align: left; cursor: pointer;
+}
+.rq:hover { background: rgb(var(--hi-rgb) / 0.08); }
+.rq-who { font-size: 11.5px; font-weight: 700; color: var(--c, var(--marble-dim)); }
+.rq-text { max-width: 100%; font-size: 12.5px; color: var(--marble-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.msg.flash { animation: msgflash 1.6s ease-out; }
+@keyframes msgflash { 0%, 40% { box-shadow: 0 0 0 2px var(--marble-dim); } 100% { box-shadow: 0 0 0 2px transparent; } }
+
+/* ---------- photos, videos, stickers ---------- */
+.ph, .vid {
+  position: relative; display: block; width: var(--w, 320px); max-width: 100%; margin: 2px 0 4px; padding: 0;
+  border: 0; border-radius: 8px; overflow: hidden; background: var(--slate-2); cursor: zoom-in;
+}
+.vid { cursor: pointer; }
+.ph img, .vid img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ph.loading, .vid.loading { background: linear-gradient(100deg, var(--slate-2) 30%, var(--hover-2) 50%, var(--slate-2) 70%) 0 0 / 300% 100%; animation: shimmer 1.4s linear infinite; }
+@keyframes shimmer { to { background-position: -150% 0; } }
+.ph .ph-err { position: absolute; inset: 0; display: grid; place-items: center; font: 11px var(--mono); color: var(--vein-text); }
+.ph.spoiler img { filter: blur(22px) saturate(0.7); transform: scale(1.12); }
+.ph .ph-veil {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 3px 10px; border-radius: 10px;
+  background: rgb(var(--obsidian-rgb) / 0.75); font: 11px var(--mono); color: var(--marble); white-space: nowrap;
+}
+.vid.round { border-radius: 50%; }
+.vid.blank { background: var(--well); min-height: 120px; }
+.vid-badge {
+  position: absolute; left: 8px; bottom: 8px; padding: 1px 8px; border-radius: 9px;
+  background: rgb(var(--obsidian-rgb) / 0.78); font: 11px/18px var(--mono); color: var(--marble);
+}
+.vid.round .vid-badge { left: 50%; transform: translateX(-50%); }
+.vidbox .facts { margin-bottom: 2px; }
+.msg.bare { background: transparent; padding: 0; }
+.msg.bare .t { margin-top: 0; }
+.stk { width: 132px; height: 132px; display: grid; place-items: center; }
+.stk img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+.stk-alt { font-size: 64px; line-height: 1; }
+
+/* ---------- files and audio ---------- */
+.file {
+  display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 4px 10px; align-items: center;
+  min-width: min(300px, 100%); margin: 2px 0 4px; padding: 8px 10px; border-radius: 10px;
+  background: rgb(var(--hi-rgb) / 0.035); border: 1px solid var(--vein);
+}
+.ficon {
+  grid-row: span 2; width: 42px; height: 42px; border-radius: 8px; overflow: hidden; display: grid; place-items: center;
+  background: var(--slate-2); font: 500 10px var(--mono); color: var(--marble-dim); letter-spacing: 0.04em;
+}
+.ficon img { width: 100%; height: 100%; object-fit: cover; }
+.finfo { display: flex; flex-direction: column; min-width: 0; }
+.fname { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fmeta { font: 11px var(--mono); color: var(--vein-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.facts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 2px; }
+.file .facts { grid-column: 2; }
+.fstatus, .fnote { font: 11px var(--mono); color: var(--vein-text); }
+.ferr { display: block; font: 11px var(--mono); color: var(--amphora); }
+.btn.small { padding: 3px 10px; font-size: 12px; border-radius: 7px; }
+.aud { display: flex; flex-direction: column; gap: 4px; width: 300px; max-width: 100%; margin: 2px 0 4px; }
+.aud-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.aud-name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aud-meta { font: 11px var(--mono); color: var(--vein-text); white-space: nowrap; }
+.aud audio { width: 100%; height: 36px; color-scheme: dark; }
+:root[data-theme="marble"] .aud audio { color-scheme: light; }
+.aud .btn.small { align-self: flex-start; }
+
+/* ---------- rich message fallback (unsupported media, and the parts of a rich message not drawn here) ---------- */
+.rich-fb {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 2px 0 4px; padding: 8px 10px;
+  border: 1px dashed var(--edge); border-radius: 8px; color: var(--marble-dim); font-size: 13px;
+}
+
+/* ---------- rich messages (blocks from main/telegram.js richOf; .md supplies headings, lists, tables, code) ---------- */
+.msg .text.rich { white-space: normal; }
+.rich p, .rich li, .rich th, .rich td, .rich summary, .rich figcaption, .rich caption { white-space: pre-wrap; }
+.rich .r-kicker { margin: 0 0 4px; font: 500 10.5px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--vein-text); }
+.rich .r-footer, .rich .r-byline { margin: 6px 0 0; font-size: 12px; color: var(--vein-text); }
+.rich .r-cap { color: var(--vein-text); font-size: 12px; }
+.rich blockquote { margin: 4px 0 8px; }
+.rich blockquote > p { margin: 0 0 4px; }
+.rich blockquote footer { font-size: 12px; color: var(--vein-text); }
+.rich blockquote.r-pull { border-left-color: var(--marble-dim); font-style: italic; }
+.rich details { margin: 4px 0 8px; padding: 5px 10px; border: 1px solid var(--vein); border-radius: 8px; background: rgb(var(--hi-rgb) / 0.025); }
+.rich summary { cursor: pointer; font-weight: 500; color: var(--marble-dim); }
+.rich details[open] > summary { margin-bottom: 6px; }
+.rich details > :last-child { margin-bottom: 2px; }
+.rich details.r-think { border-style: dashed; background: none; }
+.rich details.r-think > summary { font: 11.5px var(--mono); font-weight: 400; color: var(--vein-text); }
+.rich details.r-think > p { margin: 0; font-size: 13px; color: var(--marble-dim); }
+.rich figure { margin: 4px 0 8px; }
+.rich figure > .ph, .rich figure > .vidbox, .rich figure > .file, .rich figure > .aud { margin-bottom: 2px; }
+.rich figcaption { font-size: 12px; color: var(--vein-text); }
+.rich .r-gallery { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 8px; }
+.rich .r-gallery > .r-fig { flex: 1 1 140px; max-width: 220px; margin: 0; }
+.rich .r-gallery .ph, .rich .r-gallery .vid { aspect-ratio: 4 / 3 !important; } /* even tiles; the lightbox shows the whole picture */
+.rich figure > .r-gallery { margin-bottom: 2px; }
+.rich table caption { caption-side: top; padding: 0 0 4px; text-align: left; font-weight: 700; }
+.rich table.r-striped tbody tr:nth-child(even) > td { background: rgb(var(--hi-rgb) / 0.03); }
+.rich mark { padding: 0 2px; border-radius: 3px; background: rgb(var(--gilt-rgb) / 0.28); color: inherit; }
+.rich .rich-ibtn { padding: 0 6px; border: 1px solid var(--vein); border-radius: 6px; font-size: 12.5px; }
+.rich .rich-gapword { font: 11.5px var(--mono); color: var(--vein-text); }
+.rich .r-num { font-family: var(--mono); color: var(--marble-dim); }
+.rich pre.r-math code { color: var(--marble-dim); }
+.rich .r-embed { overflow-wrap: anywhere; }
+.rich .r-links ul { margin-top: 0; }
+.rich .r-map { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 4px 0 8px; font-size: 13px; }
+.rich .r-map-pin { color: var(--marble-dim); }
+.rich .r-gap, .rich .r-note { margin: 4px 0 8px; }
+.rich .r-note { margin-bottom: 0; }
+.kb.r-btns { margin: 4px 0 8px; }
+.kb.r-btns.align-left .kb-btn, .kb.r-btns.align-center .kb-btn, .kb.r-btns.align-right .kb-btn { flex: 0 1 auto; }
+.kb.r-btns.align-center .kb-row { justify-content: center; }
+.kb.r-btns.align-right .kb-row { justify-content: flex-end; }
+
+/* ---------- inline keyboard ---------- */
+.kb { display: flex; flex-direction: column; gap: 4px; margin: 7px 0 2px; }
+.kb-row { display: flex; gap: 4px; }
+.kb-btn {
+  flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: center; gap: 5px;
+  padding: 6px 10px; border: 1px solid var(--vein); border-radius: 8px; background: rgb(var(--hi-rgb) / 0.05);
+  color: var(--marble); font-size: 12.5px; cursor: pointer;
+}
+.kb-btn:hover:not(:disabled) { background: rgb(var(--hi-rgb) / 0.1); }
+.kb-btn:disabled { color: var(--vein-text); cursor: default; }
+.kb-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kb-ico { flex: none; font-size: 11px; color: var(--vein-text); }
+/* styled buttons (layer 229): the bot's own emphasis, kept quiet */
+.kb-btn.tone-primary { border-color: color-mix(in srgb, var(--who-0) 35%, var(--basalt)); background: rgb(var(--who0-rgb) / 0.14); }
+.kb-btn.tone-success { border-color: color-mix(in srgb, var(--who-5) 30%, var(--basalt)); background: rgb(var(--lichen-rgb) / 0.15); }
+.kb-btn.tone-danger { border-color: var(--amphora-edge-2); background: rgb(var(--amphora-rgb) / 0.14); color: var(--amphora-text); }
+.kb-btn.tone-link { background: none; color: var(--link); }
+.kb-btn.busy { cursor: progress; background: linear-gradient(100deg, rgb(var(--hi-rgb) / 0.05) 30%, rgb(var(--hi-rgb) / 0.12) 50%, rgb(var(--hi-rgb) / 0.05) 70%) 0 0 / 300% 100%; animation: shimmer 1.2s linear infinite; }
+
+/* ---------- markdown ---------- */
+.msg .text.md { white-space: normal; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p { margin: 0 0 8px; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 12px 0 6px; font-family: var(--body); font-weight: 700; line-height: 1.3; }
+.md h1 { font-size: 1.28em; }
+.md h2 { font-size: 1.16em; }
+.md h3 { font-size: 1.06em; }
+.md h4, .md h5, .md h6 { font-size: 1em; color: var(--marble-dim); }
+.md ul, .md ol { margin: 4px 0 8px; padding-left: 1.45em; }
+.md li { margin: 2px 0; }
+.md li > p { margin: 0 0 4px; }
+.md li.task { list-style: none; margin-left: -1.2em; }
+.md .tick { margin-right: 6px; font-family: var(--mono); color: var(--marble-dim); }
+.md hr { border: 0; border-top: 1px solid var(--vein); margin: 10px 0; }
+.md pre code { background: none; padding: 0; border-radius: 0; font: inherit; }
+.md .md-table { max-width: 100%; overflow-x: auto; margin: 6px 0 8px; }
+.md table { border-collapse: collapse; width: max-content; min-width: 60%; max-width: none; font-size: 12.5px; }
+.md th, .md td { border: 1px solid var(--vein); padding: 4px 9px; text-align: left; vertical-align: top; }
+.md th { background: rgb(var(--hi-rgb) / 0.05); font-weight: 700; }
+.md [data-align="center"] { text-align: center; }
+.md [data-align="right"] { text-align: right; font-variant-numeric: tabular-nums; }
+.md-a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.md .md-table:focus-visible, .md pre:focus-visible { outline: 2px solid var(--patina); outline-offset: 2px; }
+
+/* ---------- context menu ---------- */
+.ctx {
+  position: fixed; z-index: 50; min-width: 176px; padding: 4px; border-radius: 10px;
+  background: var(--slate-2); border: 1px solid var(--edge); box-shadow: 0 12px 32px rgb(var(--shade-rgb) / 0.5);
+  -webkit-app-region: no-drag;
+}
+.ctx button { display: block; width: 100%; padding: 7px 12px; border: 0; border-radius: 6px; background: none; text-align: left; font-size: 13px; cursor: pointer; }
+.ctx button:hover:not(:disabled), .ctx button:focus { background: var(--vein); outline: none; }
+.ctx button:disabled { color: var(--vein-text); cursor: default; }
+.ctx button.danger { color: var(--amphora-text); }
+.ctx-sep { height: 1px; margin: 4px 8px; background: var(--vein); }
+
+/* ---------- reply bar (above the composer) ---------- */
+.replybar {
+  display: flex; align-items: center; gap: 10px; margin: 10px 16px 0; padding: 5px 6px 5px 10px;
+  border-left: 2px solid var(--c, var(--marble-dim)); border-radius: 6px; background: var(--slate);
+}
+.replybar[hidden] { display: none; }
+.rb-ico { color: var(--vein-text); font: 14px var(--mono); }
+.rb-body { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; }
+.rb-who { font-size: 11.5px; font-weight: 700; color: var(--c, var(--marble-dim)); }
+.rb-text { max-width: 100%; font-size: 12.5px; color: var(--marble-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rb-x { flex: none; padding: 4px 8px; border: 0; border-radius: 6px; background: none; color: var(--vein-text); cursor: pointer; }
+.rb-x:hover { background: var(--slate-2); color: var(--marble); }
+
+/* ---------- lightbox ---------- */
+.lightbox {
+  position: fixed; inset: var(--top) 0 0 0; z-index: 60; display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
+  background: rgb(var(--obsidian-rgb) / 0.94); -webkit-app-region: no-drag;
+}
+.lb-bar { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 10px 14px; }
+.lb-status { margin-right: auto; font: 11.5px var(--mono); color: var(--vein-text); }
+.lb-x { padding: 4px 10px; border: 0; border-radius: 7px; background: none; color: var(--marble-dim); font-size: 15px; cursor: pointer; }
+.lb-x:hover { background: var(--slate-2); color: var(--marble); }
+/* the stage is one fixed cell and the picture fills it with object-fit: contain, so the thumbnail and the
+   full-size image show at the same fitted size (a percentage max-height inside an auto-sized grid row
+   does not constrain anything: the full image used to jump to its natural, huge size) */
+.lb-stage { display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); min-height: 0; padding: 0 28px 14px; }
+.lb-img { width: 100%; height: 100%; object-fit: contain; }
+.lb-cap { margin: 0; padding: 0 28px 18px; text-align: center; color: var(--marble-dim); font-size: 13px; white-space: pre-wrap; }
+
+/* ---------- toasts ---------- */
+.toasts { position: absolute; left: 50%; bottom: 140px; transform: translateX(-50%); z-index: 40; display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none; width: max-content; max-width: 90%; }
+.toast {
+  pointer-events: auto; max-width: 440px; padding: 8px 14px; border-radius: 10px; background: var(--slate-2);
+  border: 1px solid var(--edge); box-shadow: 0 10px 28px rgb(var(--shade-rgb) / 0.45); font-size: 12.5px; color: var(--marble);
+  transition: opacity 0.3s;
+}
+.toast.bad { border-color: var(--amphora-edge-2); color: var(--amphora-text); }
+.toast.out { opacity: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ph.loading, .vid.loading, .kb-btn.busy, .msg.flash { animation: none; }
+  .toast { transition: none; }
+}
+
+/* ---------- system notices (injected by Hermes as user-role messages; collapsed by default) ---------- */
+.msg.sysmsg { align-self: flex-end; max-width: min(86%, 744px); background: transparent; padding: 0; }
+.sysgroup { align-self: flex-end; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; max-width: min(86%, 744px); }
+.sysnotice { min-width: 0; max-width: 100%; }
+.sysnotice-head { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 3px 10px; border: 1px dashed var(--vein); border-radius: 999px; background: none; color: var(--vein-text); font: 11.5px var(--mono); cursor: pointer; }
+.sysnotice-head:hover, .sysnotice.open .sysnotice-head { border-color: var(--vein-text); color: var(--marble-dim); }
+.sysnotice-head:focus-visible { outline: 2px solid var(--patina); outline-offset: 2px; }
+.sysnotice-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sysnotice-body { margin: 4px 0 0; padding: 8px 10px; border: 1px solid var(--vein); border-radius: 8px; background: var(--well); color: var(--marble-dim); font: 12px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; }

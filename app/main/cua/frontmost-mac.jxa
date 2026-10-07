@@ -1,0 +1,25 @@
+// Built-in osascript/JXA only: one public frontmost app and its AXFocusedWindow. No window-ID SPI.
+ObjC.import('AppKit');
+
+function run(argv) {
+  const targetPid = argv[0] ? Number(argv[0]) : 0;
+  const identityOnly = argv[1] === 'identity';
+  const app = targetPid ? $.NSRunningApplication.runningApplicationWithProcessIdentifier(targetPid) : $.NSWorkspace.sharedWorkspace.frontmostApplication;
+  if (!app || app.isTerminated) throw new Error('Focused application is unavailable');
+  const pid = Number(app.processIdentifier);
+  const result = {
+    pid: pid,
+    app: ObjC.unwrap(app.localizedName),
+    bundleId: ObjC.unwrap(app.bundleIdentifier),
+    executable: ObjC.unwrap(app.executableURL.path)
+  };
+  if (!identityOnly) {
+    const proc = Application('System Events').applicationProcesses.whose({ unixId: pid })[0];
+    const focused = proc.attributes.byName('AXFocusedWindow').value();
+    const position = focused.position();
+    const size = focused.size();
+    result.title = focused.name();
+    result.bounds = { x: position[0], y: position[1], width: size[0], height: size[1] };
+  }
+  return JSON.stringify(result);
+}

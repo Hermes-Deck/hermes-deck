@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Check versioned files only; dependencies, private config and generated output stay ignored.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+python3 - <<'PY'
+import pathlib
+import re
+import subprocess
+import sys
+
+patterns = re.compile(r'/root/|/srv/|192\.168\.|@gmail\.com|\.local\b')
+# Narrow, reviewed exceptions to synthetic fixtures and generic platform paths.
+# Add exceptions only with a reason; never exempt a whole source tree.
+allowlist = [
+    # Detector definitions describe forbidden prefixes, not an infrastructure location.
+    ('scripts/check-public.sh', re.compile(r'/root/(?=\|)|/srv/(?=\|)')),
+    # Local properties and the legacy filename are not private hostnames.
+    ('app/main/settings.js', re.compile(r'(?<=deck)\.local(?=\.json)')),
+    ('app/test/browser-transfer-e2e.test.js', re.compile(r'\.local(?=\.push\()')),
+    ('app/test/launch-context.test.js', re.compile(r'(?<=w)\.local(?=[, }])')),
+    ('app/test/readsync.test.js', re.compile(r'(?<=\.\.)\.local\b')),
+    # Generic mDNS suffix-stripping code must recognize the local hostname suffix.
+    ('app/main/presence.js', re.compile(r'\.local(?=\$)')),
+    ('relay/src/browser.js', re.compile(r'\.local(?=["$])')),
+    # Synthetic host-validation fixture (not a maintainer's host).
+    ('app/test/bridge.test.js', re.compile(r'(?<=me@box)\.local(?=")')),
+    # Synthetic absolute paths used in attachment, transfer and launch regression tests.
+    ('app/scripts/appshots-e2e.js', re.compile(r'/srv/example/')),
+    ('app/test/bridge.test.js', re.compile(r'/srv/(?:hermes/|stream\.py)')),
+    ('app/test/fake-stream.js', re.compile(r'/srv/example/')),
+    ('app/test/voice-files.test.js', re.compile(r'/srv/(?:out(?:/|\b)|example/|hermes/|other/|ok\b|\.\./)')),
+    ('hermes-plugin/hermes-deck/test_appshot.py', re.compile(r'/srv/example/')),
+    ('hermes-plugin/hermes-deck/test_attach.py', re.compile(r'/srv/example(?:/|["\'])')),
+    ('hermes-plugin/hermes-deck/test_voice_files.py', re.compile(r'/srv/example-home\b')),
+    ('relay/test/mobile.test.js', re.compile(r'/srv/(?:stream\.py|photo\.png|(?=[\'\"]))')),
+    # Root-home fixtures exercise redaction and refusal of SSH private keys; no account data.
+    ('app/test/media-preview.test.js', re.compile(r'/root/\.hermes/attachments\b')),
+    ('hermes-plugin/hermes-deck/test_voice_files.py', re.compile(r'/root/\.ssh/id_rsa\b')),
+]
+paths = subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')
+findings = []
+checked = 0
+for name in paths:
+    if not name:
+        continue
+    path = pathlib.Path(name)
+    if not path.is_file():
+        continue  # staged deletions and submodules have no file content
+    checked += 1
+    data = path.read_bytes()
+    if len(data) > 5 * 1024 * 1024:
+        findings.append(f'{name}: file exceeds 5 MiB ({len(data)} bytes)')
+    if b'\0' in data:
+        continue
+    for number, line in enumerate(data.decode('utf-8', errors='replace').splitlines(), 1):
+        for match in patterns.finditer(line):
+            # Only this checker's regex definitions may spell the forbidden prefixes.
+            definition = name == 'scripts/check-public.sh' and 're.compile(' in line
+            allowed = definition or any(
+                expression.match(line, match.start()) for p, expression in allowlist if p == name
+            )
+            if not allowed:
+                findings.append(f'{name}:{number}: {match.group()}')
+for finding in findings:
+    print(finding)
+print(f'public-content: {checked} tracked files checked, {len(findings)} findings')
+sys.exit(bool(findings))
+PY

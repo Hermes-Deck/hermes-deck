@@ -1,0 +1,27 @@
+/* Bot screen bar (main/cua/bar.js): an agent may act on this computer. Tokens and fonts come from
+   styles.css; amphora marks it as the alert it is. The window is transparent: only the pill is drawn. */
+html, body.bar-page { height: 100%; margin: 0; background: transparent; overflow: hidden; }
+body.bar-page { display: grid; place-items: center; user-select: none; cursor: default; }
+
+.bar {
+  display: flex; align-items: center; gap: 10px; height: 40px; max-width: calc(100vw - 16px);
+  padding: 0 5px 0 14px; border-radius: 20px;
+  background: color-mix(in srgb, var(--amphora) 14%, var(--basalt));
+  border: 1px solid color-mix(in srgb, var(--amphora) 70%, var(--vein));
+  box-shadow: 0 8px 22px rgb(var(--shade-rgb) / 0.55), 0 0 0 1px rgb(var(--shade-rgb) / 0.35);
+  white-space: nowrap; font: 13px var(--body); color: var(--marble-dim);
+}
+.pulse { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--amphora); box-shadow: 0 0 0 0 rgb(var(--amphora-rgb) / 0.6); animation: barpulse 1.6s ease-out infinite; }
+@keyframes barpulse { 70% { box-shadow: 0 0 0 7px rgb(var(--amphora-rgb) / 0); } 100% { box-shadow: 0 0 0 0 rgb(var(--amphora-rgb) / 0); } }
+.txt { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.txt b { font: 14px var(--display); letter-spacing: 0.03em; color: var(--marble); font-weight: 400; }
+.txt #app { color: var(--marble); }
+.meta { flex: none; font: 11px var(--mono); color: var(--vein-text); }
+.stop {
+  flex: none; height: 30px; padding: 0 14px; border-radius: 15px; border: 0;
+  background: var(--amphora); color: var(--obsidian); font: 700 12.5px var(--body); cursor: pointer;
+}
+.stop:hover { background: var(--amphora-hover); }
+
+body.shot *, body.shot *::before, body.shot *::after { animation: none !important; transition: none !important; }
+@media (prefers-reduced-motion: reduce) { .pulse { animation: none; } }

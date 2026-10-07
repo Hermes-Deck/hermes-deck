@@ -1,0 +1,176 @@
+{
+  "_comment": "Hand-made data for the sub-agent views (B1-B4, A13, F2) in fixture mode. No real people, chats, ids, models or links. Times are seconds before the run (…Ago / ago).",
+  "me": { "id": "1000", "name": "Deniz Örnek" },
+  "dialogs": {
+    "group": { "id": "-1001234567890", "title": "Saha Ekibi" },
+    "forumGroups": [{ "id": "-1001234567890", "title": "Saha Ekibi" }],
+    "bots": [
+      { "key": "u7001", "id": "7001", "username": "atlas_ornek_bot", "title": "Atlas", "unread": 0, "last": { "id": 503, "ago": 420, "out": true, "fromId": "1000", "from": "Deniz Örnek", "text": "S-02'nin pil durumunu kontrol et, raporu güncelle ve kaynakları doğrula.", "ents": [] } },
+      { "key": "u7002", "id": "7002", "username": "katip_ornek_bot", "title": "Kâtip", "unread": 0, "last": { "id": 601, "ago": 7200, "fromId": "7002", "from": "Kâtip", "fromBot": true, "text": "Takvim güncel.", "ents": [] } }
+    ],
+    "topics": [
+      { "key": "t5", "id": 5, "title": "Saha notları", "color": 9301656, "unread": 0, "pinned": true, "closed": false, "last": null },
+      { "key": "t1", "id": 1, "title": "Genel", "color": 7322096, "unread": 0, "pinned": false, "closed": false, "last": null }
+    ]
+  },
+  "messages": {
+    "u7001": [
+      { "id": 501, "ago": 86000, "out": true, "fromId": "1000", "from": "Deniz Örnek", "text": "Dünkü ölçüm özetini çıkarır mısın?", "ents": [] },
+      { "id": 502, "ago": 85900, "fromId": "7001", "from": "Atlas", "fromBot": true, "text": "Özet hazır: 3 sensör, S-02 için veri eksik görünüyor.", "ents": [] },
+      { "id": 503, "ago": 420, "out": true, "fromId": "1000", "from": "Deniz Örnek", "text": "S-02'nin pil durumunu kontrol et, raporu güncelle ve kaynakları doğrula.", "ents": [], "replyToId": 502 }
+    ],
+    "u7002": [{ "id": 601, "ago": 7200, "fromId": "7002", "from": "Kâtip", "fromBot": true, "text": "Takvim güncel.", "ents": [] }],
+    "t5": [],
+    "t1": []
+  },
+  "relay": {
+    "agents": {
+      "Atlas": { "name": "Atlas", "bot": "atlas_ornek_bot", "profile": "atlas", "today": { "n": 41, "in": 31000, "cr": 1210000, "cw": 26000, "out": 19500, "rs": 0, "usd": 0 } },
+      "Kâtip": { "name": "Kâtip", "bot": "katip_ornek_bot", "profile": "katip", "today": { "n": 12, "in": 9000, "cr": 210000, "cw": 4000, "out": 3100, "rs": 0, "usd": 0 } },
+      "Claude Code": { "name": "Claude Code", "bot": null, "profile": "claude-code", "today": { "n": 9, "in": 40, "cr": 380000, "cw": 22000, "out": 5200, "rs": 0, "usd": 0.84 } }
+    },
+    "fleet": null,
+    "tokens": [],
+    "sessions": [
+      {
+        "sid": "20261005_090000_a1b2c3", "profile": "atlas", "agent": "Atlas", "state": "running", "platform": "telegram", "chat": "1000",
+        "firstAgo": 5400, "lastAgo": 5, "turnAgo": 420, "turns": 3, "ntools": 14, "model": "model-alpha",
+        "lastMsg": "[Replying to: \"Özet hazır: 3 sensör, S-02 için veri eksik görünüyor.\"]\n\n[Deniz Örnek|1000]\nS-02'nin pil durumunu kontrol et, raporu güncelle ve kaynakları doğrula.",
+        "curTool": { "tool": "delegate_task", "call": "delegate_task_9_ee01", "sinceAgo": 405 },
+        "tokens": { "in": 21000, "cr": 640000, "cw": 12000, "out": 9100, "rs": 0 }, "ctxUsed": 88000, "ctxLen": 200000,
+        "lastCall": { "in": 1200, "cr": 84000, "cw": 2800, "out": 640 },
+        "children": ["20261005_090105_c4d5e6", "20261005_090110_aa11bb", "20261005_090220_f7a8b9"]
+      },
+      {
+        "sid": "20261005_090105_c4d5e6", "profile": "atlas", "agent": "Atlas", "parent": "20261005_090000_a1b2c3", "state": "failed",
+        "firstAgo": 400, "lastAgo": 330, "turns": 1, "ntools": 6, "model": "model-beta", "role": "leaf", "sa": "sa-0-1a2b3c4d",
+        "goal": "Kaynakça listesindeki 24 bağlantıyı kontrol et; kırık olanları ve yerine geçebilecek kaynakları listele.",
+        "origin": "omh", "route": { "category": "research", "model": "model-beta", "provider": "prov-b", "effort": "high" },
+        "ms": 70000, "summary": "Zaman aşımı: 6 araç çağrısından sonra durdu.",
+        "tokens": { "in": 3000, "cr": 52000, "cw": 0, "out": 900, "rs": 0 }, "children": []
+      },
+      {
+        "sid": "20261005_090110_aa11bb", "profile": "atlas", "agent": "Atlas", "parent": "20261005_090000_a1b2c3", "state": "done",
+        "firstAgo": 395, "lastAgo": 120, "turns": 1, "ntools": 5, "model": "model-alpha", "role": "orchestrator", "sa": "sa-1-5e6f7a8b",
+        "goal": "Raporun S-02 bölümünü yeniden yaz: pil verisini tabloya ekle, sonucu iki cümleyle özetle.",
+        "origin": "omh", "route": { "category": "writing", "model": "model-alpha", "provider": "prov-a" },
+        "ms": 275000, "tokens": { "in": 4100, "cr": 96000, "cw": 3000, "out": 2600, "rs": 0 },
+        "children": ["20261005_090140_cc22dd"]
+      },
+      {
+        "sid": "20261005_090140_cc22dd", "profile": "atlas", "agent": "Atlas", "parent": "20261005_090110_aa11bb", "state": "done",
+        "firstAgo": 360, "lastAgo": 200, "turns": 1, "ntools": 3, "model": "model-delta", "role": "leaf", "sa": "sa-0-9c0d1e2f",
+        "goal": "S-02 pil ölçümlerini CSV'den çek ve haftalık ortalamayı hesapla.", "origin": "omh",
+        "ms": 160000, "tokens": { "in": 1800, "cr": 41000, "cw": 900, "out": 700, "rs": 0 }, "children": []
+      },
+      {
+        "sid": "20261005_090220_f7a8b9", "profile": "atlas", "agent": "Atlas", "parent": "20261005_090000_a1b2c3", "state": "running",
+        "firstAgo": 300, "lastAgo": 4, "turns": 1, "ntools": 8, "model": "model-gamma", "role": "leaf", "sa": "sa-2-3a4b5c6d",
+        "goal": "Kaynakça listesindeki 24 bağlantıyı kontrol et; kırık olanları ve yerine geçebilecek kaynakları listele.",
+        "origin": "omh", "route": { "category": "research", "model": "model-gamma", "provider": "prov-g", "effort": "medium" },
+        "curTool": { "tool": "web_extract", "call": "web_extract_7_ab12", "sinceAgo": 14 },
+        "tokens": { "in": 2200, "cr": 180000, "cw": 6000, "out": 3400, "rs": 0 }, "children": []
+      },
+      {
+        "sid": "20261005_091500_dd33ee", "profile": "katip", "agent": "Kâtip", "state": "running", "platform": "telegram",
+        "chat": "-1001234567890", "thread": "5", "firstAgo": 9000, "lastAgo": 3, "turnAgo": 95, "turns": 6, "ntools": 9, "model": "model-epsilon",
+        "lastMsg": "[Grup bağlamı: Saha Ekibi · #Saha notları · son 3 mesaj]\n[Mira Kestane|2002]\nYarınki saha programını takvime işle ve ekibe hatırlat.",
+        "curTool": { "tool": "terminal", "call": "terminal_3_ff01", "sinceAgo": 38 },
+        "tokens": { "in": 7000, "cr": 150000, "cw": 3000, "out": 2100, "rs": 0 }, "children": []
+      },
+      {
+        "sid": "20261005_080000_ee44ff", "profile": "katip", "agent": "Kâtip", "state": "idle", "platform": "telegram", "chat": "1000",
+        "firstAgo": 12000, "lastAgo": 2400, "turns": 2, "ntools": 4, "model": "model-epsilon",
+        "lastMsg": "Geçen ayın saha raporlarını arşivle, özetini bana gönder.",
+        "tokens": { "in": 2000, "cr": 60000, "cw": 1000, "out": 1000, "rs": 0 }, "children": ["20261005_081000_ff55aa"]
+      },
+      {
+        "sid": "20261005_081000_ff55aa", "profile": "katip", "agent": "Kâtip", "parent": "20261005_080000_ee44ff", "state": "running",
+        "firstAgo": 2500, "lastAgo": 9, "turns": 1, "ntools": 31, "model": "model-zeta", "role": "leaf",
+        "goal": "Eylül klasöründeki 40 saha raporunu tek arşivde topla ve içindekiler listesi çıkar.",
+        "curTool": { "tool": "read_file", "call": "read_file_31_aa77", "sinceAgo": 9 },
+        "tokens": { "in": 5000, "cr": 410000, "cw": 9000, "out": 6100, "rs": 0 }, "children": []
+      },
+      {
+        "sid": "0b1c2d3e-4f50-4a61-8b72-93a4b5c6d7e8", "profile": "claude-code", "agent": "Claude Code", "state": "idle",
+        "firstAgo": 20000, "lastAgo": 14000, "turns": 4, "ntools": 22, "model": "claude-model-x", "cost": 0.84,
+        "lastMsg": "Depodaki testleri çalıştır ve kırılanları düzelt.",
+        "tokens": { "in": 40, "cr": 380000, "cw": 22000, "out": 5200, "rs": 0 }, "children": []
+      }
+    ],
+    "details": {
+      "20261005_090220_f7a8b9": {
+        "recent": [
+          { "call": "read_file_0_aa01", "tool": "read_file", "args": "{\"path\": \"rapor/kaynakca.md\"}", "ago": 287, "ms": 41, "status": "ok", "result": "# Kaynakça\n1. https://example.org/olcum/s-02 — Saha ölçüm protokolü\n2. https://example.org/arsiv/2025/rapor.pdf — 2025 yıllık rapor\n3. https://example.net/veri — Açık veri portalı\n4. https://example.com/kalibrasyon — Kalibrasyon notları\n5. https://example.com/a — Pil üreticisi teknik föyü…" },
+          { "call": "web_extract_3_bb02", "tool": "web_extract", "args": "{\"urls\": [\"https://example.org/arsiv/2025/rapor.pdf\", \"https://example.org/olcum/s-02\"]}", "ago": 240, "ms": 9800, "status": "ok", "result": "{\"results\": [{\"url\": \"https://example.org/arsiv/2025/rapor.pdf\", \"status\": 404}, {\"url\": \"https://example.org/olcum/s-02\", \"status\": 200, \"title\": \"Saha ölçüm protokolü\"}]}" },
+          { "call": "terminal_4_cc03", "tool": "terminal", "args": "{\"command\": \"curl -sI https://example.net/veri | head -1\"}", "ago": 239, "ms": 820, "status": "ok", "result": "HTTP/2 404" },
+          { "call": "web_extract_7_ab12", "tool": "web_extract", "args": "{\"urls\": [\"https://example.com/a\", \"https://example.com/b\", \"https://example.com/c\"]}", "ago": 14 }
+        ]
+      }
+    },
+    "history": {
+      "20261005_090000_a1b2c3": {
+        "meta": { "kind": "hermes", "profile": "atlas", "source": "telegram", "model": "model-alpha", "startedAgo": 5400, "msgs": 7, "tools": 14, "tokens": { "in": 21000, "cr": 640000, "cw": 12000, "out": 9100, "rs": 0 },
+          "kids": [{ "sid": "20261005_090105_c4d5e6", "model": "model-beta" }, { "sid": "20261005_090110_aa11bb", "model": "model-alpha" }, { "sid": "20261005_090220_f7a8b9", "model": "model-gamma" }] },
+        "items": [
+          { "id": "h:atlas:901", "role": "user", "ago": 86000, "text": "Dünkü ölçüm özetini çıkarır mısın?" },
+          { "id": "h:atlas:902", "role": "assistant", "ago": 85900, "text": "Özet hazır: 3 sensör, S-02 için veri eksik görünüyor." },
+          { "id": "h:atlas:990", "role": "user", "ago": 420, "text": "[Replying to: \"Özet hazır: 3 sensör, S-02 için veri eksik görünüyor.\"]\n\n[Deniz Örnek|1000]\nS-02'nin pil durumunu kontrol et, raporu güncelle ve kaynakları doğrula." },
+          { "id": "h:atlas:991", "role": "assistant", "ago": 412, "think": "Üç bağımsız iş var: kaynakça, rapor bölümü ve pil verisi. Kaynakçayı araştırma rotasına, yazımı yazı rotasına vereceğim.", "text": "İşi üç alt-ajana bölüyorum.", "calls": [
+            { "call": "omh_delegate_route_7_aa90", "name": "omh_delegate_route", "args": "{\"action\": \"set\", \"category\": \"research\", \"model\": \"model-beta\", \"provider\": \"prov-b\", \"reasoning_effort\": \"high\"}" },
+            { "call": "delegate_task_8_bb91", "name": "delegate_task", "args": "{\"tasks\": [{\"goal\": \"Kaynakça listesindeki 24 bağlantıyı kontrol et…\"}, {\"goal\": \"Raporun S-02 bölümünü yeniden yaz…\"}]}" }
+          ] },
+          { "id": "h:atlas:992", "role": "tool", "ago": 411, "call": "omh_delegate_route_7_aa90", "name": "omh_delegate_route", "text": "{\"applied\": {\"model\": \"model-beta\", \"provider\": \"prov-b\", \"reasoning_effort\": \"high\"}, \"category\": \"research\", \"status\": \"routed\"}" },
+          { "id": "h:atlas:993", "role": "tool", "ago": 330, "call": "delegate_task_8_bb91", "name": "delegate_task", "text": "{\"results\": [{\"status\": \"failed\", \"error\": \"timeout\"}, {\"status\": \"completed\"}]}" },
+          { "id": "h:atlas:994", "role": "assistant", "ago": 305, "text": "Kaynakça alt-ajanı zaman aşımına uğradı; başka bir modelle yeniden başlatıyorum.", "calls": [
+            { "call": "delegate_task_9_ee01", "name": "delegate_task", "args": "{\"goal\": \"Kaynakça listesindeki 24 bağlantıyı kontrol et…\", \"model\": \"model-gamma\"}" }
+          ] }
+        ]
+      },
+      "20261005_090220_f7a8b9": {
+        "meta": { "kind": "hermes", "profile": "atlas", "source": "subagent", "model": "model-gamma", "parent": "20261005_090000_a1b2c3", "startedAgo": 300, "msgs": 9, "tools": 8, "tokens": { "in": 2200, "cr": 180000, "cw": 6000, "out": 3400, "rs": 0 } },
+        "items": [
+          { "id": "h:atlas:1001", "role": "user", "ago": 300, "text": "Kaynakça listesindeki 24 bağlantıyı kontrol et; kırık olanları ve yerine geçebilecek kaynakları listele.\n\nÖnceki deneme zaman aşımına uğradı; bu kez her alan adını ayrı dene ve 20 saniyeden uzun süren isteği bırak." },
+          { "id": "h:atlas:1002", "role": "assistant", "ago": 288, "think": "Önce listeyi okuyup alan adlarına göre gruplayacağım; aynı alan adındaki bağlantıları tek istekte denerim.", "calls": [{ "call": "read_file_0_aa01", "name": "read_file", "args": "{\"path\": \"rapor/kaynakca.md\"}" }] },
+          { "id": "h:atlas:1003", "role": "tool", "ago": 287, "call": "read_file_0_aa01", "name": "read_file", "truncated": true, "text": "# Kaynakça\n1. https://example.org/olcum/s-02 — Saha ölçüm protokolü\n2. https://example.org/arsiv/2025/rapor.pdf — 2025 yıllık rapor\n3. https://example.net/veri — Açık veri portalı\n4. https://example.com/kalibrasyon — Kalibrasyon notları\n5. https://example.com/a — Pil üreticisi teknik föyü" },
+          { "id": "h:atlas:1004", "role": "assistant", "ago": 240, "text": "24 bağlantının 19'u çalışıyor. Kalan 5'ini alan adına göre deniyorum.", "calls": [
+            { "call": "web_extract_3_bb02", "name": "web_extract", "args": "{\"urls\": [\"https://example.org/arsiv/2025/rapor.pdf\", \"https://example.org/olcum/s-02\"]}" },
+            { "call": "terminal_4_cc03", "name": "terminal", "args": "{\"command\": \"curl -sI https://example.net/veri | head -1\"}" }
+          ] },
+          { "id": "h:atlas:1005", "role": "tool", "ago": 230, "call": "web_extract_3_bb02", "name": "web_extract", "text": "{\"results\": [{\"url\": \"https://example.org/arsiv/2025/rapor.pdf\", \"status\": 404}, {\"url\": \"https://example.org/olcum/s-02\", \"status\": 200, \"title\": \"Saha ölçüm protokolü\"}]}" },
+          { "id": "h:atlas:1006", "role": "tool", "ago": 229, "call": "terminal_4_cc03", "name": "terminal", "text": "HTTP/2 404" },
+          { "id": "h:atlas:1007", "role": "assistant", "ago": 60, "text": "## Ara sonuç\n\n| Bağlantı | Durum | Öneri |\n|:--|:-:|:--|\n| example.org/arsiv/2025 | 404 | arşiv kopyası |\n| example.net/veri | 404 | example.net/veri-2026 |\n\nSon üç bağlantıyı deniyorum.", "calls": [
+            { "call": "web_extract_7_ab12", "name": "web_extract", "args": "{\"urls\": [\"https://example.com/a\", \"https://example.com/b\", \"https://example.com/c\"]}" }
+          ] }
+        ]
+      }
+    },
+    "full": {
+      "h:atlas:1003": { "id": "h:atlas:1003", "role": "tool", "ago": 287, "call": "read_file_0_aa01", "name": "read_file", "text": "# Kaynakça\n1. https://example.org/olcum/s-02 — Saha ölçüm protokolü\n2. https://example.org/arsiv/2025/rapor.pdf — 2025 yıllık rapor\n3. https://example.net/veri — Açık veri portalı\n4. https://example.com/kalibrasyon — Kalibrasyon notları\n5. https://example.com/a — Pil üreticisi teknik föyü\n6. https://example.com/b — Sensör kurulum kılavuzu\n7. https://example.com/c — Hücre kimyası özeti\n8. https://example.edu/makale/412 — Düşük sıcaklıkta pil kapasitesi\n…\n24. https://example.org/sozluk — Terimler sözlüğü" }
+    },
+    "live": [
+      {
+        "after": 3500,
+        "evs": [
+          { "ev": "tool_end", "profile": "atlas", "agent": "Atlas", "sid": "20261005_090220_f7a8b9", "tool": "web_extract", "call": "web_extract_7_ab12", "ms": 12100, "status": "ok", "result": "{\"results\": [{\"url\": \"https://example.com/a\", \"status\": 200}, {\"url\": \"https://example.com/b\", \"status\": 301}, {\"url\": \"https://example.com/c\", \"status\": 404}]}", "ago": 2 },
+          { "ev": "tool_start", "profile": "atlas", "agent": "Atlas", "sid": "20261005_090220_f7a8b9", "tool": "terminal", "call": "terminal_8_dd04", "args": "{\"command\": \"curl -sIL https://example.com/b | grep -i location\"}", "ago": 1 }
+        ],
+        "sessions": [
+          {
+            "sid": "20261005_090220_f7a8b9", "profile": "atlas", "agent": "Atlas", "parent": "20261005_090000_a1b2c3", "state": "running",
+            "firstAgo": 303, "lastAgo": 1, "turns": 1, "ntools": 9, "model": "model-gamma", "role": "leaf", "sa": "sa-2-3a4b5c6d",
+            "goal": "Kaynakça listesindeki 24 bağlantıyı kontrol et; kırık olanları ve yerine geçebilecek kaynakları listele.",
+            "origin": "omh", "route": { "category": "research", "model": "model-gamma", "provider": "prov-g", "effort": "medium" },
+            "curTool": { "tool": "terminal", "call": "terminal_8_dd04", "sinceAgo": 1 },
+            "tokens": { "in": 2300, "cr": 196000, "cw": 6000, "out": 3600, "rs": 0 }, "children": []
+          }
+        ]
+      }
+    ]
+  },
+  "scenes": {
+    "subagent": { "open": "20261005_090220_f7a8b9", "expand": "read_file_0_aa01" },
+    "session": { "open": "20261005_090000_a1b2c3", "ctx": "dt:h:atlas:990" },
+    "tree": { "running": false, "ctx": "card:20261005_090000_a1b2c3", "tools": "20261005_090220_f7a8b9", "toolExpand": "20261005_090220_f7a8b9#web_extract_3_bb02" }
+  }
+}

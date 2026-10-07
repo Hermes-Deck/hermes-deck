@@ -1,0 +1,8 @@
+# Text is stored and checked out as LF; binary assets are detected automatically.
+*                   text=auto eol=lf
+
+# Scripts that run on macOS/Linux agent hosts, often copied there from a Windows checkout (where Git may
+# convert to CRLF): a CR breaks the shebang line ("/bin/sh^M") and systemd unit values.
+*.sh                text eol=lf
+relay/bin/deck-cua  text eol=lf
+*.service           text eol=lf

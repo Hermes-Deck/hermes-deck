@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <title data-i18n="A0158">Hermes Deck status</title>
+  <script src="theme.js"></script>
+  <link rel="stylesheet" href="fonts.css">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="pet.css">
+  <link rel="stylesheet" href="pets/skins/sprite.css">
+  <link rel="stylesheet" href="pets/skins/character.css">
+  <link rel="stylesheet" href="pets/skins/owl.css">
+  <link rel="stylesheet" href="pets/skins/philosopher.css">
+  <link rel="stylesheet" href="pets/skins/leo.css">
+  <link rel="stylesheet" href="pets/skins/hasret.css">
+  <link rel="stylesheet" href="pets/skins/hayat.css">
+  <link rel="stylesheet" href="pets/skins/orb.css">
+  <link rel="stylesheet" href="pets/skins/agent.css">
+</head>
+<body class="pet-page" data-mode="offline">
+  <div class="pet">
+    <!-- above the pet: the speech bubble (and room for a hop) -->
+    <div class="pet-band">
+      <button class="pet-bubble" id="bubble" type="button" hidden>
+        <span class="who" id="bubble-who"></span>
+        <span class="say" id="bubble-say"></span>
+      </button>
+    </div>
+    <div class="pet-row">
+      <div class="pet-bar" id="bar">
+        <span class="pet-text" id="text"></span>
+        <button class="pet-btn primary" id="open" type="button" data-i18n="pet.open">Open Deck</button>
+        <button class="pet-btn" id="hide" type="button" data-i18n="pet.hide">Hide</button>
+      </div>
+      <div class="pet-slot" id="slot" data-skin="character" data-pose="sit">
+        <!-- the skin draws here (pets/skins/*.js); one-shot hops and shakes move this box -->
+        <div class="pet-stage" id="stage" aria-hidden="true"></div>
+        <!-- what takes the mouse: hover opens the bar, a press drags, a click opens the deck -->
+        <button class="pet-hit" id="hit" type="button" aria-label="Hermes Deck"></button>
+        <span class="pet-count" id="count" hidden></span>
+        <span class="pet-runs" id="runs" hidden></span>
+      </div>
+    </div>
+  </div>
+  <script src="i18n.js"></script>
+  <script src="pets/logic.js"></script>
+  <script src="pets/skins/sprite.js"></script>
+  <script src="pets/skins/character.js"></script>
+  <script src="pets/skins/owl.js"></script>
+  <script src="pets/skins/philosopher.js"></script>
+  <script src="pets/skins/leo.js"></script>
+  <script src="pets/skins/hasret.js"></script>
+  <script src="pets/skins/hayat.js"></script>
+  <script src="pets/skins/orb.js"></script>
+  <script src="pets/skins/agent.js"></script>
+  <script src="pet.js"></script>
+</body>
+</html>

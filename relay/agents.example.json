@@ -1,0 +1,7 @@
+{
+  "profiles": {
+    "default": { "name": "Hermes", "bot": "YourHermesBot", "emoji": "⚖️" },
+    "research": { "name": "Research", "bot": "YourResearchBot", "emoji": "🔭" },
+    "claude-code": { "name": "Claude Code", "bot": null, "emoji": "📋" }
+  }
+}

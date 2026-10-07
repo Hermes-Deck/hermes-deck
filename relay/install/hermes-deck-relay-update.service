@@ -1,0 +1,14 @@
+# systemd user unit: one relay update check (docs/updating.md). Started by hermes-deck-relay-update.timer.
+#   cp install/hermes-deck-relay-update.{service,timer} ~/.config/systemd/user/
+#   edit ExecStart to your install root (or plain checkout), then:
+#   systemctl --user daemon-reload && systemctl --user enable --now hermes-deck-relay-update.timer
+# It writes <data dir>/update-check.json, which the relay's /health reports as updateAvailable. It installs an update
+# only when DECK_RELAY_AUTO_UPDATE=1 is set in the relay's .env (default: off) and the relay runs from an install root.
+# Exit code 10 means "a newer release is available"; it is not a failure.
+[Unit]
+Description=Hermes Deck relay update check
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env node %h/hermes-deck/current/relay/bin/deck-relay-update --check --auto
+SuccessExitStatus=10

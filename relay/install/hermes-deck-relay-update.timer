@@ -1,0 +1,11 @@
+# systemd user timer: check for a relay update once a day (see hermes-deck-relay-update.service, docs/updating.md).
+[Unit]
+Description=Daily Hermes Deck relay update check
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

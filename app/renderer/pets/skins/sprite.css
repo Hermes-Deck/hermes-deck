@@ -1,0 +1,72 @@
+/* Sprite skins (pets/skins/sprite.js): Karakter and the other illustrated pets. One layer per animation, each
+   a 4-frame strip (pets/<id>/)
+   moved by steps() inside the 144 px stage: translateX(-25%) of the strip is one frame. The source frames
+   share one canvas, baseline and scale, so every frame of every strip lines up. */
+.ch { position: absolute; inset: 0; }
+.ch-breath {
+  /* a slow breath on top of whatever plays: grows from the feet, never shifts the baseline */
+  position: absolute; inset: 0; transform-origin: 50% 94%;
+  animation: ch-breathe 3.8s ease-in-out infinite;
+}
+@keyframes ch-breathe {
+  0%, 100% { transform: scale(1, 1); }
+  50% { transform: scale(1.008, 1.018); }
+}
+/* the resting states hold still between their frames: a breath that never stops would make the compositor
+   redraw the window every vsync for a pet that mostly sits there (idle blinks and tilts, offline's Zs rise).
+   Paused, not removed: the figure keeps the breath's current size instead of snapping back to 1. */
+body[data-mode="idle"] .ch-breath, body[data-mode="offline"] .ch-breath { animation-play-state: paused; }
+
+/* cross-fade without a see-through dip: the new layer is fully there at once, underneath; the old one stays
+   on top and fades out (two half-transparent figures would let the desktop show through) */
+.ch-layer { position: absolute; inset: 0; overflow: hidden; opacity: 0; }
+.ch-layer.show { opacity: 1; z-index: 1; }
+.ch-layer.out { z-index: 2; transition: opacity var(--ch-fade, 200ms) linear; }
+.ch-strip {
+  position: absolute; left: 0; top: 0; width: 400%; max-width: none; height: 100%;
+  pointer-events: none; user-select: none; -webkit-user-drag: none;
+}
+
+/* loops: 4 frames, evenly (fps = 4 / duration) */
+.ch-layer.run .ch-strip { animation: ch-loop 1s steps(4) infinite; }
+.ch-layer.run[data-a="working"] .ch-strip { animation-duration: 0.667s; } /* ~6 fps: typing, hands alternate */
+.ch-layer.run[data-a="reply"] .ch-strip { animation-duration: 0.8s; } /* 5 fps: the free hand waves */
+.ch-layer.run[data-a="waiting"] .ch-strip { animation-duration: 1s; } /* 4 fps: the "?" bobs */
+.ch-layer.run[data-a="offline"] .ch-strip { animation-duration: 1.6s; } /* 2.5 fps: Zs rise */
+/* idle mostly holds frame 1: a blink (1-2-3-2-1) at 3 s and 7 s, a head tilt (4) from 9 s to 10.6 s */
+.ch-layer.run[data-a="idle"] .ch-strip { animation: ch-idle 12s step-end infinite; }
+/* transition strips: once, all four frames, holding the last (reversed: holding the first) */
+.ch-layer.run[data-a="stand"] .ch-strip { animation: ch-once 0.5s steps(4, jump-none) 1 both; } /* 8 fps */
+.ch-layer.run[data-a="wake"] .ch-strip { animation: ch-once 0.667s steps(4, jump-none) 1 both; } /* 6 fps: a yawn takes a moment */
+.ch-layer.run.rev .ch-strip { animation-direction: reverse; }
+
+@keyframes ch-loop {
+  from { transform: translateX(0); }
+  to { transform: translateX(-100%); }
+}
+@keyframes ch-once {
+  from { transform: translateX(0); }
+  to { transform: translateX(-75%); }
+}
+@keyframes ch-idle {
+  0% { transform: translateX(0); }
+  25% { transform: translateX(-25%); }
+  25.583% { transform: translateX(-50%); }
+  26.583% { transform: translateX(-25%); }
+  27.167% { transform: translateX(0); }
+  58.333% { transform: translateX(-25%); }
+  58.917% { transform: translateX(-50%); }
+  59.917% { transform: translateX(-25%); }
+  60.5% { transform: translateX(0); }
+  75% { transform: translateX(-75%); }
+  88.333% { transform: translateX(0); }
+  100% { transform: translateX(0); }
+}
+
+/* motion off: the stills, cross-faded */
+.ch-stills { display: none; position: absolute; inset: 0; }
+.ch.still .ch-breath { display: none; }
+.ch.still .ch-stills { display: block; }
+.ch-still { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; pointer-events: none; }
+.ch-still.show { opacity: 1; z-index: 1; }
+.ch-still.out { z-index: 2; transition: opacity 0.2s linear; }

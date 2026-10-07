@@ -1,0 +1,7 @@
+/* Filozof (pets/skins/philosopher.js): where its hit area and badges sit, per pose (stage px, feet on y = 136). */
+.pet-slot[data-skin="philosopher"][data-pose="sit"] { --hit-w: 62px; --hit-h: 90px; --hit-b: 6px; }
+.pet-slot[data-skin="philosopher"][data-pose="stand"] { --hit-w: 64px; --hit-h: 104px; --hit-b: 6px; }
+.pet-slot[data-skin="philosopher"][data-pose="lie"] { --hit-w: 82px; --hit-h: 76px; --hit-b: 6px; }
+.pet-slot[data-skin="philosopher"][data-badge="sit"] { --count-top: 40px; --count-left: 80px; --runs-top: 120px; --runs-right: 8px; }
+.pet-slot[data-skin="philosopher"][data-badge="stand"] { --count-top: 30px; --count-left: 80px; --runs-top: 120px; --runs-right: 8px; }
+.pet-slot[data-skin="philosopher"][data-badge="lie"] { --count-top: 54px; --count-left: 86px; --runs-top: 120px; --runs-right: 2px; }
