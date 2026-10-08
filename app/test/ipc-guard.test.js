@@ -106,6 +106,12 @@ test("ipc: every main-window channel refuses a foreign frame (bridge, settings, 
   for (const ch of ["tg:media", "tg:media-open", "tg:media-save", "tg:login-start", "tg:login-answer", "tg:login-cancel", "tg:logout", "tg:retry", "bridge:send", "bridge:set-effort", "settings:get", "settings:save", "device:set-hosting", "ws:navigate", "relay:messages", "open-external", "ready"]) {
     assert.equal((byChannel.get(ch) || {}).guarded, true, ch);
   }
+  // the work pane's channels (Lane C): sub-agent roster, tail, steer and interrupt, the plan (bridge and relay paths)
+  // and the latest tool calls; each one is in the preload and refuses a foreign frame
+  for (const ch of ["bridge:subagents", "bridge:subagent-tail", "bridge:subagent-steer", "bridge:subagent-interrupt", "bridge:plan", "bridge:tool-calls", "relay:plan"]) {
+    assert.ok(used.includes(ch), `${ch} is in the preload`);
+    assert.deepEqual([byChannel.get(ch)?.kind, byChannel.get(ch)?.guarded, byChannel.get(ch)?.refused], ["handle", true, true], ch);
+  }
 });
 
 test("ipc-guard: handle refuses and on ignores a foreign frame; the Deck's page passes", async () => {

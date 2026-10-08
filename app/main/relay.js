@@ -91,6 +91,17 @@ class RelayClient extends EventEmitter {
     return r.json();
   }
 
+  /** The Plan tab: {sid, plan, stored} for one session (GET /session/<sid>/plan); plan null when none was published. */
+  async plan(sid) {
+    if (typeof sid !== "string" || !/^[\x21-\x7e]{1,512}$/.test(sid)) throw new Error("relay plan: bad session id");
+    try {
+      return await this.get(`/session/${encodeURIComponent(sid)}/plan`);
+    } catch (e) {
+      if (/HTTP 404$/.test(String(e && e.message))) return { sid, plan: null, stored: false }; // unknown, or an older relay
+      throw e;
+    }
+  }
+
   /** POST with an empty JSON body. `timeoutMs` covers relay-side waits (quota refresh waits for the plugins). */
   async post(path, timeoutMs = 10000) {
     const r = await fetch(`${this.httpBase}${path}`, {

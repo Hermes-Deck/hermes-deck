@@ -519,6 +519,68 @@ def relay_requests(home, incoming, emit):
     ordinary.put(None)
 
 
+ACTIVITY_SUFFIX = ".activity"      # observer.ACTIVITY_SUFFIX: each live process's recent tool calls and plans
+ACTIVITY_MAX_BYTES = 4 * 1024 * 1024
+ACTIVITY_EVENTS = ("deck.plan", "deck.tools")
+
+
+def collect_activity(home, alive=None, cache=None):
+    """{(profile, session id): {"plan": ..., "tools": [...]}} from the observers' <pid>.activity files (live pids only).
+    `cache` maps a file to (stat stamp, parsed sessions), so an unchanged file is not read again."""
+    alive = alive or _alive
+    cache = {} if cache is None else cache
+    out, seen = {}, set()
+    for profile, base in observer_bases(home):
+        directory = base/"processes"
+        for file in directory.glob("*"+ACTIVITY_SUFFIX):
+            try:
+                if file.resolve().parent != directory.resolve() or not alive(file.name[:-len(ACTIVITY_SUFFIX)]):
+                    continue
+                st = file.stat()
+                if st.st_size > ACTIVITY_MAX_BYTES:
+                    continue
+                stamp = (st.st_ino, st.st_size, st.st_mtime_ns)
+                seen.add(file)
+                hit = cache.get(file)
+                if hit is None or hit[0] != stamp:
+                    data = json.loads(file.read_text(encoding="utf-8"))
+                    if (data.get("schema") != SCHEMA or str(data.get("pid")) != file.name[:-len(ACTIVITY_SUFFIX)]
+                            or not isinstance(data.get("sessions"), dict)):
+                        continue
+                    hit = cache[file] = (stamp, data["sessions"])
+                for sid, entry in hit[1].items():
+                    if not isinstance(entry, dict) or not isinstance(sid, str) or len(sid) > 512:
+                        continue
+                    node_profile = entry.get("profile_name")
+                    if not node_profile or (profile != "default" and node_profile == "default"):
+                        node_profile = profile
+                    out[_session_key(node_profile, sid)] = {"plan": entry.get("plan"), "tools": entry.get("tools")}
+            except (OSError, ValueError, TypeError, AttributeError):
+                continue
+    for file in [f for f in cache if f not in seen]:
+        del cache[file]
+    return out
+
+
+def activity_events(activity, sent):
+    """The deck.plan / deck.tools event frames for what changed since `sent` ({(key, type): digest}), updating it."""
+    frames = []
+    for (profile, sid), entry in activity.items():
+        for kind, value in (("deck.plan", entry.get("plan")), ("deck.tools", entry.get("tools"))):
+            if value is None or (kind == "deck.tools" and not isinstance(value, list)):
+                continue
+            payload = {"plan": value} if kind == "deck.plan" else {"tools": value}
+            digest = json.dumps(payload, sort_keys=True, ensure_ascii=True)
+            if sent.get(((profile, sid), kind)) == digest:
+                continue
+            sent[((profile, sid), kind)] = digest
+            frames.append({"jsonrpc": "2.0", "method": "event", "params": {
+                "type": kind, "session_id": sid, "profile_name": profile, "payload": payload}})
+    for key in [k for k in sent if k[0] not in activity]:
+        del sent[key]
+    return frames
+
+
 def snapshot(home, nodes):
     """The Hermes Deck snapshot frame."""
     gateway_status = {}
@@ -539,6 +601,7 @@ def serve(home, follow=False, stdin=None, stdout=None):
     stdin = sys.stdin if stdin is None else stdin
     out = sys.stdout if stdout is None else stdout
     previous, sent, registered_at, registered, child_titles = "", 0, float("-inf"), [], {}
+    activity_cache, activity_sent = {}, {}
     output_lock = threading.Lock()
     def emit(obj):
         with output_lock: print(json.dumps(obj,sort_keys=True,ensure_ascii=True),file=out,flush=True)
@@ -572,6 +635,9 @@ def serve(home, follow=False, stdin=None, stdout=None):
             previous, sent = line, time.monotonic()
         if not follow:
             return
+        # the Run / Plan tabs: each live session's recent tool calls and latest plan, as events when they change
+        for frame in activity_events(collect_activity(home, cache=activity_cache), activity_sent):
+            emit(frame)
         time.sleep(.2)
 
 

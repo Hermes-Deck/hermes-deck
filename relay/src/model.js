@@ -1,6 +1,7 @@
 "use strict";
 const { localDay } = require("./util");
 const provenance = require("./provenance"); // A13: OMH route / role labels on delegate_task children
+const { normalizePlan } = require("./plan"); // the Deck's Plan tab: latest todo_list / omh_todo plan per session
 
 const RECENT_TOOLS = 30;
 const KEEP_MS = 24 * 3600 * 1000;
@@ -37,6 +38,14 @@ function weekOf(day) {
   return localDay(d.getTime() / 1000);
 }
 const SPLIT_EVS = new Set(["tool_start", "tool_end", "llm", "turn_end", "session_end"]);
+
+function planInfo(plan) {
+  const cur = plan.items.find((i) => i.state === "active");
+  const out = { source: plan.source, rev: plan.rev, ts: plan.ts, n: plan.total || plan.items.length,
+    done: plan.items.filter((i) => i.state === "done").length, active: plan.items.filter((i) => i.state === "active").length };
+  if (cur) out.cur = cur.text.slice(0, 120);
+  return out;
+}
 
 function isStale(s, now) {
   if (s.state !== "running") return false;
@@ -253,6 +262,14 @@ class Model {
         provenance.subStart(s, c, ev);
         break;
       }
+      case "plan": {
+        const plan = normalizePlan(ev);
+        if (!plan) break;
+        // an older revision (a replayed or reordered line) never replaces a newer plan of the same source
+        if (s.plan && s.plan.source === plan.source && plan.rev && s.plan.rev > plan.rev) break;
+        s.plan = { ...plan, ts: ev.ts };
+        break;
+      }
       case "sub_stop": {
         const c = this._s(ev.child, { ...ev, sid: ev.child });
         c.parent = c.parent || ev.sid;
@@ -269,12 +286,15 @@ class Model {
     }
   }
 
+  /** Session row for snapshots and `evs` pushes. The full plan stays out (it is in detail() and the `plan` event);
+   * `planInfo` says one exists: {source, rev, ts, n, done, active, cur} (cur = the first active item's text). */
   summary(s, now = Date.now() / 1000) {
-    const { recent, ...rest } = s;
+    const { recent, plan, ...rest } = s;
     return {
       ...rest,
       stale: isStale(s, now) ? true : undefined,
       lastTool: recent.length ? recent[recent.length - 1] : undefined,
+      planInfo: plan ? planInfo(plan) : undefined,
     };
   }
 

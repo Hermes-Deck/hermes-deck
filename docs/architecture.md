@@ -19,6 +19,7 @@ This document describes the code on `main`. What each feature does for the user 
 The events part, `events.py`, registers Hermes hooks (`pre_llm_call`, `post_llm_call`, `pre_tool_call`, `post_tool_call`, `post_api_request`, `post_auxiliary_call`, `subagent_start`, `subagent_stop`, `on_session_start`, `on_session_end`, `agent_loop_stopped`). Each hook appends one line to `~/.hermes-deck/events/<profile>.ndjson`:
 
 - `turn_start`, `turn_end`, `tool_start`, `tool_end`, `llm`, `aux`, `sub_start`, `sub_stop`, `session_start`, `session_end`, `stopped`;
+- `plan`, after a successful `todo_list`, `todo` or `omh_todo` call (see [Work pane data](#work-pane-data-plans-tool-calls-sub-agents));
 - the gateway routing context of the turn (`platform`, Telegram `chat` and `thread`, session key `skey`, `cron`);
 - token usage as Hermes reports it.
 
@@ -26,7 +27,7 @@ Argument and result previews are cut at 300 characters, and common secret shapes
 
 The gateway process also writes `~/.hermes-deck/state/<profile>.json` every 30 s: gateway state, platform states, and a cron job summary. CLI and cron worker processes stop trying after three misses.
 
-The bridge part, `observer.py` (derived from Hermes Desk), keeps snapshots of the live sessions in `<HERMES_HOME>/hermes-deck/processes/<pid>.json`: state, model, tool names, bounded and redacted titles and context use, never prompts or tool payloads. It also opens a Unix socket next to them (mode 0600) that accepts native steer, redirect and interrupt for the running agent, read-only history, and an allowlist of Hermes' TUI-gateway methods. `stream.py` relays the Deck's requests to that socket (see the SSH bridge below). `HERMES_DECK_BRIDGE=0` turns the bridge part off.
+The bridge part, `observer.py` (derived from Hermes Desk), keeps snapshots of the live sessions in `<HERMES_HOME>/hermes-deck/processes/<pid>.json`: state, model, tool names, bounded and redacted titles and context use, never prompts or tool payloads. Next to each snapshot, `<pid>.activity` holds the work pane's data per session: the latest plan and the last 20 tool calls (300-character redacted previews), written only when it changes. It also opens a Unix socket next to them (mode 0600) that accepts native steer, redirect and interrupt for the running agent, read-only history, and an allowlist of Hermes' TUI-gateway methods. `stream.py` relays the Deck's requests to that socket (see the SSH bridge below). `HERMES_DECK_BRIDGE=0` turns the bridge part off.
 
 ### Relay
 
@@ -36,9 +37,10 @@ The bridge part, `observer.py` (derived from Hermes Desk), keeps snapshots of th
 |---|---|
 | `tailer.js` | Polls each NDJSON file every second. Handles partial lines, rotation and truncation. On restart it replays up to 2 MB before the saved checkpoint with `live=false`, so state is rebuilt but nothing is counted twice. |
 | `claude.js` | Optional: turns Claude Code transcripts from `CLAUDE_PROJECT_DIRS` into the same event shape, including sub-agents and a `cost` event. |
-| `model.js` | Sessions, their state, current tool, last 30 tool calls, sub-agent tree, tokens, context fill, and per-day rollups by agent and model. A running session silent for 45 min in a tool (15 min between tools) is shown as stale. Finished sessions go after 24 h idle; day rollups older than 400 days fold into month rollups; 5-minute rollups (rolling 24 h) are kept 48 h. |
+| `model.js` | Sessions, their state, current tool, last 30 tool calls, latest plan, sub-agent tree, tokens, context fill, and per-day rollups by agent and model. A running session silent for 45 min in a tool (15 min between tools) is shown as stale. Finished sessions go after 24 h idle; day rollups older than 400 days fold into month rollups; 5-minute rollups (rolling 24 h) are kept 48 h. |
 | `provenance.js` | Labels `delegate_task` children with their OMH route (model, provider, effort) when `omh_delegate_route` prepared it. |
 | `fleet.js` | Reads the plugin's state snapshots (10 s), `launchctl list` on macOS for `DECK_LAUNCHD_PREFIXES` (15 s), and Claude/Codex usage windows through the CodexBar CLI (5 min). |
+| `plan.js` | Checks each `plan` event again (bounds, states, redaction) and, on request, rebuilds a stored session's plan from its newest `todo_list` / `todo` / `omh_todo` result in `state.db` (read-only, through `usage.js`'s reader). |
 | `history.js` | On request only: a session's messages and full tool calls from Hermes' `state.db` (opened read-only with `node:sqlite`, Node 22.13+) or from Claude Code transcripts. Fields are clipped to 4096 characters, a full message to 256 KB, and the same secrets are redacted. |
 | `server.js` | HTTP and the `/events` WebSocket (routes below). |
 | `presence.js` | Device heartbeats and routing for the `browser` and `desktop` capabilities. |
@@ -55,7 +57,8 @@ HTTP routes (all but `/health` need `Authorization: Bearer <token>`):
 |---|---|
 | `GET /health` | `{ok, v, uptime, clients, sessions}`. No token. |
 | `GET /snapshot`, `/fleet`, `/tokens?range=24h\|7d\|14d\|30d\|all` (legacy `?days=N`) | The model, fleet health, token rollups for one Token-pane range. |
-| `GET /session/<sid>` | One session with its recent tools and children. |
+| `GET /session/<sid>` | One session with its recent tools, children and `plan` (live, else rebuilt from `state.db`). |
+| `GET /session/<sid>/plan` | `{sid, plan, stored}`: the session's latest plan, also for a stored session the model no longer holds. `plan` is `null` when the agent published none. |
 | `GET /session/<sid>/messages`, `/session/<sid>/call/<id>`, `/message/<id>/full` | Message history (off with `DECK_HISTORY=0`). |
 | `POST /desktop/lease`, `POST /desktop/stop`, `GET /cu/<frame>` | Bot screen: Hermes' Bot Desktop lease, stop, stored frames. |
 | `POST /fleet/quotas/refresh` | Ask the plugins for fresh quota windows (at least 30 s apart). |
@@ -175,7 +178,38 @@ The service lists bot DMs from the first 300 dialogs (minus hidden bots) and, if
 | WSL (Windows) | `wsl.exe [--distribution X] --exec /bin/sh -c "exec ..."` |
 | Local (macOS, Linux) | `<python> -I <stream.py> --follow` |
 
-Both directions speak newline-delimited JSON-RPC 2.0 on stdio. The host sends `hermes-deck.v1` snapshots (at least every 5 s while healthy), native events, approval and question requests, and replies. The Deck sends only the methods allow-listed in `app/main/bridge.js` (`READS` and `MUTATIONS`), each with validated parameters. Reads include `session.list`, `deck.session_index`, `session.messages`, `session.usage`, `model.options`, `profiles.list`, `profiles.get_asset`, `deck.transcribe` (dictation) and `deck.file_read` (downloads of files the agent offered). Mutations include `session.create`, `session.resume`, `deck.takeover`, `prompt.submit`, `deck.attach_submit`, `native.steer`, `native.redirect`, `native.interrupt`, `session.interrupt`, `config.set` (the session's model with `--session`, never `--global`, or its reasoning level), `request.answer`, and the session-management calls (`session.title`, `session.delete`, `session.archive`, `session.branch_stored`, …). Mutations only follow a click and are never replayed: a request whose connection drops fails and says it may have run. The bridge works without the relay and without Telegram.
+Both directions speak newline-delimited JSON-RPC 2.0 on stdio. The host sends `hermes-deck.v1` snapshots (at least every 5 s while healthy), native events, approval and question requests, and replies. The Deck sends only the methods allow-listed in `app/main/bridge.js` (`READS` and `MUTATIONS`), each with validated parameters. Reads include `session.list`, `deck.session_index`, `session.messages`, `session.usage`, `model.options`, `profiles.list`, `profiles.get_asset`, `deck.transcribe` (dictation), `deck.file_read` (downloads of files the agent offered), and the work pane's `subagent.list`, `subagent.tail` and `deck.plan`. Mutations include `session.create`, `session.resume`, `deck.takeover`, `prompt.submit`, `deck.attach_submit`, `native.steer`, `native.redirect`, `native.interrupt`, `session.interrupt`, `config.set` (the session's model with `--session`, never `--global`, or its reasoning level), `request.answer`, and the session-management calls (`session.title`, `session.delete`, `session.archive`, `session.branch_stored`, …), and `subagent.steer` / `subagent.interrupt` for one child of a session. Mutations only follow a click and are never replayed: a request whose connection drops fails and says it may have run. The bridge works without the relay and without Telegram.
+
+### Work pane data: plans, tool calls, sub-agents
+
+The work pane's Plan, Run and Agents tabs read the same data on both paths.
+
+**Plans.** When a `todo_list`, `todo` or `omh_todo` call succeeds, `events.py` parses the full result. It never raises and never blocks the call. It then appends one `plan` line: `{ev:"plan", sid, source:"todo"|"omh", rev, items:[{id, text, state, depth, phase?, blocked?}], total?}`.
+- Item limits: at most 64 items, text cut at 300 characters and redacted, and `depth` capped at 3.
+- `state` is one of `pending`, `active`, `done` or `cancelled`.
+- `total` is set only when the list was cut.
+
+The relay keeps the latest plan for each session. An older `rev` from the same source never replaces it. Snapshot rows carry only a summary, `planInfo`: `{source, rev, ts, n, done, active, cur}`. The full plan is returned by `/session/<sid>` and `/session/<sid>/plan`.
+
+If the relay has no live plan for a session, `plan.js` rebuilds it from `state.db`. It reads the newest active todo result of that session, then of the sessions it continues after compression (sub-agent parents are not followed). Answers are cached for 30 s. The store is opened read-only. When an in-place read would create files next to it, a bounded private copy is read instead.
+
+On the direct connection, `stream.py` sends `deck.plan` events (`{plan}`) from the observer's `<pid>.activity`, keyed by the stored session id, once per change. For a stored session, the `deck.plan` read asks the plugin to rebuild the plan from that profile's `state.db`.
+
+**Tool calls (Run tab).** Each tool call carries tool, call id, args preview, status, duration, error and result preview:
+- relay path: `tool_start` and `tool_end` give the last 30 calls in `/session/<sid>` `recent`;
+- direct path: the stream sends `deck.tools` events (`{tools}`) with the last 20 calls of a session, also once per change.
+
+**Sub-agents (Agents tab).** `subagent.list`, `subagent.tail`, `subagent.steer` and `subagent.interrupt` go to Hermes' TUI gateway for one runtime session.
+- Hermes checks that each child belongs to that session.
+- The plugin checks the parameter shapes, then completes the list and tail replies: the child's session id, reasoning effort, state, elapsed seconds, tokens, cost, context use and its last tool calls. Everything is bounded and redacted.
+- Steer text is limited to 32,000 characters.
+- Steer and interrupt are mutations: they follow a click and are never replayed.
+
+The app exposes all of this through `window.deck`:
+- `bridge.subagents`, `bridge.subagentTail`, `bridge.steerSubagent`, `bridge.interruptSubagent`, `bridge.plan` and `bridge.toolCalls`;
+- the relay's `sessionPlan`.
+
+Every channel goes through `ipc-guard.js`.
 
 ### Agent browsers: the CDP tunnel
 

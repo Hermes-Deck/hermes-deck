@@ -188,14 +188,172 @@ def on_pre_tool_call(tool_name: str = "", args=None, session_id: str = "", task_
     return None                                   # never block or modify any other tool call
 
 
+_FAILED = ("error", "failed", "blocked")
+
+
+def _tool_error(status, error_type, error_message):
+    """The error preview of a tool call: "<type>: <message>", or the bare message of a failed call."""
+    if error_type:
+        return _clip(f"{error_type}: {error_message or ''}")
+    if status in _FAILED and error_message:
+        return _clip(error_message)
+    return None
+
+
 def on_post_tool_call(tool_name: str = "", args=None, session_id: str = "", tool_call_id=None,
                       result=None, duration_ms=None, status=None, error_type=None,
                       error_message=None, **_):
     _emit("tool_end", sid=session_id, tool=tool_name, call=tool_call_id, ms=duration_ms,
-          status=status, err=_clip(error_type and f"{error_type}: {error_message or ''}"),
-          result=_clip(result))
+          status=status, err=_tool_error(status, error_type, error_message), result=_clip(result))
+    if tool_name in PLAN_TOOLS and status not in _FAILED:
+        plan = parse_plan(tool_name, result)   # never raises; None for anything that is not a plan
+        if plan is not None:
+            _emit("plan", sid=session_id, **plan)
     if tool_name == CU_TOOL:
         _cu_post(args, session_id, result, status, error_message)
+
+
+# ---------------------------------------------------------------------------- plan (the Deck's Plan tab)
+#
+# An agent's task list, from the full (unclipped) result of its todo tool:
+#   todo_list / todo  Hermes' native tool: {"todos": [{id, content, status, parent?}], "revision": n}
+#   omh_todo          the OMH plugin's tool: {"todo": {"items": [{text, state, phase, blocked_reason, depth}], ...}}
+# becomes one `plan` event {sid, source: "todo"|"omh", rev, items: [{id, text, state, depth, phase?, blocked?}]}
+# (state: pending|active|done|cancelled; at most PLAN_ITEMS items, each text at most PREVIEW chars, redacted).
+# OMH is never imported: its result is parsed as plain JSON, and anything unexpected yields no event.
+
+PLAN_TOOLS = {"todo_list": "todo", "todo": "todo", "omh_todo": "omh"}
+PLAN_ITEMS = 64
+PLAN_INPUT_MAX = 4 * 1024 * 1024          # a result longer than this is not parsed at all
+PLAN_DEPTH_MAX = 3
+_PLAN_TODO_STATES = {"pending": "pending", "in_progress": "active", "completed": "done", "cancelled": "cancelled"}
+_PLAN_OMH_STATES = {"pending": "pending", "active": "active", "done": "done", "skipped": "cancelled",
+                    "cancelled": "cancelled"}
+_PLAN_CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def _plan_text(value, limit: int = PREVIEW) -> str:
+    if not isinstance(value, str):
+        return ""
+    s = _redact(_PLAN_CTRL.sub(" ", value)).strip()
+    return s if len(s) <= limit else s[:limit - 1] + "…"
+
+
+def _plan_rev(value) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, (int, float)) and math.isfinite(value):
+        return max(0, min(int(value), 2 ** 53 - 1))
+    return 0
+
+
+def _iso_ms(value) -> int:
+    """An ISO-8601 time (OMH's updated_at, "...Z" included) as epoch milliseconds, else 0."""
+    if not isinstance(value, str) or not value:
+        return 0
+    try:
+        from datetime import datetime
+        return _plan_rev(datetime.fromisoformat(value[:40].replace("Z", "+00:00")).timestamp() * 1000)
+    except (ValueError, OverflowError, OSError):
+        return 0
+
+
+def _plan_todo(data: dict):
+    todos = data.get("todos")
+    if not isinstance(todos, list) or "error" in data:
+        return None
+    rev = _plan_rev(data.get("revision"))
+    if not todos and rev == 0:                  # an unused store reads back empty: not a plan (Hermes does the same)
+        return None
+    rows = [t for t in todos if isinstance(t, dict)]
+    parents = {}
+    for t in rows[:1024]:
+        tid = t.get("id")
+        if isinstance(tid, (str, int)) and not isinstance(tid, bool):
+            parent = t.get("parent")
+            parents[str(tid)] = str(parent) if isinstance(parent, (str, int)) and not isinstance(parent, bool) else ""
+
+    def depth(tid: str) -> int:
+        d, seen = 0, {tid}
+        while d < PLAN_DEPTH_MAX:
+            tid = parents.get(tid, "")
+            if not tid or tid in seen or tid not in parents:
+                break
+            seen.add(tid)
+            d += 1
+        return d
+
+    items = []
+    for i, t in enumerate(rows[:PLAN_ITEMS]):
+        tid = t.get("id")
+        tid = str(tid)[:64] if isinstance(tid, (str, int)) and not isinstance(tid, bool) else str(i + 1)
+        state = _PLAN_TODO_STATES.get(str(t.get("status") or "").strip().lower(), "pending")
+        items.append({"id": tid, "text": _plan_text(t.get("content")), "state": state, "depth": depth(tid)})
+    return {"source": "todo", "rev": rev, "items": items, "total": len(rows)}
+
+
+def _plan_omh(data: dict):
+    todo = data.get("todo")
+    if not isinstance(todo, dict) or not isinstance(todo.get("items"), list):
+        return None
+    rows = [t for t in todo["items"] if isinstance(t, dict)]
+    items = []
+    for i, t in enumerate(rows[:PLAN_ITEMS]):
+        raw_depth = t.get("depth")
+        d = raw_depth if isinstance(raw_depth, int) and not isinstance(raw_depth, bool) else 0
+        item = {"id": str(i + 1), "text": _plan_text(t.get("text")),
+                "state": _PLAN_OMH_STATES.get(str(t.get("state") or "").strip().lower(), "pending"),
+                "depth": max(0, min(d, PLAN_DEPTH_MAX))}
+        phase = _plan_text(t.get("phase"), 80)
+        if phase:
+            item["phase"] = phase
+        blocked = _plan_text(t.get("blocked_reason"))
+        if blocked:
+            item["blocked"] = blocked
+        items.append(item)
+    return {"source": "omh", "rev": _iso_ms(todo.get("updated_at")), "items": items, "total": len(rows)}
+
+
+_plan_memo: list = [None, None, None]     # (tool name, result object, plan): the bridge part parses the same result
+
+
+def parse_plan(tool_name, result):
+    """{source, rev, items[, total]} from a todo tool's full result, or None. Never raises.
+
+    `tool_name` picks the shape (PLAN_TOOLS); any other name tries both shapes (a call made through the
+    tool-search bridge is stored under its bridge name). `total` is the list's real length when it was cut.
+    The events and bridge parts both see one post_tool_call: the second parse of the same object is a lookup."""
+    try:
+        name, obj, plan = _plan_memo
+        if obj is not None and obj is result and name == tool_name:
+            return json.loads(json.dumps(plan)) if plan is not None else None
+        plan = _parse_plan(tool_name, result)
+        _plan_memo[:] = [tool_name, result, plan]
+        return json.loads(json.dumps(plan)) if plan is not None else None
+    except Exception:
+        return None
+
+
+def _parse_plan(tool_name, result):
+    try:
+        if isinstance(result, (bytes, bytearray)):
+            result = bytes(result[:PLAN_INPUT_MAX + 1]).decode("utf-8", "replace")
+        if isinstance(result, str):
+            if len(result) > PLAN_INPUT_MAX:
+                return None
+            data = json.loads(result)
+        else:
+            data = result
+        if not isinstance(data, dict):
+            return None
+        source = PLAN_TOOLS.get(tool_name)
+        plan = (_plan_todo(data) if source == "todo" else _plan_omh(data) if source == "omh"
+                else _plan_todo(data) or _plan_omh(data))
+        if plan is not None and plan["total"] <= len(plan["items"]):
+            del plan["total"]
+        return plan
+    except Exception:
+        return None
 
 
 def _usage(u) -> dict | None:

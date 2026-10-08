@@ -31,6 +31,67 @@ function fileStamp(file) {
   } catch (e) { if (e.code === "ENOENT") return null; throw e; }
 }
 
+/** Pick how to read a store without ever creating files next to it.
+ * - live WAL store (-wal and -shm both present, i.e. a running Hermes): read-only connection. SQLite then
+ *   attaches the existing -shm and creates nothing (verified by test: no new files, unchanged mtimes).
+ * - no -wal and no -journal (Hermes stopped): `immutable=1`, the file cannot change under us and SQLite
+ *   touches no sidecar.
+ * - anything else (stale -wal without -shm, hot -journal): bounded private copy, the only path that can say
+ *   "too-large". */
+function storePlan(file) {
+  if (!fs.existsSync(file)) throw tagged("missing", "state store missing");
+  const wal = fs.existsSync(`${file}-wal`);
+  const shm = fs.existsSync(`${file}-shm`);
+  const journal = fs.existsSync(`${file}-journal`);
+  const uri = require("node:url").pathToFileURL(file).href;
+  if (wal && shm) return { mode: "live-ro", uri: `${uri}?mode=ro` };
+  if (!wal && !journal) return { mode: "immutable", uri: `${uri}?mode=ro&immutable=1` };
+  return { mode: "copy" };
+}
+
+/** fn(path of a private 0700 copy of the store and its -wal), removed afterwards. A read-only open of a WAL store
+ * without -shm would create one next to Hermes' file, so sidecars are only ever reconstructed in the copy. */
+function privateCopy(file, maxBytes, fn) {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "deck-usage-read-"));
+  try {
+    fs.chmodSync(temp, 0o700);
+    const files = [file, `${file}-wal`];
+    const before = files.map(fileStamp);
+    if (files.reduce((n, f, i) => n + (before[i] ? fs.statSync(f).size : 0), 0) > maxBytes) throw tagged("too-large", "snapshot too large");
+    for (let i = 0; i < files.length; i++) if (before[i]) fs.copyFileSync(files[i], path.join(temp, path.basename(files[i])));
+    if (files.some((f, i) => fileStamp(f) !== before[i])) throw tagged("locked", "store changed during snapshot");
+    return fn(path.join(temp, path.basename(file)));
+  } finally { fs.rmSync(temp, { recursive: true, force: true }); }
+}
+
+/** fn(db) on a read-only (query_only) connection to a Hermes state.db, opened the way HostUsage reads it: in place
+ * when that creates no files (storePlan), else through the bounded private copy; contention in place retries once
+ * through the copy. The connection is closed afterwards. Errors carry `kind` (errorKind). */
+function readStore(file, fn, { maxSnapshotBytes = MAX_SNAPSHOT_BYTES } = {}) {
+  const run = (location) => {
+    const { DatabaseSync } = require("node:sqlite");
+    let db;
+    try {
+      db = new DatabaseSync(location, { readOnly: true, timeout: BUSY_MS });
+      db.exec("PRAGMA query_only = ON");
+      return fn(db);
+    } finally {
+      if (db) try { db.close(); } catch { /* already closed */ }
+    }
+  };
+  const plan = storePlan(file);
+  if (plan.mode === "copy") return privateCopy(file, maxSnapshotBytes, run);
+  try {
+    return run(plan.uri);
+  } catch (e) {
+    if (!["locked", "unavailable"].includes(errorKind(e))) throw e;
+    try { return privateCopy(file, maxSnapshotBytes, run); } catch (copyError) {
+      if (copyError.kind === "too-large") throw e;
+      throw copyError;
+    }
+  }
+}
+
 /** Canonical session counters across all surfaces. The live store is opened read-only in place (see plan()):
  * no 60-second copy of a multi-hundred-MB file and no WAL/SHM files created next to it.
  * Queries select counter/metadata columns only; the private-copy fallback is removed after reading.
@@ -69,22 +130,8 @@ class HostUsage {
     return profile === "default" ? path.join(this.root, "state.db") : path.join(this.root, "profiles", profile, "state.db");
   }
 
-  /** Pick how to read the store without ever creating files next to it.
-   * - live WAL store (-wal and -shm both present, i.e. a running Hermes): read-only connection. SQLite then
-   *   attaches the existing -shm and creates nothing (verified by test: no new files, unchanged mtimes).
-   * - no -wal and no -journal (Hermes stopped): `immutable=1`, the file cannot change under us and SQLite
-   *   touches no sidecar.
-   * - anything else (stale -wal without -shm, hot -journal): bounded private copy, the only path that can say
-   *   "too-large". */
   plan(file) {
-    if (!fs.existsSync(file)) throw tagged("missing", "state store missing");
-    const wal = fs.existsSync(`${file}-wal`);
-    const shm = fs.existsSync(`${file}-shm`);
-    const journal = fs.existsSync(`${file}-journal`);
-    const uri = require("node:url").pathToFileURL(file).href;
-    if (wal && shm) return { mode: "live-ro", uri: `${uri}?mode=ro` };
-    if (!wal && !journal) return { mode: "immutable", uri: `${uri}?mode=ro&immutable=1` };
-    return { mode: "copy" };
+    return storePlan(file);
   }
 
   /** {roll, fine, months, since, bound, mode}; `months` is null unless `archive` asked for the older-than-bound scan.
@@ -106,17 +153,7 @@ class HostUsage {
   }
 
   readCopy(file, profile, now, archive = false, dayFrom = null) {
-    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "deck-usage-read-"));
-    try {
-      fs.chmodSync(temp, 0o700);
-      // A read-only open of a WAL store without -shm would create one. Reconstruct sidecars in a private copy only.
-      const files = [file, `${file}-wal`];
-      const before = files.map(fileStamp);
-      if (files.reduce((n, f, i) => n + (before[i] ? fs.statSync(f).size : 0), 0) > this.maxSnapshotBytes) throw tagged("too-large", "snapshot too large");
-      for (let i = 0; i < files.length; i++) if (before[i]) fs.copyFileSync(files[i], path.join(temp, path.basename(files[i])));
-      if (files.some((f, i) => fileStamp(f) !== before[i])) throw tagged("locked", "store changed during snapshot");
-      return this.query(path.join(temp, path.basename(file)), profile, now, archive, dayFrom);
-    } finally { fs.rmSync(temp, { recursive: true, force: true }); }
+    return privateCopy(file, this.maxSnapshotBytes, (copy) => this.query(copy, profile, now, archive, dayFrom));
   }
 
   query(location, profile, now, archive = false, dayFrom = null) {
@@ -234,4 +271,4 @@ class HostUsage {
     return this.status;
   }
 }
-module.exports = { HostUsage, errorKind };
+module.exports = { HostUsage, errorKind, readStore, storePlan, privateCopy };

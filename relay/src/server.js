@@ -32,6 +32,7 @@ function tokenOk(req, token, queryToken = false) {
  *                              plugin versions only in the authenticated WS hello
  *   POST /fleet/quotas/refresh (Bearer token or mobile token) force a quota refresh through the plugins; >= 30 s apart
  *   GET /snapshot | /fleet | /tokens?range=24h|7d|14d|30d|all (or legacy ?days=N) | /session/<sid>   (Bearer token)
+ *   GET /session/<sid>/plan    (Bearer token) {sid, plan, stored}: the latest plan, live or rebuilt from state.db (plan.js)
  *   GET /session/<sid>/messages | /session/<sid>/call/<id> | /message/<id>/full   (Bearer token; history.js)
  *   WS  /events                (Bearer token; ?token= only with queryToken)  hello -> snapshot -> {t:"evs"|"fleet"|"agents"} pushes
  *
@@ -40,7 +41,7 @@ function tokenOk(req, token, queryToken = false) {
  * onHttp(req, res, url) -> true when it answered an authenticated request (bot screen: /desktop/*, /cu/*; spaces: /spaces*).
  * onUpgrade(req, socket, head, url) -> true when it took a relay-token WebSocket under /spaces/ (the space viewer).
  */
-function createServer({ token, model, fleet, version, hooks = null, history = null, queryToken = false, bundles = null, mobile = null, host = null }) {
+function createServer({ token, model, fleet, version, hooks = null, history = null, plans = null, queryToken = false, bundles = null, mobile = null, host = null }) {
   const started = Date.now();
   // Host versions (compat.js): protocol, each profile's plugin version, the updater's last check. `v` stays first
   // and unchanged: apps before 0.3.6 read only `v` (as "the newest app version" signal).
@@ -61,6 +62,20 @@ function createServer({ token, model, fleet, version, hooks = null, history = nu
   const json = (res, code, obj) => {
     res.writeHead(code, { "content-type": "application/json", "cache-control": "no-store" });
     res.end(JSON.stringify(obj));
+  };
+
+  /** {body: {sid, plan, stored}} or {code, error}: the model's plan, else one rebuilt by `plans` (plan.js PlanStore). */
+  const planOf = (sid, detail) => {
+    if (detail && detail.plan) return { body: { sid, plan: detail.plan, stored: false } };
+    if (!plans) return detail ? { body: { sid, plan: null, stored: false } } : { code: 404, error: "not found" };
+    try {
+      const r = plans.get(sid, detail ? detail.profile : undefined);
+      if (!r.found && !detail) return { code: 404, error: "not found" };
+      return { body: { sid, plan: r.plan, stored: !!r.plan } };
+    } catch (e) {
+      console.error(`plan: ${e.kind || "unavailable"}`);
+      return detail ? { body: { sid, plan: null, stored: false } } : { code: 503, error: "plan read failed" };
+    }
   };
 
   const server = http.createServer((req, res) => {
@@ -107,7 +122,7 @@ function createServer({ token, model, fleet, version, hooks = null, history = nu
     // sub-agent views (B1/B3): message history from state.db / transcripts, on demand
     const hr = history ? history.handle(url) : null;
     if (hr) return json(res, hr.code, hr.body);
-    const m = /^\/session\/([^/]+)$/.exec(url.pathname);
+    const m = /^\/session\/([^/]+)(\/plan)?$/.exec(url.pathname);
     if (m) {
       let sid;
       try {
@@ -116,6 +131,15 @@ function createServer({ token, model, fleet, version, hooks = null, history = nu
         return json(res, 400, { error: "bad path" }); // a malformed %-escape must not throw out of the handler
       }
       const d = model.detail(sid);
+      if (m[2]) {
+        // the Plan tab: the live plan, else the latest one the stored session published (state.db, read-only)
+        const p = planOf(sid, d);
+        return p.code ? json(res, p.code, { error: p.error }) : json(res, 200, p.body);
+      }
+      if (d && !d.plan && plans) {
+        const p = planOf(sid, d);
+        if (p.body && p.body.plan) d.plan = p.body.plan;
+      }
       return d ? json(res, 200, d) : json(res, 404, { error: "not found" });
     }
     return json(res, 404, { error: "not found" });

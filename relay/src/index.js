@@ -10,6 +10,7 @@ const { Fleet } = require("./fleet");
 const { HostUsage } = require("./usage");
 const { createServer } = require("./server");
 const { History } = require("./history"); // sub-agent views (B1/B3): message history on demand
+const { PlanStore } = require("./plan"); // the Plan tab: stored plans from state.db, on demand
 const { Presence } = require("./presence");
 const { CdpGateway, createCdpServer } = require("./cdp");
 const { FallbackHost, hostName, parseExternalCdp } = require("./browser");
@@ -315,6 +316,8 @@ async function start(cfg) {
 
   // sub-agent views (B1/B3): history reads go straight to state.db / transcripts, never through the model
   const history = cfg.history === false ? null : new History({ model, hermesRoot: cfg.hermesRoot || null, claudeDirs: cfg.claudeDirs || [], claudeProfile: cfg.claudeProfile });
+  // the Plan tab: a stored session's plan rebuilt from its newest todo tool result (state.db, read-only; off with history)
+  const plans = cfg.history === false || !cfg.hermesRoot ? null : new PlanStore({ root: cfg.hermesRoot });
   // --- Workspace tab: device presence, and the CDP gateway when cfg.cdp.port is set ---------------------
   const cdpCfg = cfg.cdp && Number.isInteger(cfg.cdp.port) && cfg.cdp.port >= 0 ? cfg.cdp : null;
   const hostLabel = cfg.hostName || hostName(); // the Deck's host picker labels this machine with it
@@ -412,7 +415,7 @@ async function start(cfg) {
 
   const mobile = new MobileRelay({ tokensFile: cfg.mobileDevicesFile || path.join(cfg.dataDir, "mobile-devices.json"), bridgeConfig: cfg.mobileBridge, push: new MobilePushClient(), capabilities: { history: !!history, workspace: !!workspace && !!fallback?.available, desktop: false } });
   const host = { protocol: compat.PROTOCOL, plugins: compat.pluginCache(cfg.hermesRoot || null), update: () => compat.updateStatus(cfg.dataDir) };
-  const srv = createServer({ mobile, host, token: cfg.token, queryToken: !!cfg.queryToken, model, fleet, version: VERSION, hooks: deckHooks(presence, gateway, driver, workspace, bundles, spaces, spaceTunnel), history, bundles });
+  const srv = createServer({ mobile, host, token: cfg.token, queryToken: !!cfg.queryToken, model, fleet, version: VERSION, hooks: deckHooks(presence, gateway, driver, workspace, bundles, spaces, spaceTunnel), history, plans, bundles });
   broadcast = srv.broadcast;
   if (workspace) workspace.setBroadcast(srv.broadcast);
 

@@ -78,6 +78,7 @@ contextBridge.exposeInMainWorld("deck", {
   logout: () => ipcRenderer.invoke("tg:logout"),
   // relay
   session: (sid) => ipcRenderer.invoke("relay:session", sid),
+  sessionPlan: (sid) => ipcRenderer.invoke("relay:plan", sid), // Plan tab, relay path: {sid, plan, stored}
   tokens: (rangeOrDays) => ipcRenderer.invoke("relay:tokens", rangeOrDays), // "24h" | "7d" | "14d" | "30d" | "all", or a day count
   quotaRefresh: () => ipcRenderer.invoke("relay:quota-refresh"), // {refreshed, throttled, timedOut, retryAfterS}
   // sub-agent views (B1/B3): a session's messages (newest page; `before` pages back), one message in
@@ -129,6 +130,13 @@ contextBridge.exposeInMainWorld("deck", {
     redirect: (sid, text, opts) => ipcRenderer.invoke("bridge:redirect", sid, text, opts),
     interrupt: (sid, opts) => ipcRenderer.invoke("bridge:interrupt", sid, opts),
     reasoning: (show) => ipcRenderer.invoke("bridge:reasoning", show === true), // "Show thinking" for sessions the Deck drives
+    // work pane: a session's live sub-agents (reads), steer / interrupt one of them (a click each), its plan and tool calls
+    subagents: (sid, opts) => ipcRenderer.invoke("bridge:subagents", sid, opts),
+    subagentTail: (sid, subagentId, opts) => ipcRenderer.invoke("bridge:subagent-tail", sid, subagentId, opts),
+    steerSubagent: (sid, subagentId, text, opts) => ipcRenderer.invoke("bridge:subagent-steer", sid, subagentId, text, opts),
+    interruptSubagent: (sid, subagentId, opts) => ipcRenderer.invoke("bridge:subagent-interrupt", sid, subagentId, opts),
+    plan: (sid, opts) => ipcRenderer.invoke("bridge:plan", sid, opts),
+    toolCalls: (sid, opts) => ipcRenderer.invoke("bridge:tool-calls", sid, opts),
     modelOptions: (sid, opts) => ipcRenderer.invoke("bridge:model-options", sid, opts),
     setModel: (sid, choice) => ipcRenderer.invoke("bridge:set-model", sid, choice),
     setEffort: (sid, opts) => ipcRenderer.invoke("bridge:set-effort", sid, opts),

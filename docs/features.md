@@ -134,6 +134,10 @@ For the fleet-wide view (every agent on the host, including turns started in Tel
 appends one JSON line per turn, tool call, API call and sub-agent to `~/.hermes-deck/events/<profile>.ndjson`; the
 relay tails those files, keeps a session model and pushes changes to the app over its WebSocket. Opening a session's
 tool calls or messages reads them from the relay (`/session/...`), which reads Hermes' `state.db` read-only.
+When an agent keeps a task list (`todo_list` or OMH's `omh_todo`), the plugin also records its latest plan. For a
+stored session the plan is rebuilt read-only from that session's newest task-list result. On the direct connection
+the app can also list a session's live sub-agents with their goal, model, reasoning level, elapsed time, tokens, cost
+and recent tool calls, read one sub-agent's live output, and steer or stop that one sub-agent with a click.
 Watching costs no model tokens: nothing asks an agent for its status.
 
 **Needs.** The plugin. The live row and controls in a Hermes chat need the direct connection; the **Activity** tree

@@ -13,9 +13,11 @@ The stream discovers this runtime layout only.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import os
+import sys
 import threading
 import time
 import weakref
@@ -58,7 +60,11 @@ DECK_METHODS = {"session.create", "session.list", "session.resume", "session.int
                 # stored session into a new one (\"Continue here\" for a messaging-platform session). Both are
                 # constrained further by allowed_request. deck.session_index / deck.session_rename have native
                 # handlers below (like session.messages) and are not gateway methods.
-                "session.archive", "session.branch_stored"}
+                "session.archive", "session.branch_stored",
+                # Sub-agent detail (the Deck's Agents tab): the roster and a live child's transcript tail (reads,
+                # replies completed by enrich_subagent_reply), steer and interrupt (a click each). Hermes checks that
+                # the child belongs to the caller's session; allowed_request checks the shapes.
+                "subagent.list", "subagent.tail", "subagent.steer", "subagent.interrupt"}
 # Also allowed so an existing Hermes Desk install keeps working against this plugin until Desk is retired.
 DESK_METHODS = {"session.active_list", "session.close", "session.steer", "session.redirect",
                 "session.events.since", "subagent.list", "subagent.interrupt", "subagent.steer", "subagent.tail",
@@ -1185,6 +1191,8 @@ def allowed_request(method, params, created=()):
                 and bool(re.fullmatch(r"[\x21-\x7e]{1,512}", sid))
                 and ("profile" not in params or (isinstance(params["profile"], str)
                                                  and bool(PROFILE_NAME.fullmatch(params["profile"])))))
+    if method in SUBAGENT_METHODS:              # one session's children: strict shape, Hermes checks the owner
+        return subagent_params_ok(method, params)
     if method != "config.set":
         return method in ALLOWED_METHODS
     if params.get("key") == "reasoning":         # one session's effort level: no scope (global writes config.yaml),
@@ -1363,6 +1371,235 @@ class AvatarReply:
         pass
 
 
+# --- activity: the Run and Plan tabs and the sub-agent detail on the direct connection -------------------------
+# Per live session the observer keeps, in memory, its last ACTIVITY_TOOLS tool calls (call id, tool, args preview,
+# duration, status, error, result preview: the 300-character redacted previews the events part writes) and its latest
+# plan (events.parse_plan). Both are written, only when they changed, to <pid>.activity next to the snapshot file
+# (never into the snapshot itself, which must stay small); stream.py forwards them as `deck.tools` / `deck.plan` events.
+# subagent.list / subagent.tail replies are completed from the same memory (enrich_subagent_reply).
+ACTIVITY_TOOLS = 20
+ACTIVITY_SESSIONS = 64
+ACTIVITY_MAX_BYTES = 4 * 1024 * 1024
+ACTIVITY_SUFFIX = ".activity"
+SUBAGENT_GOAL_MAX = 4000
+SUBAGENT_TAIL_MAX = 16384
+SUBAGENT_READS = ("subagent.list", "subagent.tail")
+SUBAGENT_METHODS = {"subagent.list": {"session_id"}, "subagent.tail": {"session_id", "subagent_id"},
+                    "subagent.interrupt": {"session_id", "subagent_id"},
+                    "subagent.steer": {"session_id", "subagent_id", "text"}}
+PLAN_METHOD = "deck.plan"
+_EVENTS_KEY = "_hermes_deck_plugin_events"      # the name __init__._sibling loads events.py under
+
+
+def events_part():
+    """This plugin's events.py (its redaction and plan parser), the one copy per process; None when it cannot load."""
+    mod = sys.modules.get(_EVENTS_KEY)
+    if mod is not None:
+        return mod
+    try:
+        spec = importlib.util.spec_from_file_location(_EVENTS_KEY, Path(__file__).resolve().parent / "events.py")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[_EVENTS_KEY] = mod
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:
+        sys.modules.pop(_EVENTS_KEY, None)
+        logger.warning("Hermes Deck bridge: events part unavailable for activity previews", exc_info=True)
+        return None
+
+
+def _preview(value, limit=None):
+    """A redacted preview (events._clip: 300 characters), or None."""
+    ev = events_part()
+    if ev is None or value is None:
+        return None
+    try:
+        if limit is None:
+            return ev._clip(value)
+        text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+        text = ev._redact(text)
+        return text if len(text) <= limit else text[:limit] + "…"
+    except Exception:
+        return None
+
+
+def _number(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else None
+
+
+def subagent_params_ok(method, params):
+    """Shape check for the subagent.* gateway methods (Hermes checks authority itself)."""
+    keys = SUBAGENT_METHODS.get(method)
+    if keys is None:
+        return True
+    if not keys <= set(params) or set(params) - keys - {"profile"} or not _sid_ok(params.get("session_id")):
+        return False
+    if "subagent_id" in keys and not (isinstance(params["subagent_id"], str) and re.fullmatch(r"[\x21-\x7e]{1,128}", params["subagent_id"])):
+        return False
+    if "text" in keys and not (isinstance(params["text"], str) and params["text"].strip() and len(params["text"]) <= 32000):
+        return False
+    return _profile_ok(params)
+
+
+def _subagent_record(subagent_id):
+    try:
+        from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
+        with _active_subagents_lock:
+            record = _active_subagents.get(subagent_id)
+            return dict(record) if isinstance(record, dict) else None
+    except Exception:
+        return None
+
+
+def subagent_detail(observer, subagent_id, row=None, now=None):
+    """What the Deck's sub-agent detail view needs about one live child, beyond Hermes' own roster row: its session id,
+    reasoning effort, state, elapsed seconds, token counts and cost when Hermes has them, and its recent tool calls.
+    Bounded and redacted; {} when the child is not in this process."""
+    now = time.time() if now is None else now
+    record = _subagent_record(subagent_id) or {}
+    agent = record.get("agent")
+    out = {}
+    row = row if isinstance(row, dict) else {}
+    goal = row.get("goal") if row.get("goal") is not None else record.get("goal")
+    if isinstance(goal, str):
+        out["goal"] = _preview(goal, SUBAGENT_GOAL_MAX)
+    if isinstance(row.get("last_tool"), str):
+        out["last_tool"] = _preview(row["last_tool"], 200)
+    started = _number(row.get("started_at")) or _number(record.get("started_at"))
+    if started:
+        out["elapsed_s"] = round(max(0.0, now - started), 1)
+    if agent is None:
+        return out
+    sid = str(getattr(agent, "session_id", "") or "")[:512]
+    if sid:
+        out["child_session_id"] = sid
+    out["model"] = str(row.get("model") or getattr(agent, "model", "") or "")[:160]
+    provider = str(getattr(agent, "provider", "") or "")[:160]
+    if provider:
+        out["provider"] = provider
+    effort = reasoning_effort_of(agent)
+    if effort:
+        out["reasoning_effort"] = effort
+    tokens = {}
+    for key, attr in (("input", "session_input_tokens"), ("output", "session_output_tokens"),
+                      ("cache_read", "session_cache_read_tokens"), ("cache_write", "session_cache_write_tokens"),
+                      ("reasoning", "session_reasoning_tokens"), ("api_calls", "session_api_calls")):
+        value = _number(getattr(agent, attr, None))
+        if value:
+            tokens[key] = int(value)
+    if tokens:
+        out["tokens"] = tokens
+    cost = _number(getattr(agent, "session_estimated_cost_usd", None))
+    if cost is not None and cost > 0:
+        out["cost_usd"] = round(cost, 6)
+        status = str(getattr(agent, "session_cost_status", "") or "")[:32]
+        if status:
+            out["cost_status"] = status
+    if sid and observer is not None:
+        with observer.lock:
+            node = observer.nodes.get(sid)
+            if node is not None:
+                out["state"] = node["state"]
+                for key in ("context_used", "context_max", "context_percent"):
+                    if key in node:
+                        out[key] = node[key]
+            activity = observer.activity.get(sid)
+            out["tools"] = [dict(t) for t in activity["tools"]] if activity else []
+    return out
+
+
+def enrich_subagent_reply(method, response, observer, now=None):
+    """subagent.list / subagent.tail replies completed with subagent_detail. Only rows Hermes itself returned (its own
+    owner check) are completed, and a tail only when Hermes found the child's transcript (available). The tail text is
+    redacted. Never raises: on any failure the reply goes out as Hermes wrote it."""
+    try:
+        result = response.get("result") if isinstance(response, dict) else None
+        if not isinstance(result, dict):
+            return response
+        result = dict(result)
+        if method == "subagent.list" and isinstance(result.get("subagents"), list):
+            rows = []
+            for row in result["subagents"][:64]:
+                if isinstance(row, dict) and isinstance(row.get("subagent_id"), str):
+                    row = {**row, **subagent_detail(observer, row["subagent_id"], row, now)}
+                rows.append(row)
+            result["subagents"] = rows
+            delegations = []
+            for row in result.get("delegations") or []:
+                if isinstance(row, dict):
+                    row = dict(row)
+                    for key, limit in (("goal", SUBAGENT_GOAL_MAX), ("error", 600)):
+                        if isinstance(row.get(key), str):
+                            row[key] = _preview(row[key], limit)
+                delegations.append(row)
+            if isinstance(result.get("delegations"), list):
+                result["delegations"] = delegations[:64]
+        elif method == "subagent.tail":
+            if isinstance(result.get("text"), str):
+                text = result["text"][-SUBAGENT_TAIL_MAX:]
+                result["text"] = _preview(text, SUBAGENT_TAIL_MAX + 1) or ""
+            if result.get("available") is True and isinstance(result.get("subagent_id"), str):
+                result.update({k: v for k, v in subagent_detail(observer, result["subagent_id"], None, now).items()
+                               if k not in result})
+        else:
+            return response
+        return {**response, "result": result}
+    except Exception:
+        logger.warning("Hermes Deck bridge: sub-agent reply left as is", exc_info=True)
+        return response
+
+
+_STORED_PLAN_SQL = ("SELECT tool_name, content FROM messages WHERE session_id = ? AND role = 'tool'"
+                    " AND tool_name IN ('todo_list', 'todo', 'omh_todo'){active} ORDER BY id DESC LIMIT 5")
+
+
+def stored_plan(params, with_db=None):
+    """deck.plan: the latest plan a stored session published, rebuilt from its newest todo_list / todo / omh_todo tool
+    result in state.db (read-only handle; a compression continuation also looks at the sessions it continues).
+    params: session_id, profile. -> {session_id, plan} (plan None when the session never published one)."""
+    with_db = with_db or _profile_db
+    if not isinstance(params, dict) or set(params) - {"session_id", "profile"} or not _profile_ok(params):
+        raise ValueError("Unsupported plan parameter")
+    sid, profile = params.get("session_id"), params.get("profile", "default")
+    if not _sid_ok(sid):
+        raise ValueError("A persisted session ID is required")
+    ev = events_part()
+
+    def read(db):
+        row = db.get_session(sid)
+        if row is None:
+            raise ValueError("Persisted session not found")
+        reader = getattr(db, "_read_all", None)
+        if reader is None or ev is None:
+            return None
+        current, seen = row, set()
+        for _ in range(6):                          # this session, then up to five sessions it continues
+            cid = str(current.get("id") or sid) if isinstance(current, dict) else sid
+            if cid in seen:
+                break
+            seen.add(cid)
+            for active in (" AND COALESCE(active, 1) = 1", ""):
+                try:
+                    rows = reader(_STORED_PLAN_SQL.format(active=active), (cid,))
+                except Exception:
+                    continue
+                for name, content in ((r[0], r[1]) for r in rows):
+                    plan = ev.parse_plan(name, content)
+                    if plan is not None:
+                        return plan
+                break
+            parent = current.get("parent_session_id") if isinstance(current, dict) else None
+            if not parent or (isinstance(current, dict) and current.get("source") == "subagent"):
+                break
+            current = db.get_session(parent)
+            if current is None:
+                break
+        return None
+
+    plan = with_db(profile, read, True)
+    return {"session_id": sid, "plan": plan}
+
+
 def safe_title(value):
     if not isinstance(value, str) or not value.strip():
         return ""
@@ -1390,9 +1627,95 @@ class Observer:
         self.lock = threading.RLock()
         self.sequence = 0
         self.pid = os.getpid()
+        # session id -> {"tools": [recent tool calls], "plan": latest plan or None}; see ACTIVITY_* above
+        self.activity = OrderedDict()
+        self.activity_dirty = False
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.directory.chmod(0o700)
         self._persist()
+
+    def _activity(self, node):
+        """The activity record of a live node (created on first use; the least recently used one goes past the cap)."""
+        sid = node["session_id"]
+        entry = self.activity.get(sid)
+        if entry is None:
+            entry = self.activity[sid] = {"tools": [], "plan": None}
+        self.activity.move_to_end(sid)
+        while len(self.activity) > ACTIVITY_SESSIONS:
+            self.activity.popitem(last=False)
+        self.activity_dirty = True
+        return entry
+
+    def _tool_started(self, node, tool_name, call_id, args):
+        if node is None:
+            return
+        try:
+            tools = self._activity(node)["tools"]
+            tools.append({"call": str(call_id or "")[:128], "tool": str(tool_name or "")[:96], "args": _preview(args),
+                          "ts": round(self.clock(), 3), "status": "running"})
+            del tools[:-ACTIVITY_TOOLS]
+        except Exception:   # a display record must never break the hook
+            logger.warning("Hermes Deck bridge: tool activity not recorded", exc_info=True)
+
+    def _tool_finished(self, node, *args):
+        if node is None:
+            return
+        try:
+            self._tool_record_end(node, *args)
+        except Exception:
+            logger.warning("Hermes Deck bridge: tool activity not recorded", exc_info=True)
+
+    def _tool_record_end(self, node, tool_name, call_id, result, duration_ms, status, error_type, error_message):
+        entry = self._activity(node)
+        call = str(call_id or "")[:128]
+        tool = next((t for t in reversed(entry["tools"]) if call and t["call"] == call), None)
+        if tool is None:
+            tool = {"call": call, "tool": str(tool_name or "")[:96], "args": None, "ts": round(self.clock(), 3)}
+            entry["tools"].append(tool)
+            del entry["tools"][:-ACTIVITY_TOOLS]
+        failed = status in {"error", "failed", "blocked"} or bool(error_type)
+        tool["status"] = str(status or ("error" if failed else "ok"))[:32]
+        tool["ms"] = _number(duration_ms)
+        tool["result"] = _preview(result)
+        tool["err"] = (_preview(f"{error_type}: {error_message or ''}") if error_type
+                       else _preview(error_message) if failed and error_message else None)
+        ev = events_part()
+        plan = ev.parse_plan(tool_name, result) if ev is not None and tool_name in getattr(ev, "PLAN_TOOLS", ()) and not failed else None
+        if plan is not None:
+            entry["plan"] = dict(plan, ts=round(self.clock(), 3))
+
+    def activity_snapshot(self):
+        """The activity of the live nodes, as written to <pid>.activity."""
+        with self.lock:
+            sessions = {}
+            for sid, entry in self.activity.items():
+                node = self.nodes.get(sid)
+                if node is None:
+                    continue
+                sessions[sid] = {"profile_name": node.get("profile_name") or "default",
+                                 "tools": [dict(t) for t in entry["tools"]], "plan": entry["plan"]}
+            return json.loads(json.dumps({"schema": SCHEMA, "pid": self.pid, "updated_at": self.clock(),
+                                          "sessions": sessions}, default=str))
+
+    def _persist_activity(self):
+        for sid in [s for s in self.activity if s not in self.nodes]:
+            self.activity.pop(sid, None)
+            self.activity_dirty = True
+        if not self.activity_dirty:
+            return
+        self.activity_dirty = False
+        try:
+            data = json.dumps(self.activity_snapshot(), ensure_ascii=True)
+            if len(data) > ACTIVITY_MAX_BYTES:
+                return
+            target = self.directory / f"{self.pid}{ACTIVITY_SUFFIX}"
+            tmp = self.directory / f"{self.pid}{ACTIVITY_SUFFIX}.tmp"
+            fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(data)
+            os.replace(tmp, target)
+        except OSError:
+            logger.warning("Hermes Deck bridge: activity snapshot unavailable", exc_info=True)
 
     def _node(self, session_id):
         sid = str(session_id or "")[:512]
@@ -1540,6 +1863,7 @@ class Observer:
         except OSError:
             # Display failures must never prevent a tool or agent from executing.
             logger.warning("Hermes Deck bridge: observer snapshot unavailable", exc_info=True)
+        self._persist_activity()
 
     def pre_llm_call(self, session_id="", turn_id="", parent_session_id="", model="", platform="", **_):
         with self.lock:
@@ -1590,7 +1914,7 @@ class Observer:
             self._persist()
             return None
 
-    def pre_tool_call(self, tool_name="", session_id="", turn_id="", args=None, **_):
+    def pre_tool_call(self, tool_name="", session_id="", turn_id="", args=None, tool_call_id=None, **_):
         with self.lock:
             node = self._node(session_id)
             key = (str(session_id), str(turn_id))
@@ -1602,11 +1926,15 @@ class Observer:
             if node is not None:
                 node["state"] = "working"
                 self._step(node, tool_name)
+                self._tool_started(node, tool_name, tool_call_id, args)
             self._persist()
         return None
 
-    def post_tool_call(self, tool_name="", session_id="", turn_id="", args=None, result=None, status="", **_):
+    def post_tool_call(self, tool_name="", session_id="", turn_id="", args=None, result=None, status="",
+                       tool_call_id=None, duration_ms=None, error_type=None, error_message=None, **_):
         with self.lock:
+            self._tool_finished(self._late(session_id), tool_name, tool_call_id, result, duration_ms, status,
+                                error_type, error_message)
             key = (str(session_id), str(turn_id))
             if tool_name == "omh_delegate_route" and (args or {}).get("action", "set") in {"set", "fallback"}:
                 try:
@@ -1824,9 +2152,10 @@ class Observer:
                             token = bind_transport(connection_fanout)
                             try: peer.write((submit_appshot if method == "deck.appshot" else submit_attachments)(request, server.dispatch, connection_fanout))
                             finally: reset_transport(token)
-                        elif method in {INDEX_METHOD, UPDATE_METHOD}:
+                        elif method in {INDEX_METHOD, UPDATE_METHOD, PLAN_METHOD}:
                             # a store read can take seconds on a big state.db: off the connection's reader thread
-                            handler = session_index if method == INDEX_METHOD else session_update
+                            handler = (session_index if method == INDEX_METHOD else session_update if method == UPDATE_METHOD
+                                       else stored_plan)
                             threading.Thread(target=lambda r=request, f=handler: peer.write(session_reply(r, f)),
                                              daemon=True).start()
                         elif method == TAKEOVER_METHOD:
@@ -1867,6 +2196,9 @@ class Observer:
                             token = bind_transport(transport)
                             try:
                                 response = server.dispatch(request, transport=transport)
+                                if method in SUBAGENT_READS:
+                                    # the sub-agent detail view: Hermes' own reply, completed (and redacted) here
+                                    response = enrich_subagent_reply(method, response, self)
                                 if response is not None: transport.write(response)
                             except BaseException:
                                 if isinstance(transport, AvatarReply): transport.done()  # nothing was queued

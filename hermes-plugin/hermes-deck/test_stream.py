@@ -718,6 +718,30 @@ class EndToEndTests(unittest.TestCase):
         self.proc.stdin.flush()
         return self.next(lambda f: f.get("id") == rid and "method" not in f, timeout)
 
+    def test_plan_tools_and_subagents_reach_the_deck(self):
+        # the Run / Plan tabs: the observer's activity file becomes deck.tools and deck.plan events, once each
+        plan = self.next(lambda f: f.get("method") == "event" and f["params"]["type"] == "deck.plan")["params"]
+        self.assertEqual((plan["session_id"], plan["profile_name"]), ("s-main", "default"))
+        self.assertEqual(plan["payload"]["plan"]["rev"], 3)
+        self.assertEqual([i["state"] for i in plan["payload"]["plan"]["items"]], ["done", "active"])
+        tools = self.next(lambda f: f.get("method") == "event" and f["params"]["type"] == "deck.tools")["params"]
+        (call,) = tools["payload"]["tools"]
+        self.assertEqual((call["call"], call["tool"], call["status"], call["ms"]), ("call-todo-1", "todo_list", "ok", 2))
+        self.assertIn("Write the parser", call["args"])
+        # the sub-agent detail: Hermes' roster row plus what the plugin adds; strict shapes before Hermes sees it
+        rows = self.call("subagent.list", {"session_id": "rpc-s-main"})["result"]["subagents"]
+        self.assertEqual((rows[0]["subagent_id"], rows[0]["goal"], rows[0]["status"]), ("sa-0-test", "Find three examples", "running"))
+        self.assertGreaterEqual(rows[0]["elapsed_s"], 0)
+        tail = self.call("subagent.tail", {"session_id": "rpc-s-main", "subagent_id": "sa-0-test"})["result"]
+        self.assertEqual((tail["available"], tail["text"]), (True, "searching\nfound one\n"))
+        self.assertEqual(self.call("subagent.steer", {"session_id": "rpc-s-main", "subagent_id": "sa-0-test", "text": "Focus"})["result"]["status"], "queued")
+        self.assertEqual(self.call("subagent.interrupt", {"session_id": "rpc-s-main", "subagent_id": "sa-0-test"})["result"]["found"], True)
+        self.assertEqual(self.call("subagent.steer", {"session_id": "rpc-s-main", "subagent_id": "sa-0-test", "text": " "})["error"]["code"], -32601)
+        self.assertEqual(self.call("subagent.tail", {"session_id": "rpc-s-main"})["error"]["code"], -32601)
+        # a stored session's plan (deck.plan) is answered by the plugin, never relayed to the gateway
+        self.assertEqual(self.call("deck.plan", {"session_id": "s-idle"})["result"], {"session_id": "s-idle", "plan": None})
+        self.assertEqual(self.call("deck.plan", {"session_id": "missing"})["error"]["code"], 4000)
+
     def test_the_deck_requests_reach_hermes_and_come_back(self):
         snap = self.next(lambda f: f.get("schema") == "hermes-deck.v1" and f.get("nodes"))
         (main,) = [n for n in snap["nodes"] if n["session_id"] == "s-main"]

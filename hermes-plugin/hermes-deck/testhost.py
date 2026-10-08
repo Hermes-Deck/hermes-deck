@@ -163,6 +163,19 @@ def install_fake_hermes(home: Path, log=None):
                        "message_count": 0})
         if method == "session.title":
             return ok({"pending": False, "title": p.get("title")})
+        # Sub-agents of s-main (Hermes' methods_subagents shapes); the plugin completes the list and tail replies
+        if method == "subagent.list":
+            return ok({"subagents": [{"subagent_id": "sa-0-test", "parent_id": None, "depth": 1, "goal": "Find three examples",
+                                      "model": "model-b", "started_at": time.time() - 5, "status": "running",
+                                      "tool_count": 1, "last_tool": "web_search", "accepting_steer": True}],
+                       "delegations": []})
+        if method == "subagent.tail":
+            return ok({"subagent_id": p.get("subagent_id"), "available": True, "text": "searching\nfound one\n",
+                       "truncated": False})
+        if method == "subagent.steer":
+            return ok({"status": "queued", "subagent_id": p.get("subagent_id"), "text": p.get("text")})
+        if method == "subagent.interrupt":
+            return ok({"found": True, "subagent_id": p.get("subagent_id")})
         return {"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": f"fake gateway: {method}"}}
 
     module("tui_gateway")
@@ -182,6 +195,13 @@ def start(home, log=None):
                                                          "active_agents": 1}), encoding="utf-8")
     instance = observer.start(home / "hermes-deck")
     agent = Agent()
+    # a todo_list call from an earlier turn: the stream turns it into deck.tools and deck.plan events
+    todos = [{"id": "1", "content": "Read the brief", "status": "completed"},
+             {"id": "2", "content": "Write the parser", "status": "in_progress"}]
+    instance.pre_tool_call(tool_name="todo_list", session_id="s-main", turn_id="t1", tool_call_id="call-todo-1",
+                           args={"todos": todos})
+    instance.post_tool_call(tool_name="todo_list", session_id="s-main", turn_id="t1", tool_call_id="call-todo-1",
+                            result=json.dumps({"todos": todos, "revision": 3}), duration_ms=2, status="ok")
     instance.pre_llm_call(session_id="s-main", turn_id="t1", model="model-a", platform="cli")
     import weakref
     with instance.lock:

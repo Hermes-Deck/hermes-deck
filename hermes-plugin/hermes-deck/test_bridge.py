@@ -750,14 +750,18 @@ class ProtocolTests(unittest.TestCase):
     def test_every_bridge_method_is_served(self):
         native = {"session.messages", "native.steer", "native.redirect", "native.interrupt", "deck.appshot", "deck.attach_submit",
                   "deck.transcribe", "deck.file_read", "deck.session_index", "deck.session_update", "deck.reasoning_view", "deck.takeover",
-                  "deck.version"}  # deck.version: answered by stream.py itself (stream.VERSION_METHOD), never relayed
+                  "deck.plan", "deck.version"}  # deck.version: answered by stream.py itself (stream.VERSION_METHOD), never relayed
         self.assertIn('VERSION_METHOD = "deck.version"', (Path(__file__).resolve().parent / "stream.py").read_text(encoding="utf-8"))
         shapes = {"config.set": {"session_id": "rpc-1", "key": "model", "value": "m --provider p --session"},
                   "profiles.get_asset": {"name": "default", "asset": "avatar"},
                   "session.title": {"session_id": "rpc-1", "title": "Bot Chat"},
                   "session.delete": {"session_id": "stored-1", "profile": "default"},
                   "session.archive": {"session_id": "stored-1", "archived": True, "profile": "default"},
-                  "session.branch_stored": {"parent_session_id": "stored-1", "profile": "default"}}
+                  "session.branch_stored": {"parent_session_id": "stored-1", "profile": "default"},
+                  "subagent.list": {"session_id": "rpc-1"},
+                  "subagent.tail": {"session_id": "rpc-1", "subagent_id": "sa-0-abc"},
+                  "subagent.interrupt": {"session_id": "rpc-1", "subagent_id": "sa-0-abc"},
+                  "subagent.steer": {"session_id": "rpc-1", "subagent_id": "sa-0-abc", "text": "Focus"}}
         methods = self.methods()
         self.assertGreaterEqual(len(methods), 10)
         for method in methods:

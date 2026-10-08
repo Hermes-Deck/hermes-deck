@@ -41,6 +41,7 @@ const INDEX_TTL = 30000;
 const MAX_WRITE_BUFFER = 1024 * 1024; // bytes waiting for the pipe; beyond this new requests are refused
 const MAX_TEXT = 32000; // native steer/redirect limit in the host plugin
 const MAX_OPEN_REQUESTS = 32;
+const LIVE_ACTIVITY_MAX = 256; // sessions whose latest plan / tool calls this connection keeps
 
 /** Desk's deadlines; tests shorten them. */
 const TIMING = {
@@ -68,10 +69,15 @@ const TIMING = {
 // sessions, which session.list cannot page or date), and four narrow writes: deck.session_update (rename / pin one stored
 // row; session.title needs a live runtime), session.archive and session.branch_stored ("Continue here").
 // deck.version ({version, protocol}) is answered by stream.py itself (plugin 0.3.6+); older hosts answer -32601.
-const READS = ["deck.version", "session.list", "deck.session_index", "session.messages", "session.usage", "model.options", "profiles.list", "profiles.get_asset", "deck.transcribe", "deck.file_read"];
+// The work pane (Lane C of the Blend redesign) adds three reads: subagent.list (a live session's children, completed by
+// the plugin with model, effort, state, elapsed, tokens, cost and their recent tool calls), subagent.tail (one child's
+// live transcript tail) and deck.plan (a stored session's latest plan, rebuilt read-only from state.db by the plugin);
+// and two click-driven writes on one child: subagent.steer and subagent.interrupt. Hermes checks that the child belongs
+// to the session this connection addresses; the plugin checks the shapes again (observer.py subagent_params_ok).
+const READS = ["deck.version", "session.list", "deck.session_index", "session.messages", "session.usage", "model.options", "profiles.list", "profiles.get_asset", "deck.transcribe", "deck.file_read", "subagent.list", "subagent.tail", "deck.plan"];
 // deck.reasoning_view ("Show thinking") flips the in-memory show_reasoning flag of one runtime session this Deck created
 // or resumed (the plugin checks the session's transport is its own socket); it writes no file and no other session.
-const MUTATIONS = ["session.create", "session.resume", "deck.takeover", "prompt.submit", "deck.attach_submit", "native.steer", "native.redirect", "native.interrupt", "session.interrupt", "config.set", "request.answer", "session.title", "session.delete", "session.close", "deck.session_update", "session.archive", "session.branch_stored", "deck.reasoning_view"];
+const MUTATIONS = ["session.create", "session.resume", "deck.takeover", "prompt.submit", "deck.attach_submit", "native.steer", "native.redirect", "native.interrupt", "session.interrupt", "config.set", "request.answer", "session.title", "session.delete", "session.close", "deck.session_update", "session.archive", "session.branch_stored", "deck.reasoning_view", "subagent.steer", "subagent.interrupt"];
 const METHODS = new Set([...READS, ...MUTATIONS]);
 // Hermes Desktop's canonical per-bot chat: its identity is this exact title in the profile's state.db
 // (desktop plugin hermes-bots/canonical-chat.ts), never a stored id pointer.
@@ -365,6 +371,23 @@ function validFileRead(p) {
   return !("profile" in p) || validProfileParam(p.profile);
 }
 
+const SUBAGENT_ID_RE = /^[\x21-\x7e]{1,128}$/; // Hermes' ids look like "sa-0-1a2b3c4d"; never spaces or controls
+/**
+ * subagent.*: exactly {session_id} (list) or {session_id, subagent_id} (tail, interrupt) or {session_id, subagent_id,
+ * text} (steer, 1..MAX_TEXT characters, not blank); `session_id` is the runtime id this connection bound.
+ */
+function validSubagent(method, p) {
+  const keys = method === "subagent.list" ? ["session_id"] : method === "subagent.steer" ? ["session_id", "subagent_id", "text"] : ["session_id", "subagent_id"];
+  if (Object.keys(p).length !== keys.length || !onlyKeys(p, keys)) return false;
+  if (typeof p.session_id !== "string" || !SID_RE.test(p.session_id)) return false;
+  if (method !== "subagent.list" && (typeof p.subagent_id !== "string" || !SUBAGENT_ID_RE.test(p.subagent_id))) return false;
+  return method !== "subagent.steer" || (typeof p.text === "string" && !!p.text.trim() && p.text.length <= MAX_TEXT);
+}
+
+/** deck.plan: one stored session, optionally in a named profile. */
+const validPlanRead = (p) => onlyKeys(p, ["session_id", "profile"]) && typeof p.session_id === "string" && SID_RE.test(p.session_id) &&
+  (!("profile" in p) || validProfileParam(p.profile));
+
 function checkRequest(method, params) {
   if (!METHODS.has(method)) throw new Error(i18nText("U0046"));
   if (!isPlainObject(params)) throw new Error(i18nText("U0047"));
@@ -387,6 +410,8 @@ function checkRequest(method, params) {
   if (method === "session.branch_stored" && !validSessionBranch(params)) throw new Error(i18nText("sessions.invalid"));
   if ((method === "profiles.list" || method === "deck.version") && Object.keys(params).length) throw new Error(i18nText("U0054"));
   if (method === "profiles.get_asset" && !validAssetRead(params)) throw new Error(i18nText("U0055"));
+  if (method.startsWith("subagent.") && !validSubagent(method, params)) throw new Error(i18nText("U0047"));
+  if (method === "deck.plan" && !validPlanRead(params)) throw new Error(i18nText("U0047"));
 }
 
 /** A reply: string id, no method, exactly one of result / error{message} (hermes.rs:192-204). */
@@ -617,6 +642,111 @@ function projectModelOptions(result) {
     if (options.length >= MODEL_OPTIONS_MAX) break;
   }
   return { current: { model: str(curModel, 200), provider: str(curProvider, 128) }, options };
+}
+
+// ---------------------------------------------------------------- work pane: plans, tool calls, sub-agents
+
+const PLAN_STATES = new Set(["pending", "active", "done", "cancelled"]);
+const PLAN_ITEMS = 64;
+const TOOL_ROWS = 20;
+const preview = (v, max = 301) => (typeof v === "string" ? keepLines(v, max) : null); // the plugin's 300-char previews (+ "…")
+
+/** A plan (plugin `plan` / deck.plan shape) for the renderer, or null. Text stays text; the renderer adds it as text nodes. */
+function projectPlan(p) {
+  if (!isPlainObject(p) || (p.source !== "todo" && p.source !== "omh") || !Array.isArray(p.items)) return null;
+  const items = [];
+  for (const [i, raw] of p.items.slice(0, PLAN_ITEMS).entries()) {
+    if (!isPlainObject(raw)) continue;
+    const item = {
+      id: typeof raw.id === "string" && raw.id ? str(raw.id, 64) : String(i + 1),
+      text: oneLine(raw.text, 300),
+      state: PLAN_STATES.has(raw.state) ? raw.state : "pending",
+      depth: Number.isInteger(raw.depth) ? Math.max(0, Math.min(raw.depth, 3)) : 0,
+    };
+    const phase = oneLine(raw.phase, 80);
+    if (phase) item.phase = phase;
+    const blocked = oneLine(raw.blocked, 300);
+    if (blocked) item.blocked = blocked;
+    items.push(item);
+  }
+  const out = { source: p.source, rev: num(p.rev) ?? 0, items };
+  if (Number.isInteger(p.total) && p.total > items.length) out.total = p.total;
+  const ts = num(p.ts);
+  if (ts !== null) out.ts = ts;
+  return out;
+}
+
+/** One tool call (Run tab, sub-agent detail): {call, tool, args, ts, status, ms, err, result}. */
+function projectToolCall(t) {
+  if (!isPlainObject(t)) return null;
+  const tool = str(t.tool, 96);
+  if (!tool) return null;
+  return {
+    call: str(t.call, 128),
+    tool,
+    args: preview(t.args),
+    ts: num(t.ts),
+    status: typeof t.status === "string" ? str(t.status, 32) : null,
+    ms: num(t.ms),
+    err: preview(t.err),
+    result: preview(t.result),
+  };
+}
+
+const projectToolCalls = (list) => (Array.isArray(list) ? list.slice(-4 * TOOL_ROWS).map(projectToolCall).filter(Boolean).slice(-TOOL_ROWS) : []);
+
+const SUB_STATUS = new Set(["queued", "running", "completed", "failed", "error", "timeout", "interrupted"]);
+const TOKEN_KEYS = ["input", "output", "cache_read", "cache_write", "reasoning", "api_calls"];
+
+/** One live child from subagent.list / subagent.tail, plugin-completed fields included when the host sent them. */
+function projectSubagent(r) {
+  if (!isPlainObject(r) || typeof r.subagent_id !== "string" || !/^[\x21-\x7e]{1,128}$/.test(r.subagent_id)) return null;
+  const tokens = {};
+  if (isPlainObject(r.tokens)) for (const k of TOKEN_KEYS) if (num(r.tokens[k]) !== null) tokens[k] = r.tokens[k];
+  return {
+    id: r.subagent_id,
+    parentId: typeof r.parent_id === "string" ? str(r.parent_id, 128) : null,
+    depth: Number.isInteger(r.depth) ? r.depth : null,
+    goal: keepLines(r.goal, 4001),
+    model: str(r.model, 160),
+    provider: str(r.provider, 160),
+    effort: typeof r.reasoning_effort === "string" && REASONING_RE.test(r.reasoning_effort) ? r.reasoning_effort : "",
+    status: SUB_STATUS.has(r.status) ? r.status : "",
+    state: STATES.has(r.state) ? r.state : "",
+    startedAt: num(r.started_at),
+    elapsedS: num(r.elapsed_s),
+    toolCount: num(r.tool_count),
+    lastTool: str(r.last_tool, 200),
+    acceptingSteer: r.accepting_steer === true,
+    childSid: sidOrNull(r.child_session_id),
+    tokens: Object.keys(tokens).length ? tokens : null,
+    costUsd: num(r.cost_usd),
+    costStatus: str(r.cost_status, 32),
+    ctxUsed: num(r.context_used),
+    ctxMax: num(r.context_max),
+    ctxPercent: num(r.context_percent),
+    tools: projectToolCalls(r.tools),
+  };
+}
+
+/** subagent.list -> {subagents, failed}: live children and recently failed async delegations. */
+function projectSubagents(result) {
+  const r = isPlainObject(result) ? result : {};
+  const subagents = (Array.isArray(r.subagents) ? r.subagents.slice(0, 64) : []).map(projectSubagent).filter(Boolean);
+  const failed = [];
+  for (const d of Array.isArray(r.delegations) ? r.delegations.slice(0, 64) : []) {
+    if (!isPlainObject(d)) continue;
+    failed.push({ delegationId: str(d.delegation_id, 128), taskIndex: Number.isInteger(d.task_index) ? d.task_index : 0, status: str(d.status, 32),
+      goal: keepLines(d.goal, 4001), error: keepLines(d.error, 601), dispatchedAt: num(d.dispatched_at), completedAt: num(d.completed_at) });
+  }
+  return { subagents, failed };
+}
+
+/** subagent.tail -> {id, available, text, truncated, detail}: the child's live transcript tail (redacted by the plugin). */
+function projectSubagentTail(result, subagentId) {
+  const r = isPlainObject(result) ? result : {};
+  const detail = r.available === true ? projectSubagent({ ...r, subagent_id: subagentId }) : null;
+  return { id: subagentId, available: r.available === true, text: keepLines(r.text, 16384 + 1), truncated: r.truncated === true, detail };
 }
 
 // ---------------------------------------------------------------- bots (Hermes Desktop's Bot Mode roster)
@@ -856,6 +986,9 @@ class BridgeClient extends EventEmitter {
     this.botSeen = new Set();
     this.botPending = new Map(); // profile -> learned canonical {chat, epoch, pending}; pending runtime chats are epoch-local
     this.minting = new Map(); // profile -> Promise
+    // work pane: the latest deck.plan / deck.tools per [profile, stored id] on this connection (cleared on reconnect)
+    this.livePlans = new Map();
+    this.liveTools = new Map();
   }
 
   /** pid of the current child, if any (diagnostics and tests). */
@@ -1089,6 +1222,10 @@ class BridgeClient extends EventEmitter {
       if (p.replay === true || payload.replay === true || payload.historical === true) return;
       const type = p.type.slice(0, 64);
       const rpcId = str(p.session_id, 512);
+      if (type === "deck.plan" || type === "deck.tools") {
+        this._onActivity(type, rpcId, p.profile_name, payload);
+        return;
+      }
       const ref = this._sessionRef(rpcId, p);
       const newKey = ref.profile && ref.sid ? sessionKey(ref.profile, ref.sid) : null;
       const newSession = this.newSessions.get(newKey);
@@ -1127,6 +1264,32 @@ class BridgeClient extends EventEmitter {
     this._emitRequests();
   }
 
+  /**
+   * deck.plan / deck.tools from stream.py (plugin 2.x activity): the observer's latest plan and recent tool calls of a
+   * session it watches, keyed by the STORED session id (observer nodes are stored ids, never runtime ids). Projected,
+   * cached for late readers (plan(), toolCalls()) and re-emitted as an "event" {type, sid, profile, payload}.
+   */
+  _onActivity(type, sid, profile, payload) {
+    if (!SID_RE.test(sid)) return;
+    const p = typeof profile === "string" && PROFILE_RE.test(profile) ? profile : "default";
+    const key = sessionKey(p, sid);
+    let out;
+    if (type === "deck.plan") {
+      const plan = projectPlan(payload.plan);
+      if (!plan) return;
+      this.livePlans.delete(key);
+      this.livePlans.set(key, plan);
+      out = { plan };
+    } else {
+      const tools = projectToolCalls(payload.tools);
+      this.liveTools.delete(key);
+      this.liveTools.set(key, tools);
+      out = { tools };
+    }
+    for (const map of [this.livePlans, this.liveTools]) while (map.size > LIVE_ACTIVITY_MAX) map.delete(map.keys().next().value);
+    this.emit("event", { type, rpcId: sid, sid, profile: p, payload: out });
+  }
+
   _emitRequests() {
     this.emit("requests", this.listRequests());
   }
@@ -1155,6 +1318,8 @@ class BridgeClient extends EventEmitter {
 
   _clearSession() {
     this.recovering?.clear();
+    this.livePlans?.clear(); // a new stream sends every session's activity again
+    this.liveTools?.clear();
     this.bindings.clear();
     this.rpcToStored.clear();
     this.created.clear();
@@ -1844,6 +2009,73 @@ class BridgeClient extends EventEmitter {
     return { status: isPlainObject(r) && typeof r.status === "string" ? r.status.slice(0, 64) : "unknown" };
   }
 
+  // ------------------------------------------------------------ work pane: sub-agents, plan, tool calls
+
+  /**
+   * The live children of a session (subagent.list), completed by the plugin with model, effort, state, elapsed seconds,
+   * tokens, cost and their recent tool calls: {subagents: [...], failed: [...]}. A read, but it addresses the runtime
+   * session, so the session is resumed (bound) on this connection first, like model options. Never replayed.
+   */
+  async subagents(sessionId, { profile } = {}) {
+    const p = this._profileOf(sessionId, profile);
+    const rpcId = await this._bind(sessionId, p);
+    return projectSubagents(await this._runtimeRequest("subagent.list", sessionId, p, { session_id: rpcId }));
+  }
+
+  /** The last 16 KB of one live child's transcript (subagent.tail) plus its detail: {id, available, text, truncated, detail}. */
+  async subagentTail(sessionId, subagentId, { profile } = {}) {
+    checkSubagentId(subagentId);
+    const p = this._profileOf(sessionId, profile);
+    const rpcId = await this._bind(sessionId, p);
+    return projectSubagentTail(await this._runtimeRequest("subagent.tail", sessionId, p, { session_id: rpcId, subagent_id: subagentId }), subagentId);
+  }
+
+  /** Queue guidance into one live child (a click; never replayed). "queued" is not "delivered". */
+  async steerSubagent(sessionId, subagentId, text, { profile } = {}) {
+    checkSubagentId(subagentId);
+    const t = checkText(text, MAX_TEXT);
+    const p = this._profileOf(sessionId, profile);
+    const rpcId = await this._bind(sessionId, p);
+    const r = await this._runtimeRequest("subagent.steer", sessionId, p, { session_id: rpcId, subagent_id: subagentId, text: t });
+    return { status: isPlainObject(r) && typeof r.status === "string" ? r.status.slice(0, 64) : "unknown" };
+  }
+
+  /** Hard-interrupt one live child (a click; never replayed). found:false means it had already finished. */
+  async interruptSubagent(sessionId, subagentId, { profile } = {}) {
+    checkSubagentId(subagentId);
+    const p = this._profileOf(sessionId, profile);
+    const rpcId = await this._bind(sessionId, p);
+    const r = await this._runtimeRequest("subagent.interrupt", sessionId, p, { session_id: rpcId, subagent_id: subagentId });
+    return { found: isPlainObject(r) && r.found === true };
+  }
+
+  /**
+   * The Plan tab: {sid, plan, live}. The latest plan this connection saw live (deck.plan event), else the stored one the
+   * plugin rebuilds from state.db (deck.plan read). plan null: the agent did not publish one. A host without deck.plan
+   * (-32601) answers plan null.
+   */
+  async plan(sessionId, { profile } = {}) {
+    checkSid(sessionId);
+    const p = this._profileOf(sessionId, profile);
+    const live = this.livePlans.get(sessionKey(p, sessionId));
+    if (live) return { sid: sessionId, plan: live, live: true };
+    const params = { session_id: sessionId };
+    if (p !== "default") params.profile = p;
+    try {
+      const r = await this.request("deck.plan", params);
+      return { sid: sessionId, plan: projectPlan(isPlainObject(r) ? r.plan : null), live: false };
+    } catch (e) {
+      if (e && e.rpcCode === -32601) return { sid: sessionId, plan: null, live: false };
+      throw e;
+    }
+  }
+
+  /** The Run tab's latest tool calls of a session as last pushed (deck.tools); [] when none arrived on this connection. */
+  toolCalls(sessionId, { profile } = {}) {
+    checkSid(sessionId);
+    return this.liveTools.get(sessionKey(this._profileOf(sessionId, profile), sessionId)) || [];
+  }
+
   async modelOptions(sessionId, { profile, profileOnly = false } = {}) {
     if (profileOnly === true) {
       checkSid(sessionId);
@@ -2008,6 +2240,10 @@ function checkSid(sid) {
   if (typeof sid !== "string" || !SID_RE.test(sid)) throw new Error(i18nText("U0102"));
 }
 
+function checkSubagentId(id) {
+  if (typeof id !== "string" || !SUBAGENT_ID_RE.test(id)) throw new Error(i18nText("U0047"));
+}
+
 function checkText(text, max) {
   if (typeof text !== "string" || !text.trim()) throw new Error(i18nText("U0103"));
   if (max && text.length > max) throw new Error(i18nText("A0034", { v: max.toLocaleString(i18nLocale()) }));
@@ -2056,4 +2292,11 @@ module.exports = {
   AVATAR_LIMIT,
   projectProfiles,
   projectAvatar,
+  projectPlan,
+  projectToolCall,
+  projectSubagents,
+  projectSubagentTail,
+  READS,
+  MUTATIONS,
+  MAX_TEXT,
 };

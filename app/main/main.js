@@ -482,6 +482,15 @@ ipc.handle("bridge:takeover", (e, sid, o) => { fromApp(e); return trackMutation(
 ipc.handle("bridge:steer", (_e, sid, text, o) => needBridge().steer(bSid(sid), bText(text), { turnId: bTurn(o) }));
 ipc.handle("bridge:redirect", (_e, sid, text, o) => needBridge().redirect(bSid(sid), bText(text), { turnId: bTurn(o) }));
 ipc.handle("bridge:interrupt", (_e, sid, o) => needBridge().interrupt(bSid(sid), { turnId: bTurn(o) }));
+// work pane (Run, Plan, Agents tabs): sub-agent roster and tail (reads), steer and interrupt of one child (a click
+// each, never replayed), the session's plan (live, else stored) and its latest tool calls
+const bSub = (v) => String(v ?? "").slice(0, 128); // bridge.js checks the shape (validSubagent)
+ipc.handle("bridge:subagents", (_e, sid, o) => needBridge().subagents(bSid(sid), { profile: bProfile(o) }));
+ipc.handle("bridge:subagent-tail", (_e, sid, id, o) => needBridge().subagentTail(bSid(sid), bSub(id), { profile: bProfile(o) }));
+ipc.handle("bridge:subagent-steer", (_e, sid, id, text, o) => trackMutation(() => needBridge().steerSubagent(bSid(sid), bSub(id), bText(text), { profile: bProfile(o) })));
+ipc.handle("bridge:subagent-interrupt", (_e, sid, id, o) => trackMutation(() => needBridge().interruptSubagent(bSid(sid), bSub(id), { profile: bProfile(o) })));
+ipc.handle("bridge:plan", (_e, sid, o) => needBridge().plan(bSid(sid), { profile: bProfile(o) }));
+ipc.handle("bridge:tool-calls", (_e, sid, o) => needBridge().toolCalls(bSid(sid), { profile: bProfile(o) }));
 ipc.handle("bridge:reasoning", (_e, show) => {
   bridgeReasoning = show === true;
   return bridge ? bridge.setReasoning(bridgeReasoning) : { show: bridgeReasoning };
@@ -1045,6 +1054,11 @@ ipc.handle("tg:topic", (e, op, a) => {
 ipc.handle("relay:session", (_e, sid) => {
   if (!relay) throw new Error(i18nText("U0235"));
   return relay.get(`/session/${encodeURIComponent(String(sid))}`);
+});
+// Plan tab (relay path): {sid, plan, stored}, the live plan or the one rebuilt from state.db
+ipc.handle("relay:plan", (_e, sid) => {
+  if (!relay) throw new Error(i18nText("U0235"));
+  return relay.plan(String(sid ?? ""));
 });
 ipc.handle("relay:tokens", (_e, rangeOrDays) => {
   if (!relay) throw new Error(i18nText("U0235"));
