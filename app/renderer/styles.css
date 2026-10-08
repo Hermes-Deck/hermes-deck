@@ -1,45 +1,47 @@
-/* Hermes Deck — tokens.
-   Ground is basalt and obsidian; text is marble. Three antique materials carry meaning and nothing else:
-   patina (bronze verdigris) = live/running, gilt = warning/cost, amphora red = failure. */
+/* Hermes Deck — tokens (Blend).
+   The default theme is OLED: a true black canvas, four lifted layers, hairlines and four text greys. One accent, one
+   meaning: brass (--gilt) = "needs you / your action / primary". Teal (--patina) = an agent live or running. Red
+   (--amphora) = failed. Token names are roles kept from the classic themes, so every view follows without edits; the
+   Blend names (--bg, --l1..--l4, --t1..--t4, --brass, --teal, --red) are aliases in the shared block below. */
 :root {
-  --obsidian: #0d0e10;
-  --basalt: #15171a;
-  --slate: #1d2024;
-  --slate-2: #262a2f;
-  --vein: #2c3035;
-  --vein-text: #8b9098;
-  --marble: #e8e4dc;
-  --marble-dim: #b9b5ae;
-  --patina: #6fb3a6;
-  --patina-soft: #2c4a45;
-  --gilt: #cda65a;
-  --amphora: #c96a4e;
+  --obsidian: #000000;
+  --basalt: #0a0a0a;
+  --slate: #141414;
+  --slate-2: #1c1c1c;
+  --vein: #232323;
+  --vein-text: #7d7d7d;
+  --marble: #ededed;
+  --marble-dim: #b3b3b3;
+  --patina: #6dd3bd;
+  --patina-soft: #163a33;
+  --gilt: #e8b45a;
+  --amphora: #ff7466;
   /* the same materials as channels, for translucent washes: rgb(var(--patina-rgb) / 0.1) */
-  --patina-rgb: 111 179 166;
-  --gilt-rgb: 205 166 90;
-  --amphora-rgb: 201 106 78;
-  --obsidian-rgb: 13 14 16; /* scrims over the page or a picture */
+  --patina-rgb: 109 211 189;
+  --gilt-rgb: 232 180 90;
+  --amphora-rgb: 255 116 102;
+  --obsidian-rgb: 0 0 0; /* scrims over the page or a picture */
   --hi-rgb: 255 255 255; /* faint lift on the ground: white on a dark theme, ink on a light one */
   --shade-rgb: 0 0 0; /* drop shadows */
   /* surfaces between the main steps */
-  --well: #101214; /* sunken: code, logs, empty video */
-  --slate-0: #17191c;
-  --raised: #2b3036; /* own messages, a user's turn */
-  --hover: #31363c;
-  --hover-2: #2d3237;
-  --line: #202327; /* row rules inside a pane */
-  --track: #1f2226;
-  --scroll: #2a2e33;
-  --edge: #3a3f45; /* a firmer border than vein */
-  --edge-2: #4a5058;
-  --muted: #4a4f56; /* separators set as text */
-  --faint: #5f646b;
+  --well: #060606; /* sunken: code, logs, empty video */
+  --slate-0: #101010;
+  --raised: #1f1f1f; /* own messages, a user's turn */
+  --hover: #1a1a1a;
+  --hover-2: #171717;
+  --line: #141414; /* row rules inside a pane */
+  --track: #1a1a1a;
+  --scroll: #262626;
+  --edge: #2b2b2b; /* a firmer border than vein */
+  --edge-2: #3a3a3a;
+  --muted: #3e3e3e; /* separators set as text */
+  --faint: #545454;
   /* hover steps and text tints of the three materials */
-  --patina-hover: #82c2b5;
-  --amphora-hover: #d97b5f;
-  --amphora-text: #eab8a9;
-  --marble-hover: #f4f1ea;
-  --link: #9fcdc4;
+  --patina-hover: #8fe0cf;
+  --amphora-hover: #ff8f84;
+  --amphora-text: #ffb1a8;
+  --marble-hover: #ffffff;
+  --link: #9fd9cb;
   /* tinted borders and washes follow whatever the theme sets above */
   --gilt-edge: color-mix(in srgb, var(--gilt) 30%, var(--basalt));
   --gilt-wash: color-mix(in srgb, var(--gilt) 5%, var(--basalt));
@@ -48,15 +50,46 @@
   --who0-rgb: 143 179 232;
   --lichen-rgb: 127 176 138;
 
-  --display: "Marcellus", Georgia, serif;
-  --body: "Atkinson Hyperlegible Next", "Segoe UI", system-ui, sans-serif;
-  --mono: "Atkinson Hyperlegible Mono", ui-monospace, Consolas, monospace;
+  --display: "Newsreader", "Iowan Old Style", Georgia, serif;
+  --body: "Geist", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --mono: "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
   --r: 8px;
-  --top: 34px;
+  --top: 44px;
+}
+
+/* Shared by every theme: type, motion and the Blend aliases (they follow whatever a theme sets above). */
+:root {
+  --sans: var(--body);
+  --serif: var(--display);
+  --spring: cubic-bezier(.32, .72, 0, 1);
+  --out: cubic-bezier(.16, 1, .3, 1);
+  --col: 44rem; /* the reading column */
+  --bg: var(--obsidian);
+  --l1: var(--basalt);
+  --l2: var(--slate-0);
+  --l3: var(--slate);
+  --l4: var(--slate-2);
+  --line2: var(--vein);
+  --line3: var(--edge);
+  --press: rgb(var(--hi-rgb) / 0.075);
+  --lift: rgb(var(--hi-rgb) / 0.04);
+  --t1: var(--marble);
+  --t2: var(--marble-dim);
+  --t3: var(--vein-text);
+  --t4: var(--faint);
+  --brass: var(--gilt);
+  --brass-hi: color-mix(in srgb, var(--gilt) 78%, var(--marble-hover));
+  --brass-ink: var(--obsidian);
+  --brass-a: rgb(var(--gilt-rgb) / 0.11);
+  --brass-b: rgb(var(--gilt-rgb) / 0.30);
+  --teal: var(--patina);
+  --teal-a: rgb(var(--patina-rgb) / 0.12);
+  --red: var(--amphora);
+  --red-a: rgb(var(--amphora-rgb) / 0.12);
 }
 
 /* Themes (Settings > Appearance). Token names are roles, not colours: a theme only re-points them.
-   basalt is :root above; marble is the light one, aegean a navy dark. main/theme.js sets data-theme. */
+   basalt (shown as "OLED") is :root above; marble is the light one, aegean a navy dark. main/theme.js sets data-theme. */
 :root[data-theme="marble"] {
   color-scheme: light;
   --obsidian: #f3f0ea;
