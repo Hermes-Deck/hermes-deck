@@ -17,7 +17,7 @@
   const SEARCH_RE = /search|browse|web_|fetch|crawl|lookup/i;
 
   /** A fresh per-turn state. */
-  const fresh = (at) => ({ phase: "thinking", tool: "", since: at, lastAt: at, think: "", steps: [], done: false });
+  const fresh = (at) => ({ phase: "thinking", tool: "", arg: "", since: at, lastAt: at, think: "", steps: [], done: false });
 
   /** Append streamed reasoning text, keeping the tail. */
   function addThink(st, text) {
@@ -72,6 +72,7 @@
         const changed = st.phase !== "writing";
         st.phase = "writing";
         st.tool = "";
+        st.arg = "";
         st.lastAt = at;
         return [st, changed];
       }
@@ -82,6 +83,7 @@
         const changed = s.phase !== "tool" || s.tool !== name;
         s.phase = "tool";
         s.tool = name;
+        s.arg = previewArg(pl.arguments ?? pl.args ?? pl.parameters);
         if (type === "tool.start" || !s.steps.length || s.steps[s.steps.length - 1].name !== name) addStep(s, name);
         s.lastAt = at;
         return [s, changed || !st];
@@ -92,6 +94,7 @@
         if (last) last.done = true;
         st.phase = "thinking";
         st.tool = "";
+        st.arg = "";
         st.lastAt = at;
         return [st, true];
       }
@@ -129,8 +132,15 @@
     return { key: "live.thinking", vars: {} };
   }
 
+  function previewArg(value) {
+    if (value == null) return "";
+    try { return (typeof value === "string" ? value : JSON.stringify(value)).slice(0, 300); }
+    catch { return ""; }
+  }
+
   function create(ctx) {
     const { h, i18nText, ticker, store, now = () => Date.now(), onToggle = () => {} } = ctx;
+    const displayLabel = (v) => v.phase === "tool" && v.tool ? i18nText("conv.running", { tool: v.tool }) : i18nText(v.label.key, v.label.vars);
     const raf = ctx.raf || ((fn) => (typeof requestAnimationFrame === "function" ? requestAnimationFrame(fn) : fn()));
     const turns = new Map(); // sid -> per-turn event state
     const seen = new Map(); // sid -> {turnId, at}: when a turn driven elsewhere was first seen live
@@ -173,7 +183,7 @@
       }
       if (request === "approval" || request === "question") phase = request;
       const steps = st ? st.steps.map((x) => x.name) : (node && Array.isArray(node.steps) ? node.steps.filter((x) => x !== "Thinking").slice(-MAX_STEPS) : []);
-      return { sid, phase, tool, since, think: st ? st.think : "", steps, source: st ? "events" : "snapshot", label: label(phase, tool) };
+      return { sid, phase, tool, arg: st ? st.arg : "", since, think: st ? st.think : "", steps, source: st ? "events" : "snapshot", label: label(phase, tool) };
     }
 
     /** "Show thinking" on/off: remembered, and the caller asks Hermes for reasoning of the sessions it drives. */
@@ -201,8 +211,8 @@
         return null;
       }
       const entering = !built || built.sid !== v.sid;
-      const labelEl = h("span", { class: "la-label" }, i18nText(v.label.key, v.label.vars));
-      const body = open ? h("div", { class: "la-body", "aria-live": "off", tabindex: "0" }, bodyKids(v)) : null;
+      const labelEl = h("span", { class: "la-label" }, displayLabel(v));
+      const body = open || v.think ? h("div", { class: "la-body", "aria-live": "off", tabindex: "0" }, bodyKids(v)) : null;
       const b = { sid: v.sid, labelEl, bodyEl: body, key: `${open}|${v.think ? "t" : v.steps.length ? "s" : "n"}`, pinned: entering || !built || built.pinned };
       if (body) {
         body.addEventListener("scroll", () => { b.pinned = body.scrollHeight - body.scrollTop - body.clientHeight < 12; }, { passive: true });
@@ -218,6 +228,7 @@
         h("div", { class: "la-head", role: "status" },
           h("span", { class: "la-dot", "aria-hidden": "true" }),
           labelEl,
+          b.argEl = h("code", { class: "la-arg" }, v.arg || ""),
           v.since ? h("span", { class: "la-time" }, ticker(Math.floor(v.since / 1000))) : null,
           toggle),
         body);
@@ -235,7 +246,8 @@
       const key = `${open}|${v.think ? "t" : v.steps.length ? "s" : "n"}`;
       if (key !== b.key) return false;
       b.el.className = `livebar ph-${v.phase}${open ? " open" : ""}`;
-      b.labelEl.textContent = i18nText(v.label.key, v.label.vars);
+      b.labelEl.textContent = displayLabel(v);
+      if (b.argEl) b.argEl.textContent = v.arg || "";
       if (b.bodyEl) {
         b.bodyEl.replaceChildren(...bodyKids(v));
         follow(b);
@@ -280,7 +292,7 @@
     };
   }
 
-  const api = { create, reduce, label, fromNode, MAX_THINK, MAX_STEPS, STALE_MS };
+  const api = { create, reduce, label, fromNode, previewArg, MAX_THINK, MAX_STEPS, STALE_MS };
   if (typeof window !== "undefined") window.DeckLiveActivity = Object.freeze(api);
   if (typeof module === "object" && module.exports) module.exports = api; // Node unit tests
 })();

@@ -7,8 +7,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
 (function (root) {
   const num = n => typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : 0;
   const volume = r => num(r.in) + num(r.cr) + num(r.cw) + num(r.out); // reasoning is already in output
-  const WARN_AT = 80; // quota bars turn gilt at 80% and amphora at 95%; below that they stay neutral
-  const BAD_AT = 95;
+  const WARN_AT = 60; // Brass marks quota windows above 60%; red is reserved for failed data.
 
   /** Percent in the UI language's own order: "58%" in English, "%58" in Turkish. */
   const formats = new Map();
@@ -88,8 +87,8 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     return h("div", { class: "quota" },
       h("span", { class: "q-win", title: long }, short),
       h("span", { class: "bar", role: "progressbar", "aria-label": `${name} · ${long}`, "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": p },
-        h("i", { class: p >= BAD_AT ? "bad" : p >= WARN_AT ? "warn" : "", style: { width: `${p}%` } })),
-      h("span", { class: `pct${p >= BAD_AT ? " bad" : p >= WARN_AT ? " warn" : ""}` }, pct(p)),
+        h("i", { class: used > WARN_AT ? "warn" : "", style: { width: `${p}%` } })),
+      h("span", { class: `pct${used > WARN_AT ? " warn" : ""}` }, pct(p)),
       h("span", { class: `q-reset${known ? "" : " unknown"}`, title: absolute }, resetText));
   }
 

@@ -179,16 +179,18 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     let sort = store && store.get("deck.tokSort") === "cost" ? "cost" : "tokens";
     let timer = null;
     let hover = null; // {range, t, text} of the chart column under the pointer
+    const manual = { busy: false, error: false };
 
-    async function load(r) {
+    async function load(r, strict = false) {
       if (inflight.has(r)) return;
       inflight.add(r);
       try {
         const body = await deck.tokens(r);
         cache.set(r, { data: normalize(r, body), at: Date.now() });
         if (r === range && ctx.isOpen()) mark("panel");
-      } catch {
-        /* keep the last copy; the stale stamp tells its age */
+      } catch (e) {
+        // Keep the last copy; a click-driven refresh also reports the failed read.
+        if (strict) throw e;
       } finally {
         inflight.delete(r);
       }
@@ -340,7 +342,15 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       const entry = current();
       const data = entry ? entry.data : null;
       const t = data ? totals(data.rows) : null;
-      kids.push(h("div", { class: "tok-top" }, rangeControl(), meta(entry, now)));
+      kids.push(h("div", { class: "tok-top" }, rangeControl(), meta(entry, now),
+        h("button", { type: "button", class: "tok-refresh quota-refresh", dataset: { fk: "token-refresh" }, disabled: manual.busy || inflight.has(range),
+          "aria-busy": manual.busy ? "true" : "false", onclick: async () => {
+            if (manual.busy || inflight.has(range)) return;
+            manual.busy = true; manual.error = false; mark("panel", true);
+            try { await load(range, true); } catch { manual.error = true; }
+            finally { manual.busy = false; mark("panel", true); }
+          } }, i18nText(manual.busy ? "usage.refreshing" : "triage.refresh"))));
+      if (manual.error) kids.push(h("p", { class: "tok-meta-warn", role: "status" }, i18nText("triage.usageRefreshFailed")));
       if (ctx.usageStatus) kids.push(...U().failureStatuses(h, ctx.usageStatus(), now));
       kids.push(figures(t));
       kids.push(chart(data));

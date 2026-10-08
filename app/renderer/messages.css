@@ -28,6 +28,19 @@
 .msg:focus { outline: none; }
 .msg:focus-visible { outline: 2px solid var(--patina); outline-offset: 2px; }
 
+/* ---------- Blend editorial transcript ---------- */
+.app .msgs-inner > .msg:not(.out):not(.sysmsg) { align-self: stretch; width: 100%; max-width: none; padding: 0; margin: 4px 0 20px; background: none; border: 0; border-radius: 0; box-shadow: none; }
+.app .msgs-inner .msg:not(.out):not(.sysmsg) > .text { font: 400 17px/1.7 var(--serif); color: var(--t1); letter-spacing: -.003em; font-optical-sizing: auto; }
+.app .msgs-inner .msg.out { font-family: var(--sans); background: var(--l2); border: 1px solid var(--line); border-radius: 16px; padding: 10px 14px; max-width: 85%; }
+.app .msg .text pre, .app .msg .text code { font-family: var(--mono); }
+.app .msg .text h1, .app .msg .text h2, .app .msg .text h3, .app .msg .text h4 { font-family: var(--sans); }
+.app .msg .text table { font: 13px/1.6 var(--sans); }
+.app .msg .text pre { font-size: 12px; line-height: 1.65; }
+.app .msg .t { color: var(--t3); font: 10.5px var(--mono); }
+.app .msg-row { max-width: 100%; }
+.app .conv-fresh { animation: conv-rise .4s var(--spring); }
+@media (prefers-reduced-motion: reduce) { .app .conv-fresh { animation: none; } }
+
 /* ---------- group senders ---------- */
 .msg-row { align-self: flex-start; display: flex; align-items: flex-end; gap: 8px; max-width: min(86%, 744px); min-width: 0; }
 .msg-row > .msg { align-self: auto; max-width: 100%; min-width: 0; }

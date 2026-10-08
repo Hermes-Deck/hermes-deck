@@ -183,3 +183,21 @@ test("tokens view: loaded by the page and every tok.* key exists in both languag
     for (const f of forms) assert.ok(f in i18n.tables.en && f in i18n.tables.tr, f);
   }
 });
+
+test("tokens view Refresh reloads the selected range and reports failed reads without losing data", async () => {
+  i18n.extend(require("../renderer/i18n-e"));
+  let reads = 0, fail = false;
+  const h = (tag, attrs, ...children) => ({ tag, attrs: attrs || {}, children: children.flat(Infinity).filter(x => x != null) });
+  const view = T.create({ h, k: String, deck: { tokens: async () => { reads++; if (fail) throw new Error("Unavailable"); return []; } }, mark() {}, isOpen: () => false });
+  const kids = [];
+  view.pane(kids);
+  const walk = n => [n, ...(n.children || []).filter(c => typeof c === "object").flatMap(walk)];
+  const refresh = kids.flatMap(walk).find(n => n.attrs?.class === "tok-refresh quota-refresh");
+  assert.ok(refresh, "the Usage inspector contains an explicit token refresh action");
+  await refresh.attrs.onclick();
+  assert.equal(reads, 1);
+  fail = true;
+  await refresh.attrs.onclick();
+  const after = []; view.pane(after);
+  assert.ok(after.flatMap(walk).some(n => n.attrs?.role === "status" && n.children.includes(i18n.t("triage.usageRefreshFailed"))));
+});

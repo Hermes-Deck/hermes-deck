@@ -1,0 +1,54 @@
+"use strict";
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const F = require("../renderer/fleet-capsule");
+test("fleet merges direct and relay by profile and sorts waiting, running, idle, offline", () => {
+  const data = { bridgeStatus: "open", relayStatus: "open", fleet: { profiles: { offline: { stale: true } } },
+    agents: { Primary: { name: "Primary", profile: "default" }, Worker: { name: "Worker", profile: "worker" }, Idle: { name: "Idle", profile: "idle" }, Offline: { name: "Offline", profile: "offline" } },
+    requests: [{ id: "req", sid: "wait", profile: "default", kind: "approval" }],
+    direct: [{ sid: "wait", profile: "default", state: "approval", title: "Permission" }, { sid: "run", profile: "worker", state: "working", title: "Build" }],
+    relay: [{ sid: "run", profile: "worker", agent: "Worker", state: "running", turnTs: 100 }, { sid: "child", parent: "run", profile: "worker", state: "running", goal: "Check", turnTs: 101 }] };
+  const agents = F.derive(data);
+  assert.deepEqual(agents.map(a => a.state), ["waiting", "running", "idle", "offline"]);
+  assert.equal(agents[1].children.length, 1);
+  assert.equal(agents[1].task, "Build");
+  assert.equal(F.elapsed(agents[1].session, 110), 10);
+  assert.equal(F.elapsed({ state: "working", updatedAt: 10 }, 100), null, "no guessed start from a snapshot refresh timestamp");
+});
+
+test("fleet today totals preserve unknown cost and cache denominator without reasoning duplication", () => {
+  assert.equal(F.today({ agents: {} }), null);
+  const total = F.today({ agents: { Primary: { today: { in: 100, cw: 10, cr: 90, out: 20, rs: 5, n: 2, usd: .125, estimated: true } }, Worker: { today: { out: 10, n: 1, unknownCost: 1 } } } });
+  assert.equal(total.tokens, 230);
+  assert.equal(total.hit, .45);
+  assert.equal(total.n, 3);
+  assert.equal(total.usd, .125);
+  assert.equal(total.unknownCost, 1);
+  assert.equal(total.estimated, true);
+});
+
+test("fleet capsule toggles a safe dialog, routes children and removes timers/listeners on teardown", t => {
+  const { dom } = require("./inbox-dom-helper"), { createStore } = require("../renderer/inbox");
+  const { h, doc, win, walk } = dom();
+  const store = createStore();
+  store.feedRelay({ t: "snapshot", agents: { Primary: { name: "Primary", profile: "default", today: { usd: 1, n: 2 } } }, sessions: [{ sid: "s-1", profile: "default", state: "running", lastMsg: "<b>Task</b>", turnTs: 10 }, { sid: "s-2", parent: "s-1", profile: "default", goal: "<script>Child</script>", state: "running" }] });
+  const events = [];
+  const fleet = F.createFleet({ h, doc, win, store, t: key => key, usage: require("../renderer/usage-view"), shell: { openRight: (...args) => events.push(args) }, openChat: row => events.push(row), selectAgent: row => events.push(row) });
+  t.after(() => fleet.destroy());
+  assert.ok(!fleet.button.children.includes(null), "native replaceChildren must not render a literal null label");
+  assert.equal(fleet.button.attrs["aria-expanded"], "false");
+  fleet.toggle();
+  assert.equal(fleet.button.attrs["aria-expanded"], "true");
+  assert.equal(fleet.panel.attrs.role, "dialog");
+  assert.ok(walk(fleet.panel).some(x => x.children?.includes("<b>Task</b>")));
+  walk(fleet.panel).find(x => x.attrs.class === "tf-child").click();
+  assert.deepEqual(events[0], ["work", "agents"]);
+  assert.equal(events[1].childSid, "s-2");
+  assert.equal(fleet.button.attrs["aria-expanded"], "false");
+  fleet.toggle();
+  fleet.toggle();
+  assert.equal(fleet.button.attrs["aria-expanded"], "false");
+  fleet.destroy();
+  assert.equal(doc.listeners.size, 0);
+  assert.equal(win.listeners.size, 0);
+});

@@ -1,1 +1,47 @@
-/* Lane E owns this file (inbox). Loaded after shell.css. */
+/* Blend triage: brass means a decision, red a failure. Data never enters CSS. */
+#inbox .te-inbox { max-width: 52rem; margin: 0 auto; padding: 28px 32px 48px; outline: none; color: var(--t1); }
+.te-inbox-head { display: flex; align-items: baseline; gap: 12px; }
+.te-inbox-head h1 { margin: 0; font: 500 30px/36px var(--serif); letter-spacing: -.018em; }
+.te-inbox-head > span { font: 12px var(--mono); color: var(--t4); }
+.te-inbox-sub { margin: 4px 0 24px; font-size: 12.5px; color: var(--t3); }
+.te-group { display: flex; gap: 8px; margin: 24px 0 8px; font: 500 11px var(--sans); color: var(--t3); }
+.te-group b { font: 500 11px var(--mono); }
+.te-row { border-radius: 12px; border: 1px solid transparent; overflow: hidden; transition: background .2s, border-color .2s, opacity .3s, transform .45s var(--spring); }
+.te-row + .te-row { margin-top: 2px; }
+.te-row.sel { background: var(--l2); border-color: var(--line2); }
+.te-row.out { opacity: 0; transform: translateX(24px); pointer-events: none; }
+.te-row-head { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto auto; gap: 12px; align-items: center; width: 100%; padding: 10px 12px; border: 0; background: none; text-align: left; color: inherit; cursor: pointer; }
+.te-row:not(.sel) .te-row-head:hover { background: var(--lift); }
+.te-kind { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 9px; color: var(--t3); background: var(--l3); }
+.te-row.approval .te-kind, .te-row.question .te-kind { color: var(--brass); background: var(--brass-a); }
+.te-row.failed .te-kind { color: var(--red); background: var(--red-a); }
+.te-row-title { min-width: 0; }
+.te-row-title b, .te-row-title small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.te-row-title b { font-size: 13px; font-weight: 500; }
+.te-row-title small { font-size: 12px; color: var(--t3); margin-top: 1px; }
+.te-row-agent { max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--t3); }
+.te-age { font: 11px var(--mono); color: var(--t4); }
+.te-row-body { padding: 0 12px 12px 52px; animation: te-reveal .35s var(--out); }
+.te-row-body p, .te-request p { margin: 0 0 10px; font-size: 12.5px; color: var(--t3); overflow-wrap: anywhere; }
+.te-command { margin: 0 0 10px; padding: 9px 12px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg); color: var(--t1); font: 12.5px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.te-finished { font: 13px/1.6 var(--sans); white-space: pre-wrap; overflow-wrap: anywhere; }
+.te-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.te-btn { padding: 5px 10px; min-height: 28px; border: 1px solid var(--line2); border-radius: 7px; background: var(--l3); color: var(--t2); font: 12px var(--sans); cursor: pointer; }
+.te-btn:hover:not(:disabled) { color: var(--t1); background: var(--l4); border-color: var(--line3); }
+.te-btn.primary { color: var(--brass-ink); background: var(--brass); border-color: var(--brass); }
+.te-btn.primary:hover:not(:disabled) { background: var(--brass-hi); }
+.te-btn[aria-pressed="true"] { border-color: var(--brass); color: var(--brass); background: var(--brass-a); }
+.te-btn:disabled { opacity: .45; cursor: default; }
+.te-btn:focus-visible, .te-row-head:focus-visible, .te-answer:focus-visible { outline: 2px solid var(--brass); outline-offset: -2px; }
+.te-question { margin: 0 0 10px; padding: 0; border: 0; min-width: 0; }
+.te-question legend { font-size: 12.5px; margin-bottom: 8px; overflow-wrap: anywhere; }
+.te-answer { width: 100%; border: 1px solid var(--line2); border-radius: 7px; padding: 7px 10px; background: var(--bg); color: var(--t1); font: 12.5px var(--sans); }
+.te-request .te-error { color: var(--red); }
+.te-all-clear { padding: 64px 0; text-align: center; color: var(--t3); }
+.te-all-clear b { display: block; font: 400 22px var(--serif); color: var(--t2); }
+.te-inbox-keys { margin-top: 28px; font: 11px/1.8 var(--mono); color: var(--t3); white-space: pre-wrap; }
+.te-undo { position: sticky; bottom: 12px; display: flex; gap: 12px; align-items: center; width: fit-content; max-width: 100%; margin: 20px auto 0; padding: 8px 12px; border: 1px solid var(--line2); border-radius: 10px; background: var(--l3); font-size: 12px; }
+.te-undo .te-btn { color: var(--brass); flex: none; }
+@keyframes te-reveal { from { opacity: 0; transform: translateY(-4px); } }
+@media (max-width: 768px) { #inbox .te-inbox { padding: 20px 16px 32px; } .te-row-head { grid-template-columns: 24px minmax(0,1fr) auto; gap: 8px; } .te-row-agent { display: none; } .te-row-body { padding-left: 12px; } }
+@media (prefers-reduced-motion: reduce) { .te-row { transition: none; } .te-row-body { animation: none; } }

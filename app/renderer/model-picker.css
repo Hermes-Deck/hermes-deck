@@ -1,4 +1,25 @@
-/* Composer pickers (model-picker.js): two quiet chips left of Send, and one popover anchored above the composer. */
+/* Blend combined model/effort token. The hidden legacy trigger keeps older callers compatible. */
+.pick-effort[hidden] { display: none; }
+.pick-bar .pick-model { gap: 8px; height: 30px; border-radius: 9px; font: 12px var(--mono); color: var(--t3); }
+.pick-divider { color: var(--t4); }
+.pick-bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 11px; flex: none; }
+.pick-bars i { width: 2px; height: 5px; border-radius: 1px; background: var(--t4); }
+.pick-bars i:nth-child(2) { height: 7px; }
+.pick-bars i:nth-child(3) { height: 9px; }
+.pick-bars i:nth-child(4) { height: 11px; }
+.pick-bars[data-level="1"] i:nth-child(-n+1), .pick-bars[data-level="2"] i:nth-child(-n+2), .pick-bars[data-level="3"] i:nth-child(-n+3), .pick-bars[data-level="4"] i { background: var(--t1); }
+.pick-reasoning { padding: 4px 8px 8px; border-top: 1px solid var(--line); }
+.pick-segments { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: 9px; background: var(--l2); }
+.pick-segments .pick-item { justify-content: center; padding: 6px 4px; font: 12px var(--sans); }
+.pick-segments .pick-item.on { background: var(--l4); color: var(--t1); }
+.pick-segments .pick-item.on::after { display: none; }
+.pick-extra-efforts { display: flex; flex-wrap: wrap; margin-top: 4px; }
+.pick-extra-efforts .pick-item { font-size: 11px; color: var(--t3); }
+.composer .pick-pop-model { width: min(360px, calc(100% - 16px)); border-color: var(--line2); border-radius: 14px; background: var(--l2); }
+.composer .pick-pop { animation-timing-function: var(--spring); }
+.pick-scope { order: 10; padding: 8px 0; border-top: 1px solid var(--line); }
+
+/* Composer pickers: one model token and its anchored popover. */
 .pick-bar { display: flex; align-items: center; gap: 2px; min-width: 0; margin-left: auto; }
 .pick-bar[hidden] { display: none; }
 .pick-chip {

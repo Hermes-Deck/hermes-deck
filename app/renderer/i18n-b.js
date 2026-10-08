@@ -1,10 +1,73 @@
 "use strict";
-// Lane B (conversation) UI strings. Loaded right after i18n.js; DeckI18n.extend adds them to both tables. Every key goes in
-// en and tr with the same placeholders, and must not exist in i18n.js already (test/i18n.test.js checks this file).
+// Conversation strings are extended before the shell and conversation modules load.
 (function (root) {
   const strings = {
-    en: {},
-    tr: {},
+    en: {
+      "conv.running": "Running {tool}",
+      "conv.thinking": "Thinking",
+      "conv.thought": "Thought for {seconds}s",
+      "conv.thoughtUnknown": "Thought",
+      "conv.receipt": "Worked {seconds}s · {tools} tools",
+      "conv.failed": " · {failed} failed",
+      "conv.working": "Working · {tools} tools",
+      "conv.inspect": "Inspect",
+      "conv.output": "Output",
+      "conv.noOutput": "No output preview available",
+      "conv.waitApproval": "Waiting for your approval below",
+      "conv.waitQuestion": "Waiting for your answer below",
+      "conv.stop": "Stop (Esc)",
+      "conv.queueHint": "Enter queues · Ctrl/Cmd+Enter steers",
+      "conv.steerHint": "Enter steers · Ctrl/Cmd+Enter queues",
+      "conv.queueOnly": "Enter queues",
+      "conv.direct": "Hermes direct · {profile} profile",
+      "conv.telegram": "Sends as you to {bot} in Telegram",
+      "conv.telegramGroup": "Sends as you in Telegram",
+      "conv.readonly": "Gateway owns this chat · continues in a Deck copy",
+      "conv.subagent": "Steers {agent}",
+      "conv.bot": "the bot",
+      "conv.scope": "This session only · applies from your next message",
+      "conv.modelEffort": "Model and reasoning",
+      "conv.reasoning": "Reasoning",
+      "conv.timeline": "Conversation timeline",
+      "conv.timeline.user": "Your turn",
+      "conv.timeline.receipt": "Tool receipt",
+      "conv.timeline.failed": "Failed tool receipt",
+      "conv.timeline.heading": "Heading",
+      "conv.timeline.approval": "Needs you"
+    },
+    tr: {
+      "conv.running": "Çalışıyor: {tool}",
+      "conv.thinking": "Düşünüyor",
+      "conv.thought": "{seconds} sn düşündü",
+      "conv.thoughtUnknown": "Düşünce",
+      "conv.receipt": "{seconds} sn çalıştı · {tools} araç",
+      "conv.failed": " · {failed} başarısız",
+      "conv.working": "Çalışıyor · {tools} araç",
+      "conv.inspect": "İncele",
+      "conv.output": "Çıktı",
+      "conv.noOutput": "Çıktı önizlemesi yok",
+      "conv.waitApproval": "Aşağıda onayını bekliyor",
+      "conv.waitQuestion": "Aşağıda yanıtını bekliyor",
+      "conv.stop": "Durdur (Esc)",
+      "conv.queueHint": "Enter sıraya alır · Ctrl/Cmd+Enter yönlendirir",
+      "conv.steerHint": "Enter yönlendirir · Ctrl/Cmd+Enter sıraya alır",
+      "conv.queueOnly": "Enter sıraya alır",
+      "conv.direct": "Hermes doğrudan · {profile} profili",
+      "conv.telegram": "Telegram'da {bot} botuna senin adına gönderir",
+      "conv.telegramGroup": "Telegram'da senin adına gönderir",
+      "conv.readonly": "Bu sohbet ağ geçidinde · Deck kopyasında devam eder",
+      "conv.subagent": "{agent} alt ajanını yönlendirir",
+      "conv.bot": "bot",
+      "conv.scope": "Yalnızca bu oturum · sonraki mesajından itibaren",
+      "conv.modelEffort": "Model ve düşünme düzeyi",
+      "conv.reasoning": "Düşünme düzeyi",
+      "conv.timeline": "Sohbet zaman çizelgesi",
+      "conv.timeline.user": "Senin mesajın",
+      "conv.timeline.receipt": "Araç özeti",
+      "conv.timeline.failed": "Başarısız araç özeti",
+      "conv.timeline.heading": "Başlık",
+      "conv.timeline.approval": "Seni bekliyor"
+    }
   };
   if (typeof module === "object" && module.exports) module.exports = strings;
   else root.DeckI18n.extend(strings);

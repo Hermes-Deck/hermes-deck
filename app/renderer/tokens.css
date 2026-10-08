@@ -1,54 +1,53 @@
-/* Hermes Deck — Token pane (tokens-view.js). Tokens from styles.css only: basalt/slate surfaces, vein rules,
-   marble text, patina = selected, gilt = warning. Calm: no cards, no help text; numbers lead, detail on hover. */
+/* Blend usage: OLED layers, hairlines, Geist / Geist Mono, brass decisions. */
 
 /* ---------- range control + quiet meta ---------- */
 .tok-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 14px; }
-.tok-range { display: inline-flex; padding: 2px; border: 1px solid var(--vein); border-radius: 9px; background: var(--basalt); }
+.tok-range { display: inline-flex; padding: 2px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); }
 .tok-range button {
   min-width: 38px; padding: 4px 9px; border: 0; border-radius: 7px; background: none; cursor: pointer;
-  font: 11.5px var(--mono); color: var(--vein-text); font-variant-numeric: tabular-nums;
+  font: 11.5px var(--mono); color: var(--t3); font-variant-numeric: tabular-nums;
   transition: background-color 120ms ease-out, color 120ms ease-out;
 }
-.tok-range button:hover { color: var(--marble); }
-.tok-range button.on { background: var(--slate-2); color: var(--marble); box-shadow: inset 0 0 0 1px var(--patina-soft); }
-.tok-range button:focus-visible { outline: 2px solid var(--patina); outline-offset: 0; }
-.tok-meta { display: inline-flex; gap: 8px; margin-left: auto; font: 10.5px var(--mono); color: var(--vein-text); white-space: nowrap; }
-.tok-meta-warn { color: var(--gilt); cursor: help; }
+.tok-range button:hover { color: var(--t1); }
+.tok-range button.on { background: var(--l3); color: var(--t1); box-shadow: inset 0 0 0 1px var(--line2); }
+.tok-range button:focus-visible { outline: 2px solid var(--brass); outline-offset: 0; }
+.tok-meta { display: inline-flex; gap: 8px; margin-left: auto; font: 10.5px var(--mono); color: var(--t3); white-space: nowrap; }
+.tok-meta-warn { color: var(--brass); cursor: help; }
 
 /* ---------- four figures for the range ---------- */
 .tok-figs { display: grid; grid-template-columns: repeat(auto-fit, minmax(72px, 1fr)); gap: 12px 10px; margin: 0 2px 16px; }
 .tok-fig { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .tok-fig-v {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font: 500 19px/1.2 var(--body); color: var(--marble); font-variant-numeric: tabular-nums;
+  font: 500 19px/1.2 var(--mono); color: var(--t1); font-variant-numeric: tabular-nums;
 }
-.tok-fig-k { font-size: 10.5px; letter-spacing: 0.04em; color: var(--vein-text); }
+.tok-fig-k { font-size: 10.5px; letter-spacing: 0.04em; color: var(--t3); }
 .tok-fig[title] { cursor: default; }
-.tok-approx { margin-left: 3px; font: 400 12px var(--mono); color: var(--vein-text); vertical-align: 0.35em; cursor: help; }
+.tok-approx { margin-left: 3px; font: 400 12px var(--mono); color: var(--t3); vertical-align: 0.35em; cursor: help; }
 
 /* ---------- chart: fresh (full price) over cached, one column per bucket ---------- */
 .tok-chart { margin: 0 2px 4px; }
-.tok-readout { display: flex; align-items: baseline; gap: 12px; min-height: 16px; margin: 0 0 6px; font: 10.5px var(--mono); color: var(--vein-text); }
+.tok-readout { display: flex; align-items: baseline; gap: 12px; min-height: 16px; margin: 0 0 6px; font: 10.5px var(--mono); color: var(--t3); }
 .tok-key { display: inline-flex; align-items: center; gap: 5px; }
 .tok-key::before { content: ""; width: 7px; height: 7px; border-radius: 2px; }
-.tok-key.f::before { background: var(--marble-dim); }
-.tok-key.c::before { background: var(--edge-2); }
-.tok-readout-v { min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--marble-dim); text-align: right; }
+.tok-key.f::before { background: var(--t2); }
+.tok-key.c::before { background: var(--line3); }
+.tok-readout-v { min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--t2); text-align: right; }
 .tok-bars {
   display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); gap: 2px; align-items: end; height: 76px;
-  padding-bottom: 1px; border-bottom: 1px solid var(--vein);
+  padding-bottom: 1px; border-bottom: 1px solid var(--line);
 }
 .tok-col { display: flex; flex-direction: column-reverse; height: 100%; min-width: 0; border-radius: 2px 2px 0 0; cursor: default; }
 .tok-col > i { display: block; flex: none; }
-.tok-col > i.c { background: var(--edge); }
-.tok-col > i.f { background: var(--marble-dim); border-radius: 2px 2px 0 0; opacity: 0.82; }
-.tok-col:hover { background: rgb(var(--hi-rgb) / 0.03); }
+.tok-col > i.c { background: var(--line2); }
+.tok-col > i.f { background: var(--t2); border-radius: 2px 2px 0 0; opacity: 0.82; }
+.tok-col:hover { background: var(--l2); }
 .tok-col:hover > i.f { opacity: 1; }
-.tok-col:hover > i.c { background: var(--edge-2); }
+.tok-col:hover > i.c { background: var(--line3); }
 .tok-chart.is-pending .tok-bars { opacity: 0.5; }
 .tok-axis { display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); gap: 2px; margin-top: 4px; }
-.tok-axis > span { overflow: visible; white-space: nowrap; text-align: center; font: 9.5px var(--mono); color: var(--vein-text); }
-.tok-empty { margin: 10px 2px 0; font-size: 12px; color: var(--vein-text); }
+.tok-axis > span { overflow: visible; white-space: nowrap; text-align: center; font: 9.5px var(--mono); color: var(--t3); }
+.tok-empty { margin: 10px 2px 0; font-size: 12px; color: var(--t3); }
 
 /* ---------- agents: name, share of the leader, tokens, cost ---------- */
 .tok-list-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
@@ -56,30 +55,33 @@
 .tok-sorts { display: inline-flex; gap: 2px; }
 .tok-sort {
   padding: 2px 6px; border: 0; border-radius: 6px; background: none; cursor: pointer;
-  font: 10.5px var(--mono); color: var(--vein-text); transition: color 120ms ease-out, background-color 120ms ease-out;
+  font: 10.5px var(--mono); color: var(--t3); transition: color 120ms ease-out, background-color 120ms ease-out;
 }
-.tok-sort:hover { color: var(--marble); }
-.tok-sort.on { color: var(--marble); background: var(--slate-2); }
-.tok-sort:focus-visible { outline: 2px solid var(--patina); outline-offset: 0; }
+.tok-sort:hover { color: var(--t1); }
+.tok-sort.on { color: var(--t1); background: var(--l3); }
+.tok-sort:focus-visible { outline: 2px solid var(--brass); outline-offset: 0; }
 .tok-agents { margin: 0 0 4px; }
 .tok-agent {
   display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(24px, 1fr) 48px 62px; gap: 10px; align-items: center;
   padding: 6px 2px; border-bottom: 1px solid var(--line); cursor: default;
 }
 .tok-agent:last-child { border-bottom: 0; }
-.tok-agent-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--marble); }
-.tok-share { height: 4px; border-radius: 2px; background: var(--track); overflow: hidden; }
-.tok-share > i { display: block; height: 100%; border-radius: 2px; background: var(--marble-dim); opacity: 0.6; }
-.tok-agent-v, .tok-agent-c { text-align: right; font: 11.5px var(--mono); color: var(--marble-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tok-agent-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--t1); }
+.tok-share { height: 4px; border-radius: 2px; background: var(--l3); overflow: hidden; }
+.tok-share > i { display: block; height: 100%; border-radius: 2px; background: var(--t2); opacity: 0.6; }
+.tok-agent-v, .tok-agent-c { text-align: right; font: 11.5px var(--mono); color: var(--t2); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* ---------- warnings: only when there are some, one compact row each ---------- */
 .tok-warn {
   display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 4px; margin: 4px 0; padding: 6px 10px;
-  border: 1px solid var(--gilt-edge); border-radius: 8px; background: rgb(var(--gilt-rgb) / 0.06);
-  font-size: 12px; color: var(--marble-dim); cursor: help;
+  border: 1px solid var(--brass-b); border-radius: 8px; background: var(--brass-a);
+  font-size: 12px; color: var(--t2); cursor: help;
 }
-.tok-warn b { font-weight: 500; color: var(--marble); }
+.tok-warn b { font-weight: 500; color: var(--t1); }
 
 @media (prefers-reduced-motion: reduce) {
   .tok-range button, .tok-sort { transition: none; }
 }
+
+.tok-col.now > i.f { background: var(--teal); }
+.tok-refresh { margin-left: auto; }

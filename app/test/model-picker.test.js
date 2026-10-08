@@ -7,6 +7,15 @@ const path = require("node:path");
 const MP = require("../renderer/model-picker");
 const i18n = require("../renderer/i18n");
 
+test("Blend effort cycle uses the four segments and respects reasoning capability", () => {
+  assert.deepEqual(MP.SEGMENTS, ["low", "medium", "high", "max"]);
+  assert.equal(MP.nextEffort("max", { reasoning: true }), "low");
+  assert.equal(MP.nextEffort("low", null), "medium");
+  assert.equal(MP.nextEffort("none", null), "low");
+  assert.equal(MP.nextEffort("high", { reasoning: false }), null);
+});
+
+i18n.extend(require("../renderer/i18n-b"));
 const RENDERER = path.join(__dirname, "..", "renderer");
 const opt = (provider, id, extra = {}) => ({ id, provider, providerName: extra.providerName || provider, ...extra });
 

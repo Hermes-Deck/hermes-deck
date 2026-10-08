@@ -1,10 +1,8 @@
-/* The collapsed "Thinking" block of a finished assistant message (think-block.js). */
-.think-block { margin: 0 0 6px; border-left: 2px solid var(--vein); padding: 0 0 0 10px; }
-.think-block > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; font: 11.5px var(--mono); color: var(--vein-text); user-select: none; }
+/* Finished reasoning: an editorial fold, not a machine-output card. */
+.think-block { margin: 0 0 10px; border: 0; padding: 0; }
+.think-block > summary { display: flex; align-items: center; gap: 8px; min-height: 28px; cursor: pointer; list-style: none; font: italic 400 14.5px var(--serif); color: var(--t3); }
 .think-block > summary::-webkit-details-marker { display: none; }
-.think-block > summary::before { content: "▸"; font-size: 10px; transition: transform 120ms ease; }
-.think-block[open] > summary::before { transform: rotate(90deg); }
-.think-block .tb-copy { margin-left: auto; padding: 0 6px; border: 0; background: none; font: inherit; color: var(--vein-text); cursor: pointer; opacity: 0; transition: opacity 120ms ease; }
-.think-block[open] .tb-copy, .think-block > summary:focus-visible .tb-copy, .think-block .tb-copy:focus-visible { opacity: 1; }
-.think-block .tb-copy:hover { color: var(--marble); }
-.think-block .tb-text { margin: 6px 0 2px; max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12.5px; line-height: 1.55; color: var(--marble-dim); }
+.think-block .tb-copy { margin-left: auto; padding: 3px 6px; border: 0; border-radius: 5px; background: none; font: 11px var(--sans); color: var(--t3); cursor: pointer; opacity: 0; }
+.think-block[open] .tb-copy, .think-block:focus-within .tb-copy, .think-block:hover .tb-copy { opacity: 1; }
+.think-block .tb-copy:hover { color: var(--t1); background: var(--lift); }
+.think-block .tb-text { margin: 6px 0 2px; border-left: 1px solid var(--line2); padding-left: 14px; max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: italic 300 15px/1.7 var(--serif); color: var(--t3); scrollbar-width: thin; scrollbar-color: var(--line3) transparent; }

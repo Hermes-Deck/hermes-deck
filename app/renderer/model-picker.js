@@ -6,6 +6,11 @@
   // ---------------------------------------------------------------- pure helpers
   /** Levels Hermes accepts for one session (hermes_constants.parse_reasoning_effort); "none" turns thinking off. */
   const EFFORTS = Object.freeze(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+  const SEGMENTS = Object.freeze(["low", "medium", "high", "max"]);
+  function nextEffort(current, option) {
+    const levels = SEGMENTS.filter(e => effortsFor(option).includes(e));
+    return levels.length ? levels[(levels.indexOf(current) + 1) % levels.length] : null;
+  }
   const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@+\[\]-]{0,199}$/;
   const SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
   const ROWS_PER_GROUP = 80; // a group draws this many until "Show all"
@@ -147,8 +152,10 @@
 
     const modelLabel = h("span", { class: "pick-label" });
     const effortLabel = h("span", { class: "pick-label" });
-    const modelChip = h("button", { class: "pick-chip pick-model", type: "button", "aria-haspopup": "dialog", "aria-expanded": "false", dataset: { fk: "pick-model" }, onclick: () => toggle("model") }, modelLabel, icon("chev"));
-    const effortChip = h("button", { class: "pick-chip pick-effort", type: "button", "aria-haspopup": "menu", "aria-expanded": "false", dataset: { fk: "pick-effort" }, onclick: () => toggle("effort") }, effortLabel, icon("chev"));
+    const effortBars = h("span", { class: "pick-bars", "aria-hidden": "true" }, [1, 2, 3, 4].map(() => h("i")));
+    const modelChip = h("button", { class: "pick-chip pick-model", type: "button", "aria-haspopup": "dialog", "aria-expanded": "false", dataset: { fk: "pick-model" }, onclick: () => toggle("model") }, modelLabel, h("span", { class: "pick-divider", "aria-hidden": "true" }, "·"), effortBars, effortLabel, icon("chev"));
+    const legacyEffortLabel = h("span", { class: "pick-label" });
+    const effortChip = h("button", { class: "pick-chip pick-effort", hidden: true, type: "button", "aria-haspopup": "menu", "aria-expanded": "false", dataset: { fk: "pick-effort" }, onclick: () => toggle("effort") }, legacyEffortLabel, icon("chev"));
     const bar = h("div", { class: "pick-bar", hidden: true, onkeydown: (e) => { if (e.key === "Escape" && open) { e.preventDefault(); close(true); } } }, modelChip, effortChip);
     const pop = h("div", { class: "pick-pop", hidden: true, onkeydown: onPopKey, onfocusout: onPopBlur });
     send.parentNode.insertBefore(bar, send);
@@ -222,6 +229,9 @@
       modelChip.classList.toggle("busy", busy.has(`${s.sid}:model`) || !!chosen.get(s.sid)?.pending);
       modelChip.setAttribute("aria-expanded", open === "model" ? "true" : "false");
       effortLabel.textContent = T(`pick.effort.${e || "default"}`);
+      legacyEffortLabel.textContent = effortLabel.textContent;
+      effortBars.setAttribute("data-level", String(SEGMENTS.indexOf(e) + 1));
+      modelChip.setAttribute("aria-label", `${T("conv.modelEffort")}: ${m.text} · ${T(`pick.effort.${e || "default"}`)}`);
       effortChip.title = s.switchDisabled || T(effortChosen.get(s.sid)?.pending ? "pick.pending" : "pick.effortTip");
       effortChip.classList.toggle("busy", busy.has(`${s.sid}:effort`) || !!effortChosen.get(s.sid)?.pending);
       effortChip.setAttribute("aria-expanded", open === "effort" ? "true" : "false");
@@ -355,12 +365,27 @@
       // native replaceChildren turns null into a "null" text node: pass only real parts
       pop.replaceChildren(...[
         inventory ? h("div", { class: "pick-searchrow" }, search, clear) : null,
-        ctx.session()?.telegram ? null : h("p", { class: "pick-scope" }, T("pick.scope")),
+        h("p", { class: "pick-scope" }, T("conv.scope")),
         status,
         inventory ? list : null,
         h("div", { class: "pick-customrow" }, custom, add),
-        change ? h("div", { class: "pick-actions" }, change) : null].filter(Boolean));
+        change ? h("div", { class: "pick-actions" }, change) : null,
+        h("div", { class: "pick-reasoning" })].filter(Boolean));
+      renderSegments();
       renderList();
+    }
+
+    function renderSegments() {
+      const target = pop.querySelector(".pick-reasoning");
+      const s = ctx.session();
+      if (!target || !s) return;
+      const levels = effortsFor(optionOf(s.sid));
+      const current = effortNow(s);
+      const item = e => h("button", { class: `pick-item pick-nav${e === current ? " on" : ""}`, type: "button", role: "radio", "aria-checked": String(e === current), disabled: !!s.switchDisabled || !levels.includes(e), onclick: () => applyEffort(e) }, T(`pick.effort.${e}`));
+      target.replaceChildren(
+        h("div", { class: "pick-segments", role: "radiogroup", "aria-label": T("conv.reasoning") }, SEGMENTS.map(item)),
+        h("div", { class: "pick-extra-efforts" }, levels.filter(e => !SEGMENTS.includes(e)).map(item)),
+        h("button", { class: "pick-item pick-toggle pick-nav", type: "button", "aria-pressed": String(ctx.thinking.isOpen()), onclick: () => { ctx.thinking.setOpen(!ctx.thinking.isOpen()); renderSegments(); } }, T("live.showThinking")));
     }
 
     function useCustom(submit = false) {
@@ -448,6 +473,7 @@
       if (searching && !groups.length) kids.push(h("p", { class: "pick-empty" }, T("pick.noMatch")));
       else if (!data.options.length) kids.push(h("p", { class: "pick-empty" }, T("pick.none")));
       list.replaceChildren(...kids);
+      renderSegments();
     }
 
     /** After a list re-render, keep the keyboard on the group header that was used. */
@@ -578,6 +604,17 @@
       if (open && !pop.contains(e.target) && !bar.contains(e.target)) close(false);
     }, true);
 
+    document.addEventListener("keydown", (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || e.repeat || e.isComposing || (e.code !== "KeyE" && String(e.key).toLowerCase() !== "e")) return;
+      const s = ctx.session();
+      if (!s || s.switchDisabled || busy.has(`${s.sid}:effort`)) return;
+      const effort = nextEffort(effortNow(s), optionOf(s.sid));
+      if (!effort) return;
+      e.preventDefault();
+      openSid = s.sid; openKey = s.key;
+      applyEffort(effort);
+    });
+
     /**
      * The bot answered in the chat a command was sent to. The session's own report (the snapshot node) only moves
      * at its next turn, so a reply that names the picked value keeps the pick on the chip (no longer pending) until
@@ -600,7 +637,7 @@
     return { sync, close, telegramReply, isOpen: () => !!open, openModel: () => openPop("model") };
   }
 
-  const api = { EFFORTS, shortName, matches, buildGroups, currentOption, effortsFor, effortKey, parseCustom, modelCommand, reasoningCommand, ROWS_PER_GROUP, SEARCH_MAX, create: typeof create === "function" ? create : null };
+  const api = { EFFORTS, SEGMENTS, nextEffort, shortName, matches, buildGroups, currentOption, effortsFor, effortKey, parseCustom, modelCommand, reasoningCommand, ROWS_PER_GROUP, SEARCH_MAX, create: typeof create === "function" ? create : null };
   if (typeof window !== "undefined") window.DeckModelPicker = Object.freeze(api);
   if (typeof module === "object" && module.exports) module.exports = api; // Node unit tests
 })();

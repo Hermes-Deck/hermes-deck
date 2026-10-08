@@ -51,14 +51,14 @@ test("usage UI: percent follows the UI language, not a fixed order", () => {
   assert.ok(!load("en").quotaRows(h, fleet).map(text).join(" ").includes("%63"));
 });
 
-test("usage UI: quota bars stay neutral until 80%, gilt at 80, amphora at 95", () => {
+test("usage UI: Blend quota bars stay neutral through 60%, brass above it", () => {
   const U = load();
   const state = used => { const b = U.quotaRows(h, { quotas: { claude: { provider: "claude", ok: true, windows: [{ minutes: 300, used }] } } })[0]; return [cls(b, "bar")[0].children[0].attrs.class, cls(b, "pct")[0].attrs.class]; };
-  assert.deepEqual([...state(79)], ["", "pct"]);
-  assert.deepEqual([...state(80)], ["warn", "pct warn"]);
+  assert.deepEqual([...state(60)], ["", "pct"]);
+  assert.deepEqual([...state(61)], ["warn", "pct warn"]);
   assert.deepEqual([...state(94)], ["warn", "pct warn"]);
-  assert.deepEqual([...state(95)], ["bad", "pct bad"]);
-  assert.deepEqual([...state(250)], ["bad", "pct bad"]); // clamped to 100
+  assert.deepEqual([...state(95)], ["warn", "pct warn"]);
+  assert.deepEqual([...state(250)], ["warn", "pct warn"]); // clamped to 100
 });
 
 test("usage UI: relative durations and window labels", () => {

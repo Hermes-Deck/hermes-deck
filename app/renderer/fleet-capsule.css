@@ -1,1 +1,52 @@
-/* Lane E owns this file (fleet-capsule). Loaded after shell.css. */
+/* Blend fleet: rounded-square live sweep, brass breathing decision ring. */
+.tf-cap { height: 30px; display: flex; align-items: center; gap: 10px; padding: 0 10px 0 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--l2); color: var(--t3); font: 12px var(--sans); cursor: pointer; white-space: nowrap; transition: border-color .2s, background .2s, transform .3s var(--spring); }
+.tf-cap:hover, .tf-cap[aria-expanded="true"] { border-color: var(--line3); background: var(--l3); }
+.tf-cap:active { transform: scale(.98); }
+.tf-stack { display: flex; gap: 5px; padding: 0 2px; }
+.tf-avatar { position: relative; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 6px; background: var(--l4); color: var(--t2); font: 500 10px var(--sans); flex: none; }
+@property --sweep { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+.tf-stack .tf-avatar.running::after { content: ""; position: absolute; inset: -2.5px; border-radius: 8.5px; padding: 1.5px; background: conic-gradient(from var(--sweep), transparent 0deg, transparent 210deg, var(--teal-a) 280deg, var(--teal) 360deg); -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0); animation: tf-sweep 1.6s linear infinite; }
+.tf-stack .tf-avatar.waiting::after { content: ""; position: absolute; inset: -2px; border: 1.5px solid var(--brass); border-radius: 8px; animation: tf-breathe 1.8s ease-in-out infinite; }
+@keyframes tf-sweep { to { --sweep: 360deg; } }
+@keyframes tf-breathe { 50% { opacity: .35; } }
+.tf-running { color: var(--t2); font-variant-numeric: tabular-nums; }
+.tf-need { color: var(--brass); padding-left: 10px; border-left: 1px solid var(--line2); font-variant-numeric: tabular-nums; }
+.tf-cost { font: 500 11.5px var(--mono); color: var(--t2); padding-left: 10px; border-left: 1px solid var(--line2); }
+.tf-panel { position: fixed; z-index: 45; width: min(520px, calc(100vw - 24px)); max-height: calc(100vh - 72px); overflow: auto; background: var(--l1); border: 1px solid var(--line2); border-radius: 18px; box-shadow: 0 40px 80px -24px #000; color: var(--t1); transform-origin: top center; }
+.tf-panel.show { animation: tf-open .5s var(--spring); }
+.tf-panel[hidden] { display: none; }
+@keyframes tf-open { from { opacity: 0; transform: translateY(-10px) scale(.96); } to { opacity: 1; transform: none; } }
+.tf-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; color: var(--t3); font-size: 12px; }
+.tf-head > b { font: 500 10.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.tf-close { margin-left: auto; font-size: 16px; }
+.tf-agent { display: grid; grid-template-columns: 28px minmax(0,1fr) auto; gap: 12px; align-items: start; border-top: 1px solid var(--line); padding: 12px 16px; }
+.tf-agent > .tf-avatar { width: 28px; height: 28px; border-radius: 8px; font-size: 12px; }
+.tf-agent.offline { color: var(--t3); }
+.tf-agent-main { min-width: 0; border: 0; padding: 0; background: none; text-align: left; color: inherit; cursor: pointer; font: 13px var(--sans); }
+.tf-agent-main b { font-weight: 500; }
+.tf-agent-main:hover b { color: var(--brass); }
+.tf-task { display: block; margin-top: 2px; font-size: 12.5px; color: var(--t3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tf-runtime { text-align: right; font: 500 11.5px var(--mono); color: var(--t3); }
+.tf-agent.running .tf-runtime { color: var(--teal); }
+.tf-agent.waiting .tf-runtime { color: var(--brass); }
+.tf-runtime small { display: block; margin-top: 3px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; font-size: 10.5px; font-weight: 400; color: var(--t4); }
+.tf-details { grid-column: 2/4; min-width: 0; }
+.tf-details .te-request { padding: 10px; background: var(--brass-a); border: 1px solid var(--brass-b); border-radius: 10px; margin-top: 4px; }
+.tf-details .te-command { font-size: 11.5px; padding: 6px 8px; }
+.tf-children { display: flex; flex-direction: column; gap: 3px; padding-left: 10px; border-left: 1px solid var(--line2); margin-top: 6px; }
+.tf-child { display: flex; gap: 8px; padding: 3px 0; border: 0; background: none; text-align: left; color: var(--t3); font: 11.5px var(--mono); cursor: pointer; }
+.tf-child span:first-child { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tf-child:hover { color: var(--t1); }
+.tf-today { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; padding: 14px 16px; border-top: 1px solid var(--line); background: var(--l2); }
+.tf-today small { display: block; font: 500 10px var(--mono); color: var(--t3); letter-spacing: .04em; }
+.tf-today b { display: block; font: 500 17px var(--mono); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; }
+.tf-quotas { padding: 8px 16px; background: var(--l2); }
+.tf-quotas .qblock { padding: 8px 0; background: none; }
+.tf-quotas .quota .bar { height: 3px; }
+.tf-footer { padding: 10px 16px; border-top: 1px solid var(--line); font: 11px/1.7 var(--sans); color: var(--t3); }
+.tf-empty, .tf-notice { padding: 16px; color: var(--t3); font-size: 12.5px; }
+.tf-cap:focus-visible, .tf-agent-main:focus-visible, .tf-child:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+.app[data-right="work"] .tf-cost, .app[data-right="inspector"] .tf-cost { display: none; }
+@media (max-width: 900px) { .tf-stack, .tf-cost { display: none; } .tf-cap { gap: 6px; padding: 0 8px; font-size: 11px; } }
+@media (max-width: 480px) { .tf-agent { gap: 8px; padding: 10px 12px; } .tf-runtime small { max-width: 90px; } .tf-details { grid-column: 1/4; } .tf-today { gap: 8px; padding: 12px; } .tf-today b { font-size: 14px; } }
+@media (prefers-reduced-motion: reduce) { .tf-cap { transition: none; } .tf-stack .tf-avatar::after, .tf-panel.show { animation: none; } .tf-stack .tf-avatar.running::after { background: var(--teal); } }
