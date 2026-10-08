@@ -214,6 +214,21 @@ class FixtureService extends EventEmitter {
 }
 
 /** Stands in for RelayClient: a fixed snapshot, re-sent whenever the renderer asks to resync. */
+function fixtureHermesConfig() {
+  const fields = {
+    model: { type: "string", description: "Default model", category: "general" },
+    toolsets: { type: "list", description: "Toolsets", category: "general" },
+    timezone: { type: "string", description: "Timezone", category: "general" },
+    "agent.max_turns": { type: "string", description: "Agent → Max Turns", category: "agent", free: true },
+    "agent.service_tier": { type: "select", description: "Fast mode", category: "agent", options: ["", "normal", "fast", "auto"] },
+    "agent.verbose": { type: "boolean", description: "Agent → Verbose", category: "agent" },
+    "display.compact": { type: "boolean", description: "Display → Compact", category: "display" },
+    "display.show_reasoning": { type: "boolean", description: "Display → Show Reasoning", category: "display" },
+  };
+  const values = { model: "example-model", toolsets: ["web", "terminal"], timezone: "", "agent.max_turns": 60, "agent.service_tier": "", "agent.verbose": false, "display.compact": true, "display.show_reasoning": false };
+  return { fields, values, explicit: ["model", "agent.max_turns", "display.compact"] };
+}
+
 class FixtureRelay extends EventEmitter {
   constructor(snapshot) {
     super();
@@ -237,6 +252,18 @@ class FixtureRelay extends EventEmitter {
 
   async post(p) {
     return String(p) === "/fleet/quotas/refresh" ? { ok: true, refreshed: true, throttled: false, timedOut: false, retryAfterS: 0, quotas: {}, profiles: {} } : {};
+  }
+
+  /** Settings > Hermes config: a small synthetic schema and config (no real Hermes), for --tab=settings:hermescfg. */
+  async call(method, p, body) {
+    if (!this.snapshot) return { status: 404, body: {} };
+    const f = (this.hcfg ||= fixtureHermesConfig());
+    const route = String(p).split("?")[0];
+    if (route === "/hermes/config/schema") return { status: 200, body: { ok: true, fields: f.fields, categoryOrder: ["general", "agent", "display"], profiles: ["default", "scout"] } };
+    if (route === "/hermes/config" && method === "GET") return { status: 200, body: { ok: true, profile: "default", rev: "0".repeat(64), values: f.values, explicit: f.explicit, managed: false, restartNeeded: false } };
+    if (route === "/hermes/config") return { status: 200, body: { ok: true, profile: body.profile, rev: "1".repeat(64), values: { ...f.values, ...body.set }, explicit: f.explicit, saved: Object.keys(body.set), backup: "config.yaml.bak-deck-fixture" } };
+    if (route === "/hermes/restart") return { status: method === "POST" ? 202 : 200, body: { ok: true, gateway: null, relay: { startedAt: 1, supervised: true }, restartNeeded: false } };
+    return { status: 404, body: {} };
   }
 
   stop() {

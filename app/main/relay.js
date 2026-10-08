@@ -102,6 +102,21 @@ class RelayClient extends EventEmitter {
     }
   }
 
+  /**
+   * One JSON request that keeps the relay's own error text (Settings > Hermes config): resolves {status, body}; only a
+   * network failure or timeout rejects. `body` undefined sends none.
+   */
+  async call(method, path, body, timeoutMs = 10000) {
+    const r = await fetch(`${this.httpBase}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${this.token}`, ...(body !== undefined ? { "content-type": "application/json" } : {}) },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const data = await r.json().catch(() => ({}));
+    return { status: r.status, body: data && typeof data === "object" ? data : {} };
+  }
+
   /** POST with an empty JSON body. `timeoutMs` covers relay-side waits (quota refresh waits for the plugins). */
   async post(path, timeoutMs = 10000) {
     const r = await fetch(`${this.httpBase}${path}`, {

@@ -85,7 +85,8 @@ file named by `DECK_RELAY_ENV`); restart it to apply changes.
 | `DECK_FALLBACK_BROWSER_CDP`, `DECK_FALLBACK_BROWSER_CDP_AGENT` | Attach one already running loopback CDP browser to one agent (owner defaults to `DECK_CDP_DEFAULT_AGENT`) |
 | `DECK_HOST_NAME` | Agent-host label in the Workspace host picker |
 | `DECK_DESKTOP_HOST` | `1` lets desktop control fall back to the agent host's own screen; default off |
-| `DECK_HERMES_PYTHON` | Hermes' Python for the Bot Desktop lease; auto-detects `~/.hermes/hermes-agent/venv/bin/python` |
+| `DECK_HERMES_PYTHON` | Hermes' Python for the Bot Desktop lease and Settings › Hermes config; auto-detects `~/.hermes/hermes-agent/venv/bin/python` (Hermes config also falls back to `DECK_MOBILE_BRIDGE_PYTHON`) |
+| `DECK_HERMES_CONFIG`, `HERMES_AGENT_DIR`, `DECK_HERMES_BIN` | Settings › Hermes config: `0` turns it off; Hermes' install directory when it is not the folder around that Python's venv; the `hermes` command for Restart gateway (default `hermes` on PATH) |
 | `DECK_CUA_DRIVER` | The real cua-driver `deck-cua` runs for the agent-host route; default `cua-driver` on PATH |
 | `DECK_SPACES`, `DECK_SPACESD_URL`, `DECK_SPACESD_TOKEN_FILE` | Agent spaces ([agent-spaces.md](agent-spaces.md)) |
 | `DECK_SPACES_*`, `DECK_DESKTOPS_*`, `DECK_AUDIT*`, `DECK_SNAPSHOT_KEEP`, `DECK_RISKY_PATTERNS_FILE` | Agent desktops, activity log and safety ([agent-spaces.md](agent-spaces.md)) |
@@ -100,6 +101,31 @@ History is read on demand. Host-wide usage refreshes at startup and every minute
 which Hermes interfaces loaded the plugin ([host-usage.md](host-usage.md)). Database reads use read-only connections or
 bounded private copies; the relay never writes Hermes session data. Costs may be estimates or unknown; Claude
 subscription costs are API list-price equivalents, not invoices.
+
+## Hermes config and restarts
+
+Settings › Hermes config in the desktop app edits every setting of each Hermes profile's `config.yaml` through the
+relay, and has buttons to restart the Hermes gateway and the relay. The relay runs `relay/tools/hermes-config.py` with
+Hermes' Python (`DECK_HERMES_PYTHON`) for each request, so the field list, defaults and the save are Hermes' own code;
+new Hermes settings appear without a Deck update.
+
+- Desktop relay token only: `/hermes/*` refuses mobile tokens. `DECK_HERMES_CONFIG=0` turns the routes off.
+- API keys, passwords, secrets and tokens are never listed, returned or written. Values are read as written in
+  `config.yaml` (no `${VAR}` expansion).
+- A save needs the revision the Deck loaded; a `config.yaml` changed since then is refused. Each save first copies
+  the file to `config.yaml.bak-deck-<UTC timestamp>` next to it (the newest 10 are kept). Reset removes a key so
+  Hermes' default applies again.
+- Restart gateway runs Hermes' own gateway restart command (`DECK_HERMES_BIN`, default `hermes`): Hermes lets running
+  turns finish, then its service manager starts the gateway again. Restart relay makes the relay exit cleanly; it is
+  offered only when the relay runs under systemd or launchd (`INVOCATION_ID` / `XPC_SERVICE_NAME`), which starts it
+  again.
+
+| Route | Purpose |
+|---|---|
+| `GET /hermes/config/schema` | Fields `{type, description, category, options?, free?}`, category order, profiles |
+| `GET /hermes/config?profile=<p>` | `{rev, values, explicit, managed, restartNeeded}` |
+| `POST /hermes/config` | `{profile, rev, set: {key: value}, unset: [key]}`; answers the new values and the backup name |
+| `GET`/`POST /hermes/restart` | Restart state; `{target: "gateway" \| "relay"}` |
 
 ## Agent browsers
 

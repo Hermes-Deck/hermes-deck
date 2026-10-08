@@ -1154,6 +1154,12 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     testNotification: (btn) => testNotification(btn),
     confirm: (o) => confirmSheet(o), // consent / confirmation sheets (agent desktops)
     hermes: (kids) => paneHermesSettings(kids),
+    hermesConfig: window.DeckHermesConfigView ? window.DeckHermesConfigView.create({
+      h, deck, store,
+      confirm: (o) => confirmSheet(o),
+      relayOpen: () => S.relay.status === "open",
+      refresh: () => SV.refresh({ force: true }),
+    }) : null, // Settings > Hermes config (relay only)
     hostVersions: () => hostVer, // main/host-versions.js: relay / plugin versions on the host
     workspaceRows: () => (workspace ? workspace.settingsRows() : null),
     botscreenRows: () => (botscreen ? botscreen.settingsRows() : null),

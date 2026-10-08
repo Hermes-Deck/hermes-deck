@@ -1072,6 +1072,8 @@ ipc.handle("relay:quota-refresh", async () => {
 });
 // sub-agent views (B1–B4): message history, full messages and tool calls through the relay (history.js)
 require("./history").register(ipc, () => relay);
+// Settings > Hermes config: Hermes' config.yaml per profile and the gateway / relay restarts, through the relay
+require("./hermes-config").register(ipc, () => relay);
 ipc.handle("open-external", (_e, url) => {
   const u = httpUrl(url);
   if (u) return shell.openExternal(u);

@@ -59,7 +59,7 @@ profile unless you supply one. Pet captures also get a separate temporary profil
 | `--shot=<png>`, `--wait=<ms>` | Capture the hidden app window after rendering |
 | `--fixture=<json>`, `--scene=<name>`, `--select=<key>` | Fixture file, fixture-defined scene and selected chat |
 | `--tab=activity\|fleet\|tokens\|workspace\|screen` | Right-panel tab |
-| `--tab=settings[:<section>]` | Opens the Settings view (not a tab), at `general`, `hermes`, `relay`, `telegram`, `desktop` or `device` |
+| `--tab=settings[:<section>]` | Opens the Settings view (not a tab), at `general`, `hermes`, `hermescfg` (a synthetic Hermes config), `relay`, `telegram`, `desktop` or `device` |
 | `--theme=basalt\|marble\|aegean\|system` | Screenshot runs (`--shot`, `--shot-pet`, `--shot-botbar`) in that colour theme; the saved choice is untouched |
 | `--pet-size=0.75\|1\|1.25\|1.5` | `--shot-pet` at that pet size |
 | `--wallpaper=<image>`, `--wallpaper-dim=<0..90>` | Screenshot runs with that chat background (copied into the run's own profile) |

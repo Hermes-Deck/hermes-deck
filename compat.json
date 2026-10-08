@@ -1,5 +1,5 @@
 {
-  "version": "1.2.0",
+  "version": "1.2.1",
   "protocol": 1,
   "minHermes": "0.21.5",
   "minimum": { "app": "0.3.6", "relay": "0.3.6", "plugin": "0.3.6" }

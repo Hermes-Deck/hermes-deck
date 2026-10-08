@@ -32,6 +32,7 @@ function tokenOk(req, token, queryToken = false) {
  *                              plugin versions only in the authenticated WS hello
  *   POST /fleet/quotas/refresh (Bearer token or mobile token) force a quota refresh through the plugins; >= 30 s apart
  *   GET /snapshot | /fleet | /tokens?range=24h|7d|14d|30d|all (or legacy ?days=N) | /session/<sid>   (Bearer token)
+ *   GET|POST /hermes/config[/schema], /hermes/restart   (Bearer token, never a mobile token; hermes-config.js)
  *   GET /session/<sid>/plan    (Bearer token) {sid, plan, stored}: the latest plan, live or rebuilt from state.db (plan.js)
  *   GET /session/<sid>/messages | /session/<sid>/call/<id> | /message/<id>/full   (Bearer token; history.js)
  *   WS  /events                (Bearer token; ?token= only with queryToken)  hello -> snapshot -> {t:"evs"|"fleet"|"agents"} pushes
@@ -41,7 +42,7 @@ function tokenOk(req, token, queryToken = false) {
  * onHttp(req, res, url) -> true when it answered an authenticated request (bot screen: /desktop/*, /cu/*; spaces: /spaces*).
  * onUpgrade(req, socket, head, url) -> true when it took a relay-token WebSocket under /spaces/ (the space viewer).
  */
-function createServer({ token, model, fleet, version, hooks = null, history = null, plans = null, queryToken = false, bundles = null, mobile = null, host = null }) {
+function createServer({ token, model, fleet, version, hooks = null, history = null, plans = null, queryToken = false, bundles = null, mobile = null, host = null, hermesConfig = null }) {
   const started = Date.now();
   // Host versions (compat.js): protocol, each profile's plugin version, the updater's last check. `v` stays first
   // and unchanged: apps before 0.3.6 read only `v` (as "the newest app version" signal).
@@ -96,6 +97,12 @@ function createServer({ token, model, fleet, version, hooks = null, history = nu
     if (bundles && (url.pathname === "/bundle" || url.pathname.startsWith("/bundle/")) && !req.headers.authorization?.startsWith("Bearer ")) return json(res, 401, { error: "relay bearer required" });
     if (bundles && bundles.onHttp(req, res, url)) return; // D3: opaque envelopes, device-bound access
     if (url.pathname.startsWith("/spaces/") && !tokenOk(req, token, false)) return json(res, 401, { error: "relay bearer required" });
+    // Settings > Hermes config (hermes-config.js): writes Hermes' config and restarts services, desktop relay token only
+    if (url.pathname.startsWith("/hermes/")) {
+      if (mobileAuth || !tokenOk(req, token, false)) return json(res, 403, { error: "relay bearer required" });
+      if (hermesConfig && hermesConfig.onHttp(req, res, url)) return;
+      return json(res, 404, { error: "not found" });
+    }
     if (hooks && hooks.onHttp && hooks.onHttp(req, res, url)) return; // bot screen: lease, stop, frames
     if (req.method === "POST" && url.pathname === "/fleet/quotas/refresh") {
       // On-demand quota refresh (Usage refresh button, phone and desktop). Rate limit and wait live in Fleet.refreshQuotas.

@@ -34,6 +34,7 @@ const { MobilePushClient } = require("./mobile-push");
 
 const compat = require("./compat"); // product version, wire protocol, each profile's plugin version
 const { HermesStore } = require("./history");
+const { HermesConfig, hermesConfigOptions } = require("./hermes-config"); // Settings > Hermes config, restarts
 
 const VERSION = compat.VERSION;
 
@@ -112,6 +113,7 @@ function config(env = process.env, mem = os.totalmem()) {
       : null,
     safety: { auditEnv: { DECK_AUDIT: env.DECK_AUDIT, DECK_AUDIT_DAYS: env.DECK_AUDIT_DAYS, DECK_SNAPSHOT_KEEP: env.DECK_SNAPSHOT_KEEP }, riskyPatternsFile: env.DECK_RISKY_PATTERNS_FILE || null },
     desktops: desktopsConfig(env, mem),
+    hermesConfig: hermesConfigOptions(env),
   };
 }
 
@@ -415,7 +417,9 @@ async function start(cfg) {
 
   const mobile = new MobileRelay({ tokensFile: cfg.mobileDevicesFile || path.join(cfg.dataDir, "mobile-devices.json"), bridgeConfig: cfg.mobileBridge, push: new MobilePushClient(), capabilities: { history: !!history, workspace: !!workspace && !!fallback?.available, desktop: false } });
   const host = { protocol: compat.PROTOCOL, plugins: compat.pluginCache(cfg.hermesRoot || null), update: () => compat.updateStatus(cfg.dataDir) };
-  const srv = createServer({ mobile, host, token: cfg.token, queryToken: !!cfg.queryToken, model, fleet, version: VERSION, hooks: deckHooks(presence, gateway, driver, workspace, bundles, spaces, spaceTunnel), history, plans, bundles });
+  let quitRelay = null; // set by the entry point below: stop, then exit so the service manager starts the relay again
+  const hermesConfig = new HermesConfig({ ...(cfg.hermesConfig || hermesConfigOptions({})), root: cfg.hermesRoot || (cfg.hermesConfig || {}).root, quit: () => (quitRelay ? quitRelay() : null) });
+  const srv = createServer({ hermesConfig, mobile, host, token: cfg.token, queryToken: !!cfg.queryToken, model, fleet, version: VERSION, hooks: deckHooks(presence, gateway, driver, workspace, bundles, spaces, spaceTunnel), history, plans, bundles });
   broadcast = srv.broadcast;
   if (workspace) workspace.setBroadcast(srv.broadcast);
 
@@ -531,7 +535,7 @@ async function start(cfg) {
     }
   }
   mobile.available.desktop = driverUp;
-  return { server: srv.server, port: srv.server.address().port, cdpPort, model, fleet, usage, presence, gateway, workspace, fallback, bundles, transfers, driver: driverUp ? driver : null, desktops, spaceTunnel, stop };
+  return { setQuit: (fn) => { quitRelay = fn; }, hermesConfig, server: srv.server, port: srv.server.address().port, cdpPort, model, fleet, usage, presence, gateway, workspace, fallback, bundles, transfers, driver: driverUp ? driver : null, desktops, spaceTunnel, stop };
 }
 
 /**
@@ -578,12 +582,13 @@ if (require.main === module && process.argv.includes("--self-check")) {
   loadEnvFile(process.env.DECK_RELAY_ENV || path.join(__dirname, "..", ".env"));
   const cfg = config();
   start(cfg)
-    .then(({ port, cdpPort, driver, stop, model }) => {
+    .then(({ port, cdpPort, driver, stop, model, setQuit }) => {
       console.log(`deck-relay ${VERSION} listening on ${cfg.host}:${port} (${model.sessions.size} sessions loaded)`);
       if (cdpPort) console.log(`deck-relay: agent browsers at http://127.0.0.1:${cdpPort}/agent/<profile> (headless fallback browser ${cfg.cdp.fallback ? "on" : "off"}; external browser ${cfg.cdp.externalCdp ? `attached for ${cfg.cdp.externalAgent}` : "off"}; default ${cfg.cdp.browserDefault})`);
       if (driver) console.log(`deck-relay: bot screen driver socket ${cfg.driver.sockPath} (agent host as fallback: ${cfg.driver.desktopHost ? "on" : "off"})`);
       if (cfg.spaces) console.log(`deck-relay: agent spaces ${cfg.spaces.mode}; agent desktops on this machine ${cfg.desktops.host ? `on (limit ${cfg.desktops.limit}, idle ${cfg.desktops.idleMin} min)` : "off"}; shared fallback ${cfg.desktops.sharedFallback ? "on" : "off"}`);
       const quit = () => stop().then(() => process.exit(0));
+      setQuit(quit); // Settings > Hermes config > Restart relay
       process.on("SIGTERM", quit);
       process.on("SIGINT", quit);
     })

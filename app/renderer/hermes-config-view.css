@@ -1,0 +1,31 @@
+/* Hermes Deck — Settings > Hermes config (hermes-config-view.js). Tokens from styles.css only. */
+.sv-hint { margin: 0 2px 16px; color: var(--marble-dim); font-size: 12.5px; line-height: 1.5; }
+.sv-confirm p { white-space: pre-line; overflow-wrap: anywhere; max-height: 50vh; overflow-y: auto; }
+
+.hcfg-bar { position: sticky; top: -22px; z-index: 1; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 14px; padding: 10px 0; background: var(--obsidian); }
+.hcfg-bar select, .hcfg-bar input { padding: 6px 10px; border: 1px solid var(--vein); border-radius: 8px; background: var(--obsidian); color: var(--marble); font: 13px var(--body); }
+.hcfg-bar input[type="search"] { flex: 1 1 200px; min-width: 160px; }
+.hcfg-bar select:focus-visible, .hcfg-bar input:focus-visible { outline: 2px solid var(--patina); outline-offset: 0; border-color: transparent; }
+
+.hcfg-row { align-items: flex-start; }
+.hcfg-row.wide .sv-ctl { flex-basis: 100%; }
+.hcfg-row.edited { box-shadow: inset 3px 0 0 var(--patina); }
+.hcfg-row.invalid { box-shadow: inset 3px 0 0 var(--amphora); }
+.hcfg-label { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 220px; }
+.hcfg-desc { display: inline-flex; align-items: center; gap: 6px; font-size: 13.5px; color: var(--marble); }
+.hcfg-key { font: 11px var(--mono); color: var(--vein-text); overflow-wrap: anywhere; }
+.hcfg-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--patina); flex: none; }
+.hcfg-row .sv-ctl textarea { width: 100%; min-width: 280px; padding: 6px 10px; border: 1px solid var(--vein); border-radius: 8px; background: var(--obsidian); color: var(--marble); font: 12.5px var(--mono); resize: vertical; }
+.hcfg-row .sv-ctl input[type="checkbox"].hcfg-switch { width: 18px; height: 18px; accent-color: var(--patina); }
+.hcfg-resetting { font-size: 12px; color: var(--marble-dim); font-style: italic; }
+.hcfg-pill { margin-left: 8px; padding: 1px 8px; border-radius: 999px; background: var(--patina-soft); color: var(--patina); font-size: 11px; }
+
+.hcfg-foot { position: sticky; bottom: -48px; display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 14px; padding: 10px 14px; border: 1px solid var(--vein); border-radius: 10px; background: var(--basalt); }
+.hcfg-foot[hidden] { display: none; }
+.hcfg-count { margin-right: auto; font-size: 12.5px; color: var(--marble-dim); }
+.hcfg-msg { margin: 0 2px 14px; font-size: 12.5px; }
+.hcfg-msg.ok { color: var(--patina); }
+.hcfg-msg.bad { color: var(--amphora); }
+.hcfg-out { padding: 6px 14px 10px; }
+.hcfg-out summary { cursor: pointer; font-size: 12px; color: var(--marble-dim); }
+.hcfg-out pre { margin: 8px 0 0; max-height: 220px; overflow: auto; font: 11.5px var(--mono); color: var(--marble-dim); white-space: pre-wrap; }

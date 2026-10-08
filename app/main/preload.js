@@ -86,6 +86,14 @@ contextBridge.exposeInMainWorld("deck", {
   messages: (sid, before) => ipcRenderer.invoke("relay:messages", sid, before),
   messageFull: (id) => ipcRenderer.invoke("relay:message-full", id),
   toolCall: (sid, call) => ipcRenderer.invoke("relay:call", sid, call),
+  // Settings > Hermes config (relay only): schema, one profile's values, a save, restarts
+  hermesConfig: {
+    schema: () => ipcRenderer.invoke("hcfg:schema"),
+    get: (profile) => ipcRenderer.invoke("hcfg:get", profile),
+    save: (change) => ipcRenderer.invoke("hcfg:save", change), // {profile, rev, set: {key: value}, unset: [key]}
+    restartState: () => ipcRenderer.invoke("hcfg:restart-state"),
+    restart: (target) => ipcRenderer.invoke("hcfg:restart", target), // "gateway" | "relay"
+  },
   // settings (secrets go in, never come back out)
   settingsGet: () => ipcRenderer.invoke("settings:get"),
   settingsSave: (patch) => ipcRenderer.invoke("settings:save", patch),

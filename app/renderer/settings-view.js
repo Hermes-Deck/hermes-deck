@@ -8,7 +8,7 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
 // keep one explicit Save per group. Pure helpers at the top are exported for test/settings-view.test.js.
 (() => {
   // ---------------------------------------------------------------- pure helpers
-  const SECTIONS = ["general", "hermes", "relay", "telegram", "desktop", "device"];
+  const SECTIONS = ["general", "hermes", "hermescfg", "relay", "telegram", "desktop", "device"];
   const BUSY_SEND = ["queue", "steer"];
 
   /** Keep the stored spelling, matching Telegram usernames without case or a leading @. */
@@ -90,6 +90,7 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
     const ICONS = {
       general: "M3 4.5h10M3 8h10M3 11.5h10M6 3v3M10 6.5v3M5.5 10v3",
       hermes: "M6.5 9.5l3-3M5 7.5L3.8 8.7a2.3 2.3 0 0 0 3.3 3.3L8.3 10.8M11 8.5l1.2-1.2a2.3 2.3 0 0 0-3.3-3.3L7.7 5.2",
+      hermescfg: "M3 4h6M12 4h1M3 8h1M7 8h6M3 12h6M12 12h1M10.5 2.8v2.4M5.5 6.8v2.4M10.5 10.8v2.4",
       relay: "M8 9.5v4M5.5 13.5h5M5.2 7.2a3.9 3.9 0 0 1 5.6 0M3.3 5.3a6.6 6.6 0 0 1 9.4 0M8 9.5a.6.6 0 1 0 0-.01",
       telegram: "M13.5 3L2.5 7.4l4 1.4M13.5 3l-2 10-5-4.2M13.5 3L6.5 8.8v3.7l2-2",
       desktop: "M2.5 3.5h11v7.5h-11zM6 13.5h4M8 11v2.5",
@@ -104,7 +105,7 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
       s.appendChild(p);
       return s;
     }
-    const LABEL = { general: "set.general", hermes: "set.hermes", relay: "set.relay", telegram: "set.telegram", desktop: "U0545", device: "A0241" };
+    const LABEL = { general: "set.general", hermes: "set.hermes", hermescfg: "set.hermesConfig", relay: "set.relay", telegram: "set.telegram", desktop: "U0545", device: "A0241" };
 
     // ------------------------------------------------------------ row helpers (used by the section builders)
     const note = () => h("span", { class: "sv-note", "aria-live": "polite" });
@@ -413,6 +414,12 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
       });
       return readingSave;
     }
+
+    // Settings > Hermes config (renderer/hermes-config-view.js): every config.yaml setting per profile, via the relay
+    BUILDERS.hermescfg = (kids) => {
+      if (ctx.hermesConfig) ctx.hermesConfig.build(kids);
+      else kids.push(h("p", { class: "sv-hint" }, T("hcfg.unavailable")));
+    };
 
     BUILDERS.desktop = (kids) => {
       const d = st().desktop || {};
