@@ -189,11 +189,12 @@
 .sp-fell { color: var(--gilt); }
 /* the large view (space-panel.js setExpanded): the panel covers the chat and the side panel, like .ws.expanded */
 .sp.expanded {
-  position: fixed; z-index: 40; top: var(--top); right: 0; bottom: 0; left: calc(var(--rail-w, 268px) + 6px);
+  position: fixed; z-index: 40; top: calc(var(--top) + 44px); right: 0; bottom: 0; left: calc(var(--rail-w, 268px) + 1px);
   padding: 12px 16px 14px; background: var(--basalt); border-left: 1px solid var(--vein); border-bottom: 0;
 }
 .sp.expanded .sp-stage { flex: 1 1 0; height: auto; min-height: 0; }
-body.rail-compact .sp.expanded { left: calc(var(--rail-w, 76px) + 6px); }
+body.rail-compact .sp.expanded { left: calc(var(--rail-w, 76px) + 1px); }
+.app.side-hidden .sp.expanded { left: 0; }
 
 .sp-work { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 32%); gap: 10px; min-height: 0; }
 .sp-activity[hidden] { display: none; }

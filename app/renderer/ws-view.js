@@ -101,7 +101,20 @@
     return !!e && !!(e.ctrlKey || e.metaKey) && !!e.shiftKey && !e.altKey && String(e.key || "").toLowerCase() === "f";
   }
 
-  const api = { MIN_PX, MAX_PX, STEP_PX, DEBOUNCE_MS, streamSize, createResizer, contentBox, mapPoint, isExpandKey };
+  const browserLive = info => info?.status === "running";
+  // Remote agent browsers come over the relay; a closed link leaves only a stale list, which is not live.
+  function browserSurfaceLive({ local = [], remote = [], link = null, profile = null } = {}) {
+    const match = b => b && browserLive(b) && (!profile || b.slug === profile);
+    return local.some(match) || (link?.status === "open" && remote.some(match));
+  }
+  function screenLive(state, profile, now = Date.now()) {
+    const grant = state?.grant;
+    return !!(state?.on && !state.paused && state.link?.status === "ready" && grant && grant.expires > now && (!profile || grant.profile === profile));
+  }
+  function spaceLive(list, profile) {
+    return !!list?.spaces?.some(s => s.online && (!profile || s.id === profile || s.holder === profile));
+  }
+  const api = { MIN_PX, MAX_PX, STEP_PX, DEBOUNCE_MS, streamSize, createResizer, contentBox, mapPoint, isExpandKey, browserLive, browserSurfaceLive, screenLive, spaceLive };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.DeckWsView = api;
 })(typeof window !== "undefined" ? window : globalThis);

@@ -1,1 +1,39 @@
-/* Lane B owns this file (composer). Loaded after shell.css. */
+/* Blend composer: keep existing input/actions, place transient decisions beside them. */
+.app .composer { position: relative; display: flex; flex-direction: column; flex: none; min-width: 0; max-height: min(62vh, 560px); border-radius: 16px; overflow: visible; }
+.app .composer > textarea { flex: 1 1 auto; min-height: 48px; }
+.app .composer #composer-status { width: 100%; margin: 0; max-width: none; padding: 0; }
+.conv-status { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 10px 10px 0 16px; font: 12px var(--sans); color: var(--t3); }
+.conv-spinner, .receipt-spinner { flex: none; width: 11px; height: 11px; border: 1px solid var(--line3); border-top-color: var(--teal); border-radius: 50%; animation: conv-spin 1s linear infinite; }
+.conv-step { font-weight: 500; color: var(--t1); white-space: nowrap; }
+.conv-arg { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px var(--mono); color: var(--t3); }
+.conv-elapsed { flex: none; font: 12px var(--mono); font-variant-numeric: tabular-nums; color: var(--t3); }
+.conv-hint { margin-left: auto; font-size: 11px; white-space: nowrap; color: var(--t3); }
+.conv-stop { flex: none; height: 26px; padding: 0 10px; }
+.conv-filament { position: absolute; left: 16px; right: 16px; top: -1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; transition: opacity .4s; }
+.conv-filament::after { content: ""; position: absolute; inset: 0 auto 0 0; width: 22%; background: linear-gradient(90deg, transparent, var(--brass), transparent); }
+.app .composer.conv-working { box-shadow: 0 -12px 40px -18px var(--brass), inset 0 1px 0 var(--line); }
+.conv-working .conv-filament { opacity: 1; }
+.conv-working .conv-filament::after { animation: conv-filament 2.4s var(--spring) infinite; }
+@keyframes conv-filament { from { transform: translateX(-100%); } to { transform: translateX(460%); } }
+.conv-tray { border-bottom: 1px solid var(--line2); background: var(--l1); border-radius: 16px 16px 0 0; padding: 12px 16px; max-height: min(36vh, 320px); overflow: auto; scrollbar-width: thin; }
+.conv-tray .hreq { margin: 0; border: 0; background: none; padding: 0; box-shadow: none; width: 100%; }
+.conv-tray .hreq + .hreq { padding-top: 12px; margin-top: 12px; border-top: 1px solid var(--line); }
+.conv-tray .hreq-cmd { max-height: 90px; overflow: auto; font: 11.5px/1.6 var(--mono); }
+.conv-tray .hreq-text { width: 100%; }
+.conv-wait { display: flex; align-items: center; gap: 10px; margin: 4px 0 20px; font: 12px/1.6 var(--sans); color: var(--brass); }
+.conv-wait::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.app .livebar.ph-approval, .app .livebar.ph-question { display: none; }
+.conv-queue { padding: 10px 14px 0; max-height: 140px; overflow: auto; }
+.conv-queue .msg.outbox { max-width: 100%; width: 100%; margin: 0 0 8px; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--line2); background: var(--l1); opacity: 1; }
+.conv-queue .msg.outbox > .text { font: 12px/1.5 var(--sans); max-height: 3em; overflow: auto; white-space: pre-wrap; }
+.conv-queue .msg.outbox.failed { border-color: var(--red); }
+.conv-footer { width: calc(100% - 36px); max-width: var(--col); margin: 6px auto 10px; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.app .conv-footer .composer-note { width: 100%; margin: 0; }
+.conv-via { display: flex; align-items: center; gap: 8px; margin: 0; min-width: 0; font: 11px/1.5 var(--sans); color: var(--t3); overflow-wrap: anywhere; }
+.conv-via::before { content: ""; width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--teal); }
+.conv-via[data-channel="readonly"]::before { background: var(--t4); }
+.conv-via[data-channel="telegram"]::before { background: var(--t2); }
+.conv-error { margin: 8px 16px 0; color: var(--red); font: 12px/1.5 var(--sans); overflow-wrap: anywhere; }
+.conv-tray[hidden], .conv-queue[hidden], .conv-via[hidden], .conv-error[hidden], .composer #composer-status[hidden] { display: none; }
+@media (max-width: 1100px) { .conv-hint { display: none; } .conv-elapsed { margin-left: auto; } }
+@media (prefers-reduced-motion: reduce) { .conv-spinner, .receipt-spinner, .conv-working .conv-filament::after { animation: none; } .conv-filament { transition: none; } }

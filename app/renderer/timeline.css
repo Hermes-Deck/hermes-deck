@@ -1,1 +1,19 @@
-/* Lane B owns this file (timeline). Loaded after shell.css. */
+/* A quiet left-edge scrubber; hover/focus reveal landmarks without competing with prose. */
+.app #timeline { top: var(--timeline-top, 80px); bottom: var(--timeline-bottom, 160px); overflow: visible; }
+.conv-timeline { position: relative; height: 100%; width: 28px; touch-action: none; user-select: none; }
+.conv-ticks { position: absolute; inset: 0 0 0 6px; opacity: .35; transition: opacity .25s; }
+.conv-timeline:hover .conv-ticks, .conv-timeline:focus-within .conv-ticks { opacity: 1; }
+.conv-ticks::before { content: ""; position: absolute; left: 10px; top: 0; bottom: 0; width: 1px; background: var(--line2); }
+.conv-tick { position: absolute; top: var(--tick); left: 0; width: 22px; height: 22px; transform: translateY(-50%); border: 0; padding: 0; background: none; display: grid; place-items: center; cursor: pointer; }
+.conv-tick i { display: block; width: 5px; height: 1px; background: var(--t4); transition: width .2s var(--spring), background .2s; }
+.conv-tick.user i { width: 9px; background: var(--t2); }
+.conv-tick.receipt i, .conv-tick.failed i { width: 5px; height: 5px; border-radius: 50%; }
+.conv-tick.failed i { background: var(--red); }
+.conv-tick.heading i { width: 7px; background: var(--t3); }
+.conv-tick.approval i { width: 6px; height: 6px; border-radius: 50%; background: var(--brass); }
+.conv-tick:hover i, .conv-tick:focus-visible i { width: 12px; background: var(--t1); }
+.conv-tick:focus-visible { outline: 1px solid var(--brass); border-radius: 4px; }
+.conv-timeline-view { position: absolute; left: 13px; top: var(--view-top, 0%); height: var(--view-height, 100%); width: 6px; border-radius: 3px; background: var(--line); pointer-events: none; }
+.conv-timeline-tip { position: absolute; top: var(--tick); left: 30px; transform: translateY(-50%); padding: 4px 8px; border-radius: 7px; background: var(--l3); border: 1px solid var(--line2); font: 11.5px var(--sans); color: var(--t1); white-space: nowrap; pointer-events: none; max-width: min(320px, 50vw); overflow: hidden; text-overflow: ellipsis; z-index: 4; }
+.conv-timeline-tip[hidden], #timeline[hidden] { display: none; }
+@media (prefers-reduced-motion: reduce) { .conv-ticks, .conv-tick i { transition: none; } }

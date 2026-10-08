@@ -201,3 +201,17 @@ test("tokens view Refresh reloads the selected range and reports failed reads wi
   const after = []; view.pane(after);
   assert.ok(after.flatMap(walk).some(n => n.attrs?.role === "status" && n.children.includes(i18n.t("triage.usageRefreshFailed"))));
 });
+
+test("tokens view redraws after the in-flight mark is cleared, so Refresh is enabled on that draw", async () => {
+  let view, seen = [];
+  const h = (tag, attrs, ...children) => ({ tag, attrs: attrs || {}, children: children.flat(Infinity).filter(x => x != null) });
+  const walk = n => [n, ...(n.children || []).filter(c => typeof c === "object").flatMap(walk)];
+  const mark = () => { const kids = []; view.pane(kids); seen.push(kids.flatMap(walk).find(n => n.attrs?.class === "tok-refresh quota-refresh").attrs.disabled); };
+  let done;
+  const read = new Promise(r => { done = r; });
+  view = T.create({ h, k: String, deck: { tokens: async () => { setTimeout(done, 0); return []; } }, mark, isOpen: () => true });
+  view.select(view.range === "30d" ? "7d" : "30d"); // loads without scheduling the periodic refresh
+  await read; await new Promise(r => setTimeout(r, 0));
+  assert.ok(seen.length >= 2);
+  assert.equal(seen.at(-1), false, "the redraw after the read already shows an enabled Refresh");
+});

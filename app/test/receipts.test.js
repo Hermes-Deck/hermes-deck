@@ -1,0 +1,66 @@
+"use strict";
+const { test } = require("node:test");
+const assert = require("node:assert/strict");
+test("deck.tools snapshots deduplicate known calls and never reopen a finished turn", () => {
+  const s = R.createStore();
+  s.event("s", "message.start", {}, 1000);
+  s.event("s", "tool.start", { tool_id: "a", name: "terminal" }, 2000);
+  s.replace("s", [{ call: "a", tool: "terminal", args: "test", status: "ok", ms: 12, result: "done", ts: 2 }], 3000);
+  s.event("s", "message.complete", {}, 5000);
+  s.replace("s", [{ call: "a", tool: "terminal", status: "ok", ms: 12, result: "done", ts: 2 }], 6000);
+  assert.equal(s.turns("s").length, 1);
+  assert.equal(s.turns("s")[0].calls.length, 1);
+  assert.equal(s.turns("s")[0].end, 5000);
+  assert.equal(s.turns("s")[0].calls[0].result, "done");
+  assert.equal(s.turns("other").length, 0);
+});
+test("historical transport calls are bounded and non-ok statuses count as errors", () => {
+  const s = R.createStore();
+  const calls = Array.from({ length: 400 }, (_, i) => ({ call: `c${i}`, tool: "test", status: "blocked", ms: 100, ts: i + 1, args: "x".repeat(1000) }));
+  s.replace("s", calls, 500000);
+  const turn = s.turns("s")[0];
+  assert.equal(turn.calls.length, R.MAX_CALLS);
+  assert.ok(turn.calls.every(c => c.args.length <= 301));
+  assert.equal(R.stats(turn).failed, R.MAX_CALLS);
+  assert.equal(turn.open, false);
+});
+test("receipt inspect opens Run and selects a call by id; hostile output remains plain text", () => {
+  const h = (tag, attrs, ...kids) => ({ tag, attrs: attrs || {}, kids: kids.flat(Infinity).filter(Boolean) });
+  const walk = x => [x, ...(x.kids || []).filter(k => typeof k === "object").flatMap(walk)];
+  const selected = [];
+  const turn = { id: "t", since: 1000, end: 2000, open: false, calls: [{ call: "a", tool: "terminal", args: "test", status: "error", ms: 12, result: "<img onerror=alert(1)>" }] };
+  const el = R.receipt({ h, t: k => k, sid: "s", turn, select: (...x) => selected.push(x) });
+  const nodes = walk(el);
+  const inspect = nodes.find(x => x.attrs.class === "receipt-inspect");
+  inspect.attrs.onclick();
+  assert.deepEqual(selected, [["s", "a", true]]);
+  assert.ok(nodes.some(x => x.tag === "pre" && x.kids.includes("<img onerror=alert(1)>")));
+  assert.ok(!nodes.some(x => x.tag === "img"));
+});
+test("selection shares exact session/call identity and opens only on inspect", () => {
+  const emitted = [], opened = [];
+  const c = R.createController({ emit: x => emitted.push(x), openRight: (...x) => opened.push(x) });
+  c.select("s", "call-a", false);
+  assert.equal(opened.length, 0);
+  c.select("s", "call-a", true);
+  assert.deepEqual(opened, [["work", "run"]]);
+  assert.deepEqual(c.selection(), { sid: "s", call: "call-a", source: "receipt" });
+  c.receive({ sid: "s", call: "call-b", source: "run" });
+  assert.equal(emitted.length, 2, "external selections do not echo");
+  assert.equal(c.selection().call, "call-b");
+});
+const R = require("../renderer/receipts");
+test("receipt accumulates calls once, stays open live, folds and counts failures at completion", () => {
+  const s = R.createStore();
+  s.event("s", "message.start", {}, 1000);
+  s.event("s", "tool.start", { tool_id: "a", name: "terminal", arguments: { command: "npm test" } }, 2000);
+  s.event("s", "tool.start", { tool_id: "a", name: "terminal" }, 2000);
+  assert.equal(s.turns("s")[0].calls.length, 1);
+  assert.equal(s.turns("s")[0].open, true);
+  s.event("s", "tool.complete", { tool_id: "a", status: "error", result: "failure", duration_ms: 500 }, 2500);
+  s.event("s", "message.complete", {}, 42000);
+  const turn = s.turns("s")[0];
+  assert.equal(turn.open, false);
+  assert.equal(turn.calls[0].args, '{"command":"npm test"}');
+  assert.deepEqual(R.stats(turn, 99000), { seconds: 41, tools: 1, failed: 1, running: false });
+});

@@ -6,6 +6,10 @@
   const stamp = s => Number(s.triageDoneAt || s.terminalAt || s.lastTs || s.updatedAt || 0);
   const sessionKey = s => JSON.stringify([s.profile || "default", s.sid]);
   const requestKey = r => JSON.stringify([r.profile || "default", r.id]);
+  const LIMIT = 256; // per-session turn notes and local dismissals kept in memory
+  /** Drop the oldest entries (Map/Set insertion order) until `bag` holds at most `n`. */
+  function cap(bag, n = LIMIT) { for (const key of bag.keys()) { if (bag.size <= n) break; bag.delete(key); } }
+  const EXIT_MS = 260;
   function sessions(data) {
     const by = new Map();
     for (const s of list(data.relay)) if (s && s.sid) by.set(sessionKey(s), { ...s, origin: "relay" });
@@ -30,7 +34,7 @@
     const rank = { approval: 0, question: 0, failed: 1, done: 2 };
     return out.sort((a, b) => rank[a.type] - rank[b.type] || (rank[a.type] ? b.at - a.at : a.at - b.at));
   }
-  function createStore(deck = {}, now = () => Date.now()) {
+  function createStore(deck = {}, now = () => Date.now(), t = key => root.DeckI18n ? root.DeckI18n.t(key) : key) {
     const data = { direct: [], relay: [], requests: [], agents: {}, fleet: null, tokens: [], bridgeStatus: "off", relayStatus: "unconfigured" };
     const listeners = new Set(), pending = new Set(), errors = new Map(), dismissed = new Set(), turns = new Map();
     let undoKey = null;
@@ -44,7 +48,7 @@
         const change = m.type === "message.start" ? { turnTs: now() / 1000, triageDoneAt: null, error: null }
           : m.type === "message.complete" ? { ...prior, triageDoneAt: now() / 1000 }
           : { ...prior, error: text(m.payload?.message) || text(m.payload?.error), triageDoneAt: null };
-        turns.set(key, change);
+        turns.delete(key); turns.set(key, change); cap(turns);
         data.direct = data.direct.map(s => sessionKey(s) === key ? { ...s, ...change,
           state: m.type === "message.start" ? "working" : m.type === "message.complete" ? "finished" : "error", terminalAt: m.type === "message.start" ? null : now() / 1000 } : s);
       }
@@ -70,7 +74,8 @@
       notify();
     }
     function feedRelay(m = {}) {
-      if (m.t === "snapshot") { data.relay = list(m.sessions); data.agents = m.agents || {}; data.fleet = m.fleet || null; data.tokens = list(m.tokens); data.relayStatus = "open"; }
+      if (!["snapshot", "evs", "agents", "fleet", "status"].includes(m.t)) return;
+      if (m.t === "snapshot") { data.relay = list(m.sessions); data.agents = m.agents || {}; data.fleet = m.fleet || null; data.tokens = list(m.tokens); data.relayStatus = m.status || "open"; }
       if (m.t === "evs") {
         const by = new Map(data.relay.map(s => [sessionKey(s), s]));
         for (const s of list(m.sessions)) if (s && s.sid) {
@@ -99,7 +104,7 @@
       pending.add(row.key); errors.delete(row.key); notify();
       try {
         const result = await deck.bridge[method](r.id, value);
-        if (result?.status !== "ok" && result?.status !== "expired") throw new Error(root.DeckI18n?.t("triage.notDelivered") || "Answer not delivered");
+        if (result?.status !== "ok" && result?.status !== "expired") throw new Error(t("triage.notDelivered"));
         data.requests = data.requests.filter(x => x !== r);
         return true;
       } catch (e) { errors.set(row.key, String(e.message || e)); return false; }
@@ -108,9 +113,21 @@
     return { data, items, feedBridge, feedRelay, answer,
       subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
       busy: key => pending.has(key), error: key => errors.get(key),
-      dismiss(row) { if (!["failed", "done"].includes(row.type)) return false; dismissed.add(row.key); undoKey = row.key; notify(); return true; },
+      dismiss(row) {
+        if (!["failed", "done"].includes(row.type)) return false;
+        dismissed.add(row.key); undoKey = row.key;
+        if (dismissed.size > LIMIT) { const live = new Set(collect(data, now()).map(x => x.key)); for (const key of dismissed) if (!live.has(key) && key !== undoKey) dismissed.delete(key); cap(dismissed); }
+        notify(); return true;
+      },
+      sizes: () => ({ turns: turns.size, dismissed: dismissed.size }),
       undo() { if (undoKey) dismissed.delete(undoKey); undoKey = null; notify(); },
-      seed(value = {}) { if (value.direct) data.direct = list(value.direct); if (value.requests) data.requests = list(value.requests); if (value.relay) feedRelay({ t: "snapshot", ...value.relay }); notify(); },
+      seed(value = {}) {
+        if (value.bridgeStatus) data.bridgeStatus = value.bridgeStatus;
+        if (value.direct) data.direct = list(value.direct);
+        if (value.requests) data.requests = list(value.requests);
+        if (value.relay) feedRelay({ t: "snapshot", ...value.relay });
+        notify();
+      },
     };
   }
   function questionAnswers(r, form) {
@@ -149,48 +166,63 @@
   }
   const moveIndex = (index, delta, count) => count ? (index + delta + count) % count : 0;
   function keyIntent(e) {
-    if (e.repeat || e.isComposing || e.ctrlKey || e.metaKey || e.altKey || /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(e.target?.tagName) || e.target?.isContentEditable) return null;
-    return { j: "next", ArrowDown: "next", k: "previous", ArrowUp: "previous", Enter: "open", a: "approve", A: "approve", x: "dismiss", X: "dismiss" }[e.key] || null;
+    if (e.repeat || e.isComposing || e.ctrlKey || e.metaKey || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target?.tagName) || e.target?.isContentEditable) return null;
+    const intent = { j: "next", ArrowDown: "next", k: "previous", ArrowUp: "previous", Enter: "open", a: "approve", A: "approve", x: "dismiss", X: "dismiss" }[e.key] || null;
+    return e.target?.tagName === "BUTTON" && !["next", "previous"].includes(intent) ? null : intent;
   }
   function createInbox(ctx) {
     const { h, t, store, shell, doc } = ctx;
     const el = h("div", { class: "te-inbox", tabindex: "0", "aria-label": t("triage.inbox") });
-    const forms = new Map(), rows = new Map(), exiting = new Set();
-    let selected = null, toast = null, toastTimer, notice = null;
+    const forms = new Map(), rows = new Map(), leaving = new Map(); // leaving: key -> {row, index, node} while it animates out
+    let selected = null, toast = null, toastTimer, notice = null, shown = [];
+    const reduced = () => !!root.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     const open = row => { if (ctx.openChat(row) === false) { notice = t("triage.navigationUnavailable"); redraw(); } };
     const button = (key, fn, primary = false) => h("button", { type: "button", class: `te-btn${primary ? " primary" : ""}`, onclick: fn }, t(key));
     function dismiss(row) {
-      if (!["done", "failed"].includes(row.type) || exiting.has(row.key)) return;
-      exiting.add(row.key); rows.get(row.key)?.classList.add("out");
-      setTimeout(() => {
-        exiting.delete(row.key);
-        toast = row.title || t(`triage.${row.type}`);
-        clearTimeout(toastTimer);
-        store.dismiss(row);
-        toastTimer = setTimeout(() => { toast = null; redraw(); }, 4000);
-      }, root.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 0 : 260);
+      if (!["done", "failed"].includes(row.type) || leaving.has(row.key)) return;
+      toast = row.title || t(`triage.${row.type}`);
+      clearTimeout(toastTimer);
+      store.dismiss(row); // the redraw below animates the row out like any other removal
+      toastTimer = setTimeout(() => { toast = null; redraw(); }, 4000);
+    }
+    /** Rows that left since the last draw (answered, dismissed, aged out) stay one exit animation long, inert. */
+    function exits(items) {
+      const keys = new Set(items.map(x => x.key));
+      for (const key of leaving.keys()) if (keys.has(key)) leaving.delete(key);
+      if (!reduced()) shown.forEach((row, index) => {
+        const node = rows.get(row.key);
+        if (keys.has(row.key) || leaving.has(row.key) || !node) return;
+        node.classList.add("out"); node.setAttribute("aria-hidden", "true"); node.inert = true;
+        leaving.set(row.key, { row, index, node });
+        setTimeout(() => { if (leaving.delete(row.key)) redraw(); }, EXIT_MS);
+      });
+      const all = [...items];
+      for (const g of leaving.values()) all.splice(Math.min(g.index, all.length), 0, g.row);
+      return all;
     }
     function redraw() {
       // Do not detach a question field while the user types. Action and blur redraws retain form values.
       if (el.contains(doc.activeElement) && doc.activeElement?.matches("input[data-hold]")) return;
       const focus = el.contains(doc.activeElement) ? doc.activeElement?.dataset.fk : null;
-      const items = store.items();
+      const items = store.items(), all = exits(items);
       if (!items.some(x => x.key === selected)) selected = items[0]?.key || null;
       for (const key of forms.keys()) if (!items.some(x => x.key === key)) forms.delete(key);
-      rows.clear();
+      rows.clear(); shown = items;
       const kids = [h("header", { class: "te-inbox-head" }, h("h1", null, t("triage.inbox")), h("span", null, t("triage.openCount", { n: items.filter(x => x.request).length }))),
         h("p", { class: "te-inbox-sub" }, t("triage.inboxSub"))];
       if (!items.length) kids.push(h("div", { class: "te-all-clear", role: "status" }, h("b", null, t("triage.allClear")), h("p", null, t("triage.nothingWaiting"))));
       for (const [name, types] of [["needs", ["approval", "question"]], ["failed", ["failed"]], ["done", ["done"]]]) {
-        const group = items.filter(x => types.includes(x.type));
+        const group = all.filter(x => types.includes(x.type));
         if (!group.length) continue;
-        kids.push(h("h2", { class: "te-group" }, t(`triage.${name}`), h("b", null, String(group.length))));
+        kids.push(h("h2", { class: "te-group" }, t(`triage.${name}`), h("b", null, String(group.filter(x => !leaving.has(x.key)).length))));
         for (const row of group) {
+          const ghost = leaving.get(row.key);
+          if (ghost) { kids.push(ghost.node); continue; }
           const active = row.key === selected;
           const body = row.request ? requestBody({ h, t, store, forms, redraw }, row) : h("div", null,
             row.detail ? h("pre", { class: row.type === "failed" ? "te-command" : "te-finished" }, row.detail) : null,
             h("div", { class: "te-actions" }, button("triage.dismiss", () => dismiss(row)), button("triage.openChat", () => open(row), true)));
-          const article = h("article", { class: `te-row ${row.type}${active ? " sel" : ""}${exiting.has(row.key) ? " out" : ""}` },
+          const article = h("article", { class: `te-row ${row.type}${active ? " sel" : ""}` },
             h("button", { type: "button", class: "te-row-head", dataset: { fk: `triage-row:${row.key}` }, "aria-expanded": active ? "true" : "false",
               onclick: () => { selected = row.key; redraw(); } },
             h("span", { class: "te-kind", "aria-hidden": "true" }, shell.icon(row.type === "approval" ? "lock" : row.type === "question" ? "waiting" : row.type === "failed" ? "x" : "agent")),
@@ -205,7 +237,8 @@
       kids.push(h("footer", { class: "te-inbox-keys" }, t("triage.inboxKeys")));
       if (toast) kids.push(h("div", { class: "te-undo", role: "status" }, t("triage.dismissed", { title: toast }), button("triage.undo", () => { toast = null; clearTimeout(toastTimer); store.undo(); })));
       el.replaceChildren(...kids);
-      if (focus) [...el.querySelectorAll("[data-fk]")].find(x => x.dataset.fk === focus)?.focus({ preventScroll: true });
+      const ghosts = [...leaving.values()].map(g => g.node);
+      if (focus) [...el.querySelectorAll("[data-fk]")].find(x => x.dataset.fk === focus && !ghosts.some(g => g.contains(x)))?.focus({ preventScroll: true });
     }
     function keydown(e) {
       if (shell.main() !== "inbox" || doc.querySelector('.tf-panel.show') || doc.activeElement?.closest("#right, .sv, .sb")) return;
@@ -248,7 +281,7 @@
     const t = root.DeckI18n.t;
     api.openChat = row => {
       const open = shell.service("openChat");
-      if (open && row.sid) { open({ sid: row.sid, profile: row.profile, origin: row.origin }); return true; }
+      if (open && row.sid) return open({ sid: row.sid, profile: row.profile, origin: row.origin }) !== false;
       // Existing rail actions are safe navigation only; no synthetic IPC mutation or replay.
       const railRow = [...(doc.getElementById("rail")?.querySelectorAll("[data-fk]") || [])].find(el => el.dataset.fk === `hrow:${row.sid}`);
       if (railRow) { railRow.click(); shell.setMain("chat"); return true; }
@@ -260,7 +293,7 @@
     doc.addEventListener("keydown", view.keydown);
     doc.addEventListener("deck-language", view.redraw);
   }
-  const api = { collect, sessions, sessionKey, requestKey, createStore, requestBody, questionAnswers, moveIndex, keyIntent, createInbox, connect, boot };
+  const api = { LIMIT, cap, collect, sessions, sessionKey, requestKey, createStore, requestBody, questionAnswers, moveIndex, keyIntent, createInbox, connect, boot };
   if (typeof module === "object" && module.exports) module.exports = api;
   else { root.DeckInbox = api; boot(); }
 })(typeof window === "object" ? window : globalThis);

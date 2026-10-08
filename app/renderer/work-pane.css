@@ -1,1 +1,84 @@
-/* Lane D owns this file (work-pane). Loaded after shell.css. */
+/* Blend Work pane: quiet machine data, brass only for actions, teal for live work. */
+.wk-content { padding: 16px; min-width: 0; color: var(--t2); font: 13px/1.5 var(--sans); }
+.wk-plan-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 16px; color: var(--t3); font-size: 11px; }
+.wk-todo { list-style: none; margin: 0; padding: 0; }
+.wk-task { display: flex; align-items: flex-start; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+.wk-task:last-child { border-bottom: 0; }
+.wk-task-text { min-width: 0; overflow-wrap: anywhere; }
+.wk-task.done, .wk-task.cancelled { color: var(--t4); }
+.wk-task.done .wk-task-text > span, .wk-task.cancelled .wk-task-text > span { text-decoration: line-through; }
+.wk-task.active { color: var(--t1); }
+.wk-tick { flex: none; width: 16px; height: 16px; margin-top: 2px; border: 1px solid var(--line3); border-radius: 50%; display: grid; place-items: center; font: 10px var(--mono); }
+.wk-task.done .wk-tick { color: var(--teal); background: var(--teal-a); border-color: transparent; }
+.wk-task.active .wk-tick { border: 4px double var(--teal); }
+.wk-task.depth-1 { margin-left: 18px; }
+.wk-task.depth-2 { margin-left: 36px; }
+.wk-task.depth-3 { margin-left: 54px; }
+.wk-phase { color: var(--t3); font-size: 11px; padding: 16px 0 4px; }
+.wk-blocked { display: block; color: var(--brass); margin-top: 4px; }
+.wk-note { color: var(--t4); font-size: 11px; margin: 12px 0; }
+.wk-error { color: var(--red); font-size: 12px; overflow-wrap: anywhere; }
+.wk-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; margin-bottom: 16px; }
+.wk-stats > div { background: var(--l2); padding: 10px 12px; }
+.wk-stats small { display: block; color: var(--t4); font-size: 11px; }
+.wk-stats b { display: block; margin-top: 2px; font: 500 16px var(--mono); letter-spacing: -.02em; overflow-wrap: anywhere; }
+.wk-stats b.bad, .wk-del, .wk-output.fail pre, .wk-tool.fail pre { color: var(--red); }
+.wk-gantt { display: flex; flex-direction: column; gap: 2px; margin-bottom: 16px; }
+.wk-run-row { display: grid; grid-template-columns: 16px minmax(70px, 96px) minmax(0, 1fr) 48px; gap: 10px; align-items: center; min-height: 30px; padding: 4px 8px; border: 0; border-radius: 8px; width: 100%; background: none; text-align: left; color: var(--t2); font: 11.5px var(--mono); cursor: pointer; }
+.wk-run-row:hover { background: var(--l3); }
+.wk-run-row.selected { background: var(--teal-a); }
+.wk-status, .wk-add { color: var(--teal); }
+.wk-run-row.fail .wk-status { color: var(--red); }
+.wk-bar { height: 6px; position: relative; background: var(--l3); border-radius: 3px; overflow: hidden; }
+.wk-bar i { position: absolute; top: 0; bottom: 0; border-radius: 3px; background: var(--t3); min-width: 3px; }
+.wk-run-row.selected .wk-bar i { background: var(--teal); }
+.wk-run-row.fail .wk-bar i { background: var(--red); }
+.wk-time { color: var(--t4); text-align: right; font-variant-numeric: tabular-nums; }
+.wk-output, .wk-tools { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--bg); }
+.wk-output > header { display: flex; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--l1); font: 11.5px var(--mono); }
+.wk-output > header code { flex: 1; text-align: right; color: var(--t4); overflow: hidden; text-overflow: ellipsis; }
+.wk-content pre { margin: 0; padding: 12px 14px; font: 12px/1.65 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.wk-output > .wk-note { padding: 0 14px; }
+.wk-output details > summary { padding: 8px 14px; font-size: 11px; color: var(--t3); cursor: pointer; }
+.wk-files { list-style: none; padding: 0; margin: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--l2); overflow: hidden; }
+.wk-files li { display: flex; align-items: baseline; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); font: 12px var(--mono); }
+.wk-files li:last-child { border-bottom: 0; }
+.wk-files code { flex: 1; min-width: 0; overflow-wrap: anywhere; color: var(--t1); }
+.wk-agent { width: 100%; min-width: 0; display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 10px; padding: 9px 10px; border: 0; border-radius: 10px; background: none; color: var(--t2); text-align: left; cursor: pointer; }
+.wk-agent:hover { background: var(--l3); }
+.wk-agent b { display: block; font-size: 12.5px; font-weight: 500; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.wk-agent small, .wk-agent-head small { display: block; color: var(--t4); font-size: 11.5px; margin-top: 2px; overflow-wrap: anywhere; }
+.wk-agent-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--t4); margin: 8px 7px; }
+.wk-agent.live .wk-agent-dot { background: var(--teal); }
+.wk-agent.depth-1 { margin-left: 18px; width: calc(100% - 18px); }
+.wk-agent.depth-2 { margin-left: 36px; width: calc(100% - 36px); }
+.wk-agent.depth-3 { margin-left: 54px; width: calc(100% - 54px); }
+.wk-back { padding: 4px 8px; margin-bottom: 12px; border: 0; border-radius: 7px; background: none; color: var(--t3); font-size: 12px; cursor: pointer; }
+.wk-back:hover { background: var(--l3); color: var(--t1); }
+.wk-agent-head { margin-bottom: 14px; }
+.wk-agent-head b { color: var(--t1); font-size: 14px; font-weight: 550; overflow-wrap: anywhere; }
+.wk-task-goal { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.6; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--l2); margin-bottom: 16px; }
+.wk-label { font-size: 11px; font-weight: 500; color: var(--t4); margin: 16px 0 8px; }
+.wk-notes { border-left: 1px solid var(--line); margin-bottom: 16px !important; }
+.wk-tool { border-top: 1px solid var(--line); }
+.wk-tool:first-child { border-top: 0; }
+.wk-tool summary { display: flex; gap: 10px; padding: 8px 10px; cursor: pointer; font: 11.5px var(--mono); }
+.wk-tool summary::before { content: "▸"; color: var(--t4); }
+.wk-tool[open] summary::before { content: "▾"; }
+.wk-tool summary span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wk-tool summary small { color: var(--t4); }
+.wk-steer { border: 1px solid var(--line2); border-radius: 12px; background: var(--l2); margin: 16px 0 10px; }
+.wk-steer:focus-within { border-color: var(--brass); }
+.wk-steer-input { display: block; width: 100%; min-height: 64px; max-height: 240px; resize: vertical; padding: 10px 12px 0; border: 0; background: none; color: var(--t1); font: 13px/1.5 var(--sans); }
+.wk-steer-input:focus { outline: none; }
+.wk-steer-input::placeholder { color: var(--t4); }
+.wk-steer footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px 6px 12px; color: var(--t4); }
+.wk-steer footer small { font-size: 11px; }
+.wk-content button:disabled, .wk-steer-input:disabled { opacity: .45; cursor: default; }
+.wk-content button:focus-visible, .wk-tool summary:focus-visible, .wk-surface-chip:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+.wk-failed { padding: 10px; border-top: 1px solid var(--line); }
+.wk-surface-chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line2); background: none; color: var(--t3); padding: 2px 6px; border-radius: 5px; font: 10px var(--sans); cursor: pointer; }
+.wk-surface-chip:hover { color: var(--teal); border-color: var(--teal); }
+.wk-surface-chip i { width: 4px; height: 4px; background: var(--teal); border-radius: 50%; }
+@media (max-width: 768px) { .wk-content { padding: 8px; } .wk-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .wk-run-row { gap: 6px; grid-template-columns: 14px minmax(60px, 84px) minmax(0, 1fr) 44px; } }
+

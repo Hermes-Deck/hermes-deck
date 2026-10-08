@@ -4187,6 +4187,44 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     });
   });
 
+  // ------------------------------------------------------------ triage services (inbox.js, fleet-capsule.js)
+  /**
+   * Open a session's chat for the inbox and the fleet panel, on a user action only (never a mutation). With the direct
+   * connection the session opens in a Hermes mode (Sessions first); without it, a relay session opens read-only in
+   * the detail view. Returns false when neither path can show it, so the caller can say so.
+   */
+  function openChatFor(req) {
+    const sid = req && typeof req.sid === "string" ? req.sid : "";
+    if (!sid || !S.settings || !S.settings.firstRunDone) return false;
+    const hermesModes = chatModes().filter((m) => m !== "telegram");
+    if (bridgeOpen() && hermesModes.length) {
+      if (!hermesMode() || (chatMode() !== "sessions" && hermesModes.includes("sessions"))) setChatChannel(hermesModes.includes("sessions") ? "sessions" : hermesModes[0]);
+      if (!hermesMode()) return false;
+      SV.close();
+      SH.setMain("chat");
+      if (H.nodes.has(sid)) hermesSelect(sid);
+      else hermesOpen(sid, (req.profile && String(req.profile)) || "default");
+      return true;
+    }
+    if (AG && S.relay.sessions.has(sid)) {
+      SV.close();
+      SH.setMain("chat");
+      AG.open(sid);
+      return true;
+    }
+    return false;
+  }
+  /** A read-only copy of what the triage views need when they start after the first pushes (no replay, no requests). */
+  function triageData() {
+    return {
+      bridgeStatus: H.status.status,
+      direct: [...H.nodes.values()],
+      requests: [...H.requests],
+      relay: { status: S.relay.status, sessions: [...S.relay.sessions.values()], agents: S.relay.agents, fleet: S.relay.fleet, tokens: S.relay.tokens },
+    };
+  }
+  // ------------------------------------------------------------ end triage services
+
   // ---------------------------------------------------------------- boot
   registerShellTabs();
   // what later modules may use without editing this file (contracts.md, Lane A)
@@ -4195,6 +4233,8 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   SH.provide("botscreen", botscreen);
   SH.provide("openSettings", (section) => openSettings(section));
   SH.provide("chat", () => currentChat());
+  SH.provide("openChat", (req) => openChatFor(req));
+  SH.provide("triageData", () => triageData());
   (async () => {
     const st = await deck.ready();
     const ui = st.ui || {};

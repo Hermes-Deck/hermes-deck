@@ -15,6 +15,7 @@ const vm = require("vm");
 const I18N = require("../renderer/i18n");
 const LAmod = require(process.env.DECK_LA_JS || "../renderer/live-activity");
 const TBmod = require("../renderer/think-block");
+I18N.extend(require("../renderer/i18n-b"));
 beforeEach(() => I18N.setLanguage("en"));
 
 const SRC = fs.readFileSync(process.env.DECK_APP_JS || path.join(__dirname, "../renderer/app.js"), "utf8");
@@ -89,7 +90,7 @@ test("a reasoning.delta burst of a Deck-driven turn fills the open row, then sta
   assert.equal(block.tag, "details");
   assert.ok(!block.attrs.open, "collapsed by default");
   assert.equal(textOf(walk(block).find((n) => cls(n) === "tb-text")), BURST.join("").trim());
-  assert.equal(textOf(walk(block).find((n) => cls(n) === "tb-label")), "Thinking");
+  assert.equal(textOf(walk(block).find((n) => cls(n) === "tb-label")), "Thought");
 });
 
 test("message.complete's own `reasoning` (the full stored text) wins over the streamed tail", () => {

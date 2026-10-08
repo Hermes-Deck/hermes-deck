@@ -187,12 +187,13 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       try {
         const body = await deck.tokens(r);
         cache.set(r, { data: normalize(r, body), at: Date.now() });
-        if (r === range && ctx.isOpen()) mark("panel");
       } catch (e) {
         // Keep the last copy; a click-driven refresh also reports the failed read.
         if (strict) throw e;
       } finally {
         inflight.delete(r);
+        // after the in-flight mark is gone, so the redraw re-enables Refresh at once
+        if (r === range && ctx.isOpen()) mark("panel");
       }
     }
 

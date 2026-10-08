@@ -11,6 +11,11 @@
 //  - row() builds the element and remembers its parts, so patch() can update label/text in place on every reasoning
 //    token without rebuilding the transcript.
 (() => {
+  const measured = new Map();
+  let lastView = null;
+  function emit(name, detail) {
+    if (typeof document === "object" && typeof CustomEvent === "function") document.dispatchEvent(new CustomEvent(name, { detail }));
+  }
   const MAX_THINK = 12000; // characters of reasoning kept (the tail)
   const MAX_STEPS = 12;
   const STALE_MS = 15000; // event state with no event for this long and no live node is over
@@ -183,7 +188,7 @@
       }
       if (request === "approval" || request === "question") phase = request;
       const steps = st ? st.steps.map((x) => x.name) : (node && Array.isArray(node.steps) ? node.steps.filter((x) => x !== "Thinking").slice(-MAX_STEPS) : []);
-      return { sid, phase, tool, arg: st ? st.arg : "", since, think: st ? st.think : "", steps, source: st ? "events" : "snapshot", label: label(phase, tool) };
+      return { sid, phase, tool, arg: st ? st.arg : "", since, think: st ? st.think : "", steps, source: st ? "events" : "snapshot", label: label(phase, tool), node };
     }
 
     /** "Show thinking" on/off: remembered, and the caller asks Hermes for reasoning of the sessions it drives. */
@@ -206,6 +211,8 @@
 
     /** The row element for a view (or null). */
     function row(v) {
+      emit("deck-conversation-live", { sid: v?.sid || built?.sid, view: v });
+      lastView = v;
       if (!v) {
         built = null;
         return null;
@@ -239,6 +246,8 @@
 
     /** Update the row on screen in place; false when it is not there or needs a rebuild (caller re-renders). */
     function patch(v) {
+      emit("deck-conversation-live", { sid: v?.sid || built?.sid, view: v });
+      lastView = v;
       const b = built;
       const shown = !!(b && b.el.isConnected);
       if (!v) return !shown; // nothing to show and nothing shown: done; a row to remove needs a rebuild
@@ -259,7 +268,18 @@
       /** Feed one event; true when the row would change. */
       event(sid, type, payload) {
         if (!sid) return false;
-        const [next, changed] = reduce(turns.get(sid) || null, type, payload, now());
+        const at = now();
+        const prior = turns.get(sid) || null;
+        const [next, changed] = reduce(prior, type, payload, at);
+        if (next && (!prior || prior.done)) measured.set(sid, { ms: 0, since: null });
+        const clock = measured.get(sid);
+        if (clock) {
+          const thinking = next && (next.phase === "thinking" || next.phase === "searching");
+          if (!thinking && clock.since != null) { clock.ms += at - clock.since; clock.since = null; }
+          else if (thinking && clock.since == null) clock.since = at;
+        }
+        if (measured.size > 80) measured.delete(measured.keys().next().value);
+        emit("deck-conversation-turn", { sid, type, payload, at });
         if (next) {
           turns.set(sid, next);
           ended.delete(sid);
@@ -271,6 +291,7 @@
       },
       /** The turn was stopped or Hermes said none runs: drop the row now (and keep it dropped for that turn). */
       end(sid) {
+        emit("deck-conversation-turn", { sid, type: "local.stopped", payload: {}, at: now() });
         const had = turns.delete(sid);
         seen.delete(sid);
         ended.set(sid, { at: now(), turnId: null });
@@ -292,7 +313,7 @@
     };
   }
 
-  const api = { create, reduce, label, fromNode, previewArg, MAX_THINK, MAX_STEPS, STALE_MS };
+  const api = { create, reduce, label, fromNode, previewArg, lastView: () => lastView, thoughtSeconds: sid => measured.has(sid) ? Math.round(measured.get(sid).ms / 1000) : null, MAX_THINK, MAX_STEPS, STALE_MS };
   if (typeof window !== "undefined") window.DeckLiveActivity = Object.freeze(api);
   if (typeof module === "object" && module.exports) module.exports = api; // Node unit tests
 })();

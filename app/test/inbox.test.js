@@ -48,6 +48,8 @@ test("inbox navigation wraps and dismiss is local with undo", () => {
   assert.equal(I.keyIntent({ key: "a", repeat: true }), null);
   assert.equal(I.keyIntent({ key: "a" }), "approve");
   assert.equal(I.keyIntent({ key: "ArrowDown" }), "next");
+  assert.equal(I.keyIntent({ key: "j", target: { tagName: "BUTTON" } }), "next");
+  assert.equal(I.keyIntent({ key: "Enter", target: { tagName: "BUTTON" } }), null);
 });
 
 test("relay completion follows notification transitions, not idle or stale guesses", () => {
@@ -119,4 +121,60 @@ test("inbox answers once through the existing bridge and never retries after rej
   store.feedBridge({ t: "status", status: "open" });
   assert.equal(calls, 1);
   assert.equal(await store.answer(row, "once"), false);
+});
+
+test("an acknowledged answer leaves with the exit animation, inert, then disappears", async () => {
+  const { dom } = require("./inbox-dom-helper"), { h, doc, walk } = dom();
+  const store = I.createStore({ bridge: { answerApproval: async () => ({ status: "ok" }) } }, () => 100000000);
+  store.feedBridge({ t: "status", status: "open" });
+  store.feedBridge({ t: "requests", list: [{ id: "req-1", sid: "s-1", kind: "approval", choices: ["once"] }, { id: "req-2", sid: "s-2", kind: "approval", choices: ["once"] }] });
+  const view = I.createInbox({ h, doc, store, t: key => key, shell: { main: () => "inbox", icon: () => h("svg") }, openChat: () => true });
+  const rowsOf = () => walk(view.root).filter(n => n.tag === "article");
+  assert.equal(await store.answer(store.items()[0], "once"), true);
+  const rows = rowsOf();
+  assert.equal(rows.length, 2, "the answered row stays for its exit");
+  const out = rows.find(n => n.attrs.class.split(" ").includes("out"));
+  assert.ok(out && out.inert && out.attrs["aria-hidden"] === "true", "the leaving row is marked out and inert");
+  assert.ok(walk(view.root).some(n => n.tag === "h2" && n.children.some(c => c.tag === "b" && c.children.includes("1"))), "group counts exclude leaving rows");
+  await new Promise(r => setTimeout(r, 300));
+  assert.equal(rowsOf().length, 1);
+  assert.ok(!rowsOf()[0].attrs.class.includes("out"));
+});
+
+test("dismiss animates through the same exit path and Undo brings the row back", async t => {
+  globalThis.DeckUsage = require("../renderer/usage-view"); t.after(() => { delete globalThis.DeckUsage; });
+  const { dom } = require("./inbox-dom-helper"), { h, doc, walk } = dom();
+  const store = I.createStore({}, () => 100000000);
+  store.feedRelay({ t: "snapshot", sessions: [{ sid: "s-1", state: "failed", lastTs: 99999 }, { sid: "s-2", state: "done", lastTs: 99990 }] });
+  const view = I.createInbox({ h, doc, store, t: key => key, shell: { main: () => "inbox", icon: () => h("svg") }, openChat: () => true });
+  view.keydown({ key: "x", preventDefault() {} });
+  assert.equal(store.items().length, 1, "the store drops the row at once");
+  assert.ok(walk(view.root).some(n => n.tag === "article" && n.attrs.class.includes("out")));
+  walk(view.root).find(n => n.tag === "button" && n.children.includes("triage.undo")).click();
+  assert.equal(store.items().length, 2);
+  assert.equal(walk(view.root).filter(n => n.tag === "article" && n.attrs.class.includes("out")).length, 0);
+});
+
+test("a rejected delivery reports the translated message, never a source literal", async () => {
+  const store = I.createStore({ bridge: { answerApproval: async () => ({ status: "gone" }) } }, () => 1, key => `T:${key}`);
+  store.feedBridge({ t: "status", status: "open" });
+  store.feedBridge({ t: "requests", list: [{ id: "req-1", kind: "approval", choices: ["once"] }] });
+  const row = store.items()[0];
+  assert.equal(await store.answer(row, "once"), false);
+  assert.equal(store.error(row.key), "T:triage.notDelivered");
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "../renderer/inbox.js"), "utf8");
+  assert.ok(!src.includes("Answer not delivered"));
+});
+
+test("turn notes and local dismissals stay bounded", () => {
+  let clock = 100000000;
+  const store = I.createStore({}, () => clock);
+  for (let i = 0; i < I.LIMIT + 50; i++) store.feedBridge({ t: "event", type: "message.start", sid: `s-${i}`, profile: "default" });
+  assert.equal(store.sizes().turns, I.LIMIT);
+  const sessions = Array.from({ length: I.LIMIT + 50 }, (_, i) => ({ sid: `f-${i}`, state: "failed", lastTs: 99999 }));
+  store.feedRelay({ t: "snapshot", sessions });
+  for (const row of store.items()) store.dismiss(row);
+  assert.ok(store.sizes().dismissed <= I.LIMIT);
+  const bag = new Set([1, 2, 3, 4]); I.cap(bag, 2);
+  assert.deepEqual([...bag], [3, 4], "the oldest entries go first");
 });

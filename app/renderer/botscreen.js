@@ -948,5 +948,9 @@ window.DeckBotScreen = function DeckBotScreen(ctx) {
   document.addEventListener("deck-language", () => { if (root.isConnected) update(); if (B.sheet) renderSheet(); });
   // state: the last device state from main (null until it arrives); app.js shows the Bot screen tab only while on
   // the Bot screen tab also shows while the relay has an agent space to watch
-  return { root, update, settingsRows, state: () => (B.st && SP && SP.available() ? { ...B.st, spaces: true } : B.st) };
+  return { root, update, settingsRows,
+    state: () => (B.st && SP && SP.available() ? { ...B.st, spaces: true } : B.st),
+    live: profile => !!((SP && SP.live(profile)) || window.DeckWsView.screenLive(B.st, profile)),
+    selectProfile: profile => { if (SP) SP.setAgent(profile); },
+  };
 };

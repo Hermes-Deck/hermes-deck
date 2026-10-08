@@ -1004,5 +1004,8 @@ window.DeckWorkspace = function DeckWorkspace(ctx) {
   }
 
   document.addEventListener("deck-language", () => { if (root.isConnected) update(); });
-  return { root, update, settingsRows, command };
+  return { root, update, settingsRows, command,
+    live: (profile) => VW.browserSurfaceLive({ local: [...W.browsers.values()], remote: [...W.remote.values()], link: W.link, profile: profile || null }),
+    selectProfile: profile => { if (SLUG_RE.test(String(profile || ""))) { W.slug = profile; W.picked = true; update(); } },
+  };
 };

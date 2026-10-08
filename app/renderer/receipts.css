@@ -1,1 +1,26 @@
-/* Lane B owns this file (receipts). Loaded after shell.css. */
+/* One quiet receipt per turn, text-only previews inside native disclosures. */
+.receipt { position: relative; width: 100%; margin: 0 0 18px; padding-right: 100px; min-width: 0; color: var(--t3); font: 12px/1.6 var(--mono); }
+.receipt-fold { min-width: 0; }
+.receipt summary { cursor: pointer; border-radius: 6px; }
+.receipt summary:hover { color: var(--t1); }
+.receipt-summary { min-height: 26px; padding: 3px 6px; margin-left: -6px; }
+.receipt-fail, .receipt-call.failed .receipt-tool { color: var(--red); }
+.receipt-inspect { position: absolute; right: 0; top: 0; display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 6px; border: 0; border-radius: 6px; background: none; color: var(--t3); font: 11px var(--sans); cursor: pointer; opacity: 0; }
+.receipt:hover .receipt-inspect, .receipt:focus-within .receipt-inspect, .receipt.running .receipt-inspect { opacity: 1; }
+.receipt-inspect:hover { background: var(--lift); color: var(--t1); }
+.receipt-inspect kbd { font: 9.5px/14px var(--mono); padding: 0 3px; border: 1px solid var(--line2); border-radius: 3px; }
+.receipt-calls { margin: 6px -100px 2px 0; border-left: 1px solid var(--line2); padding-left: 4px; }
+.receipt-call > summary { display: grid; grid-template-columns: 14px 84px minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 28px; padding: 3px 8px; list-style: none; }
+.receipt-call > summary::-webkit-details-marker { display: none; }
+.receipt-call.selected > summary { background: var(--teal-a); }
+.receipt-call.selected:not(.failed) .receipt-tool { color: var(--teal); }
+.receipt-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--t4); }
+.receipt-call.failed .receipt-dot { background: var(--red); }
+.receipt-tool, .receipt-args { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font: inherit; }
+.receipt-args { color: var(--t3); }
+.receipt-duration { font-variant-numeric: tabular-nums; color: var(--t3); }
+.receipt-call pre { margin: 2px 8px 10px 30px; padding: 8px 10px; font: 11.5px/1.65 var(--mono); color: var(--t2); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; background: var(--l1); border-radius: 6px; }
+.receipt summary:focus-visible, .receipt-inspect:focus-visible, .receipt-call pre:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+.app .hm-tools { display: none; }
+@media (hover: none) { .receipt-inspect { opacity: 1; } }
+@media (max-width: 650px) { .receipt-call > summary { grid-template-columns: 12px 70px minmax(0, 1fr) auto; gap: 5px; } .receipt-inspect kbd { display: none; } .receipt { padding-right: 62px; } .receipt-calls { margin-right: -62px; } }

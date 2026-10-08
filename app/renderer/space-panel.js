@@ -590,6 +590,7 @@ window.DeckSpacePanel = function DeckSpacePanel(ctx) {
       if (card) { card.root.scrollIntoView({ block: "nearest" }); card.root.focus(); }
     },
     available: () => spaces().length > 0,
+    live: profile => window.DeckWsView.spaceLive(P.list, profile),
     // botscreen.js: show this agent (its own desktop's pill in agent mode, the "Work on this device" choice otherwise)
     setAgent: (profile) => {
       if (!profile) return;

@@ -128,20 +128,25 @@
     return { button, panel, toggle, close, redraw,
       destroy() { close(false); unsubscribe(); doc.removeEventListener("keydown", keydown); doc.removeEventListener("pointerdown", outside); win.removeEventListener("resize", resize); panel.remove(); } };
   }
+  /** The one child-selection handshake (contracts.md): the work pane listens for this document event. */
+  function selectAgent(doc, selection) {
+    const s = selection || {};
+    if (typeof s.sid !== "string" || !s.sid) return false;
+    const detail = { sid: s.sid, profile: s.profile || "default", childSid: typeof s.childSid === "string" ? s.childSid : null,
+      subagentId: typeof s.subagentId === "string" ? s.subagentId : null };
+    doc.dispatchEvent(new CustomEvent("deck-agent-select", { detail }));
+    return true;
+  }
   function boot() {
     const shell = root.DeckShell, inbox = I(), store = inbox?.store, h = shell?.service("h");
     if (!h || !store || api.view) return;
     api.view = createFleet({ h, shell, store, doc: root.document, win: root, t: root.DeckI18n.t, usage: root.DeckUsage, openChat: inbox.openChat,
-      selectAgent(selection) {
-        if (root.DeckWorkPane?.selectAgent) root.DeckWorkPane.selectAgent(selection);
-        else if (shell.service("selectAgent")) shell.service("selectAgent")(selection);
-        else root.document.dispatchEvent(new CustomEvent("deck-agent-select", { detail: selection }));
-      } });
+      selectAgent: selection => selectAgent(root.document, selection) });
     shell.mount("capsule", api.view.button);
     shell.on("fleet", api.view.toggle);
     root.document.addEventListener("deck-language", api.view.redraw);
   }
-  const api = { derive, elapsed, today, createFleet, boot };
+  const api = { derive, elapsed, today, createFleet, selectAgent, boot };
   if (typeof module === "object" && module.exports) module.exports = api;
   else { root.DeckFleetCapsule = api; boot(); }
 })(typeof window === "object" ? window : globalThis);

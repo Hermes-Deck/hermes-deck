@@ -52,3 +52,17 @@ test("fleet capsule toggles a safe dialog, routes children and removes timers/li
   assert.equal(doc.listeners.size, 0);
   assert.equal(win.listeners.size, 0);
 });
+
+test("fleet child selection is one document event with the Lane D shape, and a missing parent sends nothing", () => {
+  const sent = [];
+  const doc = { dispatchEvent: e => sent.push(e) };
+  assert.equal(F.selectAgent(doc, { sid: "s-1", childSid: "s-2", subagentId: 7, extra: "<x>" }), true);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].type, "deck-agent-select");
+  assert.deepEqual(sent[0].detail, { sid: "s-1", profile: "default", childSid: "s-2", subagentId: null }, "only the documented fields, non-string ids dropped");
+  assert.equal(F.selectAgent(doc, { childSid: "s-2" }), false);
+  assert.equal(F.selectAgent(doc, null), false);
+  assert.equal(sent.length, 1, "no event without a parent session");
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "../renderer/fleet-capsule.js"), "utf8");
+  assert.ok(!/DeckWorkPane|service\("selectAgent"\)/.test(src), "no dead fallbacks besides the documented event");
+});

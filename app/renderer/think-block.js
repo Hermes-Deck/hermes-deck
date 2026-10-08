@@ -10,10 +10,11 @@
     // blocks the reader opened (by message key): the transcript is rebuilt on every event, an open block stays open
     const opened = new Set();
     /** The block for `text`, or null when there is nothing to show. `key` identifies the message. */
-    function el(text, key = "") {
+    function el(text, key = "", seconds = null) {
       const t = String(text || "").trim();
       if (!t) return null;
       const k = String(key || "");
+      if (seconds == null && typeof window === "object") seconds = window.DeckLiveActivity?.thoughtSeconds(String(key).slice(0, String(key).lastIndexOf(":")));
       const shown = t.length > MAX ? `…${t.slice(-MAX)}` : t;
       const btn = h("button", {
         class: "tb-copy", type: "button", title: i18nText("think.copy"), "aria-label": i18nText("think.copy"),
@@ -27,7 +28,7 @@
         class: "think-block", open: k && opened.has(k) ? true : null,
         ontoggle: () => { if (k) { if (d.open) opened.add(k); else opened.delete(k); if (opened.size > 200) opened.delete(opened.values().next().value); } },
       },
-        h("summary", null, h("span", { class: "tb-label" }, i18nText("think.label")), btn),
+        h("summary", null, h("span", { class: "tb-label" }, i18nText(Number.isFinite(seconds) ? "conv.thought" : "conv.thoughtUnknown", { seconds })), btn),
         h("p", { class: "tb-text" }, shown));
       return d;
     }
