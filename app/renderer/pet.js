@@ -140,7 +140,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       }, L.HOLD_MS);
     } else if (agent) hold.agent = agent; // "done" keeps a reply's or a question's hold running
     apply();
-    // the skin may take the move over (Karakter: after standing up, so the hop or shake is seen on the new pose)
+    // the skin may take the move over (Character: after standing up, so the hop or shake is seen on the new pose)
     if (!(skin.play && skin.play(ev, r))) fx(r.fx);
     if (r.bubble) say(ev, r.tone);
   }

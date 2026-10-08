@@ -39,7 +39,7 @@ const { AttachStore, checkCaption, uploadError, progressTracker, MAX_PHOTO, MAX_
 // Workspace tab: device presence (hosting switches, heartbeat) + agent browsers and their CDP tunnel
 const { DevicePresence } = require("./presence");
 const { initWorkspace } = require("./workspace");
-// Bot ekranı (E2–E6): an agent may use this computer's desktop in one handed-over window; consent, Durdur
+// Bot screen (E2–E6): an agent may use this computer's desktop in one handed-over window; consent, Stop
 const botscreen = require("./cua");
 // every main-window channel answers only the Deck's own page (security audit L4; main/ipc-guard.js)
 const { isApp, fromApp, appIpc } = require("./ipc-guard");
@@ -187,7 +187,7 @@ function startRelay() {
   if (relay) relay.stop();
   relay = null;
   if (workspace) workspace.attachRelay(null); // Workspace tab: drop the old connection's heartbeat + tunnel
-  botscreen.attachRelay(null); // Bot ekranı: the old connection's driver channels end
+  botscreen.attachRelay(null); // Bot screen: the old connection's driver channels end
   if (hostVersions) hostVersions.relayGone();
   if (desktopsHost) desktopsHost.attachRelay(null); // agent desktops: the old connection's [0xD6] tunnel ends
   if (!settings.isConfigured()) return setRelay({ status: "unconfigured" });
@@ -195,7 +195,7 @@ function startRelay() {
   relay.on("status", (s) => relay === r && setRelay(s));
   relay.on("msg", (m) => relay === r && relayMsg(r, m));
   if (workspace) workspace.attachRelay(relay); // Workspace tab: heartbeat + CDP tunnel on this connection
-  botscreen.attachRelay(relay); // Bot ekranı: [0xD5] driver frames on this connection
+  botscreen.attachRelay(relay); // Bot screen: [0xD5] driver frames on this connection
   if (desktopsHost && !SHOT) desktopsHost.attachRelay(relay); // agent desktops: [0xD6] space tunnel frames on this connection
   relay.start();
 }
@@ -463,7 +463,7 @@ ipc.handle("bridge:send", (e, sid, text, o) => trackMutation(async () => {
     return result;
   } finally { for (const it of items) uploads.delete(it.token); }
 }));
-ipc.handle("bridge:create", (_e, o) => needBridge().create({ profile: bProfile(o) || "default" })); // a click on "Yeni oturum"
+ipc.handle("bridge:create", (_e, o) => needBridge().create({ profile: bProfile(o) || "default" })); // a click on "New session"
 ipc.handle("bridge:discard", (_e, sid) => needBridge().discard(bSid(sid))); // untouched New session, no transcript deletion
 function resumeRailUnload() {
   if (!win || win.isDestroyed()) return;
@@ -704,9 +704,9 @@ ipc.handle("ready", () => {
     avatars: tg ? tg.avatars : {},
     people: tg ? tg.people || {} : {},
     settings: settings.publicView(),
-    desktop: desktop.info(), // desktop shell: build type, whether start-at-login works here (Settings → Masaüstü)
+    desktop: desktop.info(), // desktop shell: build type, whether start-at-login works here (Settings → Desktop)
     hostVersions: hostState(), // relay / plugin versions on the host (host-versions.js)
-    riskyExt: [...media.RISKY_EXT], // the one list "Aç" refuses (media.isRisky); the renderer hides the button for it (L9)
+    riskyExt: [...media.RISKY_EXT], // the one list "Open" refuses (media.isRisky); the renderer hides the button for it (L9)
     ui: {
       tab: typeof arg("tab") === "string" ? arg("tab") : null,
       select: typeof arg("select") === "string" ? arg("select") : null,
@@ -1185,7 +1185,7 @@ app.whenReady().then(() => {
     if (BRIDGE_FAKE && !arg("first-run")) settings.data.bridge = { mode: "local", target: "", distribution: "", python: process.execPath, stream: path.join(__dirname, "..", "test", "fake-stream.js") };
   }
   if (botscreen.shotBar()) return; // dev: --shot-botbar=<png> draws only the bot screen's activity bar
-  // --- Workspace tab: hosting is off until the user allows it in Settings > Bu cihaz ---
+  // --- Workspace tab: hosting is off until the user allows it in Settings > This device ---
   const device = new DevicePresence({ persist: !SHOT });
   if (setupHosting) {
     for (const cap of ["browser", "desktop"]) if (setupHosting[cap] !== undefined) device.hosting[cap] = setupHosting[cap];
@@ -1208,7 +1208,7 @@ app.whenReady().then(() => {
   desktopsHost = initDesktops({ ipc, settings, presence: device, send, dataDir: path.join(app.getPath("userData"), "desktops"), shot: !!SHOT });
   desktop.init({ win, settings, icon: ICON, shot: !!SHOT }); // desktop shell: notifications, pet, tray, close-to-tray
   win.on("close", (e) => { windowClosing = !e.defaultPrevented; }); // registered after close-to-tray
-  // Bot ekranı: off until "Masaüstü kontrolü" is on (Settings > Bu cihaz); fixture runs pick a scene with --botscreen=<scene>
+  // Bot screen: off until "Desktop control" is on (Settings > This device); fixture runs pick a scene with --botscreen=<scene>
   const bsScene = FIXTURE && arg("botscreen") ? (typeof arg("botscreen") === "string" ? arg("botscreen") : "on") : null;
   botscreen.init({ win, settings, presence: device, send, desktop, shot: !!SHOT, fixture: bsScene });
   if (FIXTURE) {
@@ -1231,7 +1231,7 @@ app.on("window-all-closed", () => {
   shutdown();
   app.quit();
 });
-// app.quit() (tray "Çıkış", --quit) skips "window-all-closed": the same cleanup runs here
+// app.quit() (tray "Quit", --quit) skips "window-all-closed": the same cleanup runs here
 app.on("will-quit", shutdown);
 // Drain external writes before closing windows. An unresolved write cancels quit after 30 s;
 // its result stays available, so the user can decide whether a retry is safe.

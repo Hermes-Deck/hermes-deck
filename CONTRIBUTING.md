@@ -126,8 +126,9 @@ narrow allowlist entry with a reason in the script (or `.gitleaks.toml`), never 
 
 Maintainers can also keep their own identifiers out of the history without publishing them: put one extended regex
 per line in the repository secret `PRIVATE_DENYLIST`, and the secret scan job checks every new commit's author,
-message and added lines against it, reporting only the commit and `file:line`. Commits keep a generic author
-(`git config user.name` / `user.email` for this clone), and pull requests merge by rebase so they keep it.
+message and added lines against it, reporting only the commit and `file:line`. Commit as your GitHub login
+with your GitHub noreply address (`git config user.name <login>`, `git config user.email
+<id>+<login>@users.noreply.github.com`). Pull requests land by rebase, so that identity is kept.
 
 ## Branches and pull requests
 
@@ -138,7 +139,9 @@ message and added lines against it, reporting only the commit and `file:line`. C
    users (what changed for them), in the right group (`Added`, `Changed`, `Fixed`, `Removed`, `Security`).
 5. Open the pull request against `main` and fill in the template. CI must be green before review.
 
-Nobody pushes directly to `main`; every change goes through a reviewed pull request.
+Every change goes through a reviewed pull request, rebased onto `main` (no merge commits). A maintainer lands it
+with a local fast-forward push (`git push origin <branch>:main`) once CI is green, never with GitHub's merge
+buttons: those rewrite the committer, which the secret scan only sees after the commit is on `main`.
 
 ### Commit style
 
@@ -160,12 +163,14 @@ in a release pull request, which updates together:
 - `compat.json` (`version`, and `protocol` / `minimum` / `minHermes` when they change),
 - `app/package.json` and `relay/package.json` (and the `version` fields of their `package-lock.json`),
 - `hermes-plugin/hermes-deck/plugin.yaml`,
+- `hermes-plugin/hermes-deck/stream.py` (`VERSION`; also `PROTOCOL` there, in `install.py` and in
+  `relay/src/compat.js` when the protocol changes),
 - `CHANGELOG.md`: rename `[Unreleased]` to `[x.y.z] - YYYY-MM-DD` and start a new empty `[Unreleased]`.
 
-A test checks that the four version fields agree. Bump `protocol` only for a breaking change in what app, relay and
+`relay/test/compat.test.js` checks that these version and protocol fields agree. Bump `protocol` only for a breaking change in what app, relay and
 plugin send each other.
 
-Merging the release pull request publishes the release automatically ([release.yml](.github/workflows/release.yml)):
+When the release commit reaches `main` (fast-forward push), the release is published automatically ([release.yml](.github/workflows/release.yml)):
 
 1. On every push to `main` the workflow reads `app/package.json`. If release `v<version>` is already published, it
    stops. A push that does not change the version releases nothing.

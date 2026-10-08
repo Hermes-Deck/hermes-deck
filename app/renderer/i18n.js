@@ -2012,6 +2012,7 @@
     "space.homeAuto": "Automatic",
     "space.homeAgentHost": "Agent host",
     "space.homeOffline": "{name} (offline)",
+    "space.homeNotReady": "{name} (not ready)",
     "space.fellBack": "{who} is on the shared desktop: {reason}",
     "space.noDesktop": "{who} has no desktop: {reason}",
     "space.reason.offline": "its desktop host is offline",
@@ -4130,6 +4131,7 @@
     "space.homeAuto": "Otomatik",
     "space.homeAgentHost": "Ajan sunucusu",
     "space.homeOffline": "{name} (çevrimdışı)",
+    "space.homeNotReady": "{name} (hazır değil)",
     "space.fellBack": "{who} ortak masaüstünde: {reason}",
     "space.noDesktop": "{who} için masaüstü yok: {reason}",
     "space.reason.offline": "masaüstünü barındıran makine çevrimdışı",
@@ -4513,7 +4515,13 @@
   "tab not found": "U0108",
   "sekme bulunamadı": "U0108",
   "This address cannot be opened": "U0109",
-  "Bu adres açılamaz": "U0109"
+  "Bu adres açılamaz": "U0109",
+  "browser is not running": "U0007",
+  "tarayıcı çalışmıyor": "U0007",
+  "Take control first.": "U0344",
+  "Önce kontrolü al.": "U0344",
+  "Invalid request.": "U0258",
+  "Geçersiz istek.": "U0258"
 };
   const errorPatterns = Object.entries(errorSources).filter(([source]) => /\{[A-Za-z_]\w*\}/.test(source)).map(([source, key]) => {
     const names = [];

@@ -9,7 +9,7 @@ Instructions for AI coding agents working in this repository. Humans: see [CONTR
 | Desktop app (Electron) | `app/main/main.js` (window, `deck://` protocol, IPC), `app/main/preload.js` (the only renderer API), `app/main/bridge.js` (direct Hermes connection), `app/main/relay.js` (relay client), `app/main/telegram.js`, `app/main/settings.js`; UI in `app/renderer/app.js` + one module per view | `app/test/*.test.js` |
 | Relay (Node) | `relay/src/index.js` (config from `.env`, startup), `relay/src/server.js` (HTTP + WebSocket routes), `relay/src/model.js`, `relay/src/usage.js`, `relay/src/presence.js`, `relay/src/cdp.js`, `relay/src/driver.js`, `relay/src/mcpfence.js` | `relay/test/*.test.js` |
 | Hermes plugin (Python) | `hermes-plugin/hermes-deck/__init__.py` (`register`), `events.py` (hooks → NDJSON, desktop fence), `observer.py` (live sessions, control socket), `stream.py` (stdio bridge), `install.py` | `hermes-plugin/hermes-deck/test_*.py` |
-| Versions | `compat.json`, `app/package.json`, `relay/package.json`, `hermes-plugin/hermes-deck/plugin.yaml` | version-consistency test |
+| Versions | `compat.json`, `app/package.json`, `relay/package.json`, `hermes-plugin/hermes-deck/plugin.yaml`, `hermes-plugin/hermes-deck/stream.py` (`VERSION`) | `relay/test/compat.test.js` |
 
 Architecture and data flow: [docs/architecture.md](docs/architecture.md). Desktop-control wire format:
 [docs/bot-screen-protocol.md](docs/bot-screen-protocol.md).
@@ -73,6 +73,15 @@ not run the app against a live relay, Telegram session or Hermes profile for scr
   Update the docs your change affects.
 - **Changelog:** every user-visible change adds an entry under `## [Unreleased]` in `CHANGELOG.md`.
 - **Versions** change only in a release pull request ([CONTRIBUTING.md](CONTRIBUTING.md#versioning-and-releases)).
+
+## Git workflow
+
+- Commit as your GitHub login with your GitHub noreply address (`<id>+<login>@users.noreply.github.com`).
+- One topic per branch, based on the current `origin/main`; rebase, never merge `main` into it.
+- Changes land through a pull request with green CI, by a local fast-forward push
+  (`git push origin <branch>:main`). Never use GitHub's merge buttons or `gh pr merge`: they rewrite the
+  committer. Never force-push `main`.
+- Delete the branch after it lands.
 
 ## Never commit
 

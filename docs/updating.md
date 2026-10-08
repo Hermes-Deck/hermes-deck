@@ -14,7 +14,7 @@ Hermes Deck has three parts that are released together and share one version num
 Hermes Agent:
 
 ```json
-{ "version": "1.0.0", "protocol": 1, "minHermes": "0.21.5",
+{ "version": "1.1.0", "protocol": 1, "minHermes": "0.21.5",
   "minimum": { "app": "0.3.6", "relay": "0.3.6", "plugin": "0.3.6" } }
 ```
 

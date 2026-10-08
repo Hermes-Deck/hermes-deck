@@ -52,7 +52,8 @@ instead of affecting the agent.
 | Desktop app from source | Anything Electron runs on; Windows and macOS are the tested targets |
 | Hermes host, direct connection | Linux, macOS, or WSL on Windows. Native Windows Hermes runs only the plugin's events part (the bridge needs Unix sockets). |
 | Relay | Linux (systemd user unit) or macOS (launchd agent); any OS with Node.js for a foreground run |
-| Agent spaces (shared agent desktop) | macOS agent host (cua-spacesd is a macOS app) |
+| Agent spaces, own desktop per agent | Linux or macOS agent host; the desktops run in Docker on the agent host (Docker or colima) or on a Deck computer (Docker Desktop) |
+| Agent spaces, shared agent desktop (shared and overflow modes) | macOS agent host (cua-spacesd is a macOS app) |
 | Desktop control on your device | Windows and macOS |
 | Agent browsers on your device | Windows or macOS (also Linux source runs) with Chrome, Chromium or Edge installed |
 

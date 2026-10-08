@@ -1,7 +1,7 @@
 "use strict";
 // Status pet logic shared by the pet page (window.PetLogic) and the Node tests (module.exports):
 //   - which state the fleet summary means, and how an event's temporary state ("hold") combines with it;
-//   - the Karakter skin's pose graph: which transition strips lead from one pose to another;
+//   - the Character skin's pose graph: which transition strips lead from one pose to another;
 //   - Choreo, the small state machine that turns state changes into "show this loop" / "play this strip"
 //     steps and queues changes that arrive while a strip is still playing;
 //   - what an event (reply / ask / done) does: one-shot effect, temporary state, speech bubble.
@@ -41,7 +41,7 @@
     return h && RANK[h] > RANK[b] ? h : b;
   }
 
-  // ---------------------------------------------------------------- poses (Karakter)
+  // ---------------------------------------------------------------- poses (Character)
   /** sitting = idle, working; standing = reply, waiting; lying = offline */
   const POSE = Object.freeze({ idle: "sit", working: "sit", reply: "stand", waiting: "stand", offline: "lie" });
   /** Transition strips: played forward they go from -> to, reversed they go back. */
@@ -80,7 +80,7 @@
   const FADE = Object.freeze({ loop: 200, strip: 120 });
 
   /**
-   * Turns state changes into steps for the Karakter skin:
+   * Turns state changes into steps for the Character skin:
    *   {type: "loop", name, pose, fade}            show that state's loop
    *   {type: "strip", name, dir, pose, to, fade}  play a transition strip once (pose = where it starts)
    * A change that arrives while a strip plays is only remembered; when the strip ends (done()), the next

@@ -3,8 +3,8 @@ var i18nNode = (key, vars) => (typeof module === "object" && module.exports ? re
 var i18nBind = (el, attr, key, vars) => (typeof module === "object" && module.exports ? require("./i18n") : window.DeckI18n).bind(el, attr, key, vars);
 var i18nText = typeof module === "object" && module.exports ? require("./i18n").t : window.DeckI18n.t;
 var i18nLocale = typeof module === "object" && module.exports ? require("./i18n").getLocale : window.DeckI18n.getLocale;
-// Bot screen bar page: "<Agent> bu bilgisayarda: <App> · <time left> · Durdur". main/cua/bar.js owns the
-// window; this page reports when the pointer is over Durdur (only there does the window take clicks) and
+// Bot screen bar page: "<Agent> on this computer: <App> · <time left> · Stop". main/cua/bar.js owns the
+// window; this page reports when the pointer is over Stop (only there does the window take clicks) and
 // sends the click. Strings go in through textContent only.
 (() => {
   const bar = window.botbar;

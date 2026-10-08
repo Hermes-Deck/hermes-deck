@@ -285,7 +285,7 @@ class AgentBrowser extends EventEmitter {
 
   /**
    * The browser exited or was stopped. Control stays as it was: if the user held it, a relaunch is still the
-   * user's (the agent must not get the browser back by closing or crashing it); Agent'a ver hands it back.
+   * user's (the agent must not get the browser back by closing or crashing it); "Hand to agent" hands it back.
    */
   _gone() {
     this._stopTrail();

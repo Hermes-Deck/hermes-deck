@@ -530,8 +530,19 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
       if (ctx.deck.spaces) {
         const modeNote = h("span", { class: "sv-msg" });
         const mode = h("select", { id: "s-space-mode", disabled: true, dataset: { fk: "space:mode" }, onchange: (e) => ctx.saveCall(async () => {
-          const r = await ctx.deck.spaces.mode(e.target.value);
-          if (r && r.ok === false) throw new Error(r.error === "phase 2" ? T("space.mode.later") : r.error === "no desktop host" ? T("space.noHost") : r.error);
+          const want = e.target.value;
+          let r;
+          try {
+            r = await ctx.deck.spaces.mode(want);
+          } catch (err) {
+            mode.value = mode.dataset.saved || "shared"; // a refused mode must not stay selected
+            throw err;
+          }
+          if (r && r.ok === false) {
+            mode.value = mode.dataset.saved || "shared";
+            throw new Error(r.error === "phase 2" ? T("space.mode.later") : r.error === "no desktop host" ? T("space.noHost") : r.error);
+          }
+          mode.dataset.saved = want;
           return ctx.settings(); // the mode lives on the relay; the Deck's settings are unchanged
         }, T("set.saved")) },
           h("option", { value: "shared" }, T("space.mode.shared")),
@@ -543,6 +554,7 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
         ctx.deck.spaces.list().then((l) => {
           if (l && l.mode) {
             mode.value = l.mode;
+            mode.dataset.saved = l.mode;
             mode.disabled = false;
           } else modeNote.textContent = T("space.none");
           const hosts = l && Array.isArray(l.hosts) ? l.hosts : null;
@@ -569,6 +581,8 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
     /**
      * Settings > Agent spaces, home host per agent (spec 2026-10-07 section 7): one row per agent, Automatic, the agent
      * host, or a Deck device; a device that is offline (or gone) is dimmed. The relay validates and stores it.
+     * A listed host is connected; ready:false only means it cannot run desktops yet (hosting starting, Docker
+     * missing or stopped, image not pulled), so it reads "not ready". "Offline" is for a home the relay no longer lists.
      */
     function homeRows(hosts, homes) {
       const list = (ctx.agents ? ctx.agents() : []).filter((a) => a && a.profile && a.profile !== "host"); // "host" is the shared space
@@ -580,7 +594,7 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
         // the agent host first (only when it hosts desktops), then the Deck devices
         const ordered = [...hosts.filter((x) => x.id === "agent-host"), ...hosts.filter((x) => x.id !== "agent-host")];
         for (const x of ordered)
-          opts.push(h("option", { value: x.id, class: x.ready ? null : "off", selected: cur === x.id ? true : null }, x.ready ? label(x) : T("space.homeOffline", { name: label(x) })));
+          opts.push(h("option", { value: x.id, class: x.ready ? null : "off", selected: cur === x.id ? true : null }, x.ready ? label(x) : T("space.homeNotReady", { name: label(x) })));
         if (cur !== "auto" && !hosts.some((x) => x.id === cur)) // its home is gone from the relay's list: offline
           opts.push(h("option", { value: cur, class: "off", selected: true }, T("space.homeOffline", { name: cur === "agent-host" ? T("space.homeAgentHost") : cur })));
         const id = `s-space-home-${a.profile}`;

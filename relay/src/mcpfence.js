@@ -95,13 +95,13 @@ function foregroundReply(msg) {
 function checkCall(name, args, { grant, deckPid, device } = {}) {
   const a = args && typeof args === "object" && !Array.isArray(args) ? args : {};
   const on = where(device);
-  const no = (why) => ({ ok: false, message: `Bot ekranı: ${why}` });
+  const no = (why) => ({ ok: false, message: `Bot screen: ${why}` });
   if (typeof name !== "string" || !name) return no("a tool call without a name was refused");
   if (name === "set_agent_cursor_enabled" && a.enabled === false) return no(`the agent cursor stays visible${on}: the user sees where you act`);
   if (PLUMBING.has(name)) return { ok: true };
   if (name === "set_config") return String(a.key) === "capture_scope" ? no(`the capture scope cannot be changed${on}`) : { ok: true };
   if (NEVER.has(name) || name.startsWith("clipboard") || name.startsWith("browser_")) return no(`${name} is not available${on} while the user works there`);
-  if (!grant) return no(`no window${on} has been handed to this agent; ask the user to pick one with Agent'a ver in Hermes Deck`);
+  if (!grant) return no(`no window${on} has been handed to this agent; ask the user to pick one with Hand to agent in Hermes Deck`);
   if (INPUT.has(name) && a.scope === "desktop") return no(`desktop-coordinate input is not available${on}; use the handed window`);
   const pid = int(a.pid);
   const wid = int(a.window_id);
@@ -144,7 +144,7 @@ function checkCall(name, args, { grant, deckPid, device } = {}) {
  */
 function checkSpaceCall(name, args) {
   const a = args && typeof args === "object" && !Array.isArray(args) ? args : {};
-  const no = (why) => ({ ok: false, message: `Bot ekranı: ${why}` });
+  const no = (why) => ({ ok: false, message: `Bot screen: ${why}` });
   if (name === "kill_app") return no("kill_app is not available on your desktop: it could end the desktop's own processes");
   if (name === "set_agent_cursor_enabled" && a.enabled === false) return no("the agent cursor stays visible on your desktop: the user sees where you act");
   if (name === "set_config" && String(a.key) === "capture_scope") return no("the capture scope cannot be changed on your desktop");
@@ -185,8 +185,8 @@ function appsAnswer(listing, grant) {
 
 /** A listing that came back empty after the cut: why, in words the agent can act on. */
 function goneMessage(grant, device) {
-  if (!grant) return `Bot ekranı: no window${where(device)} is handed to this agent any more; ask the user to pick one with Agent'a ver in Hermes Deck`;
-  return `Bot ekranı: the handed window, ${describe(grant)}, is not on screen${where(device)} (minimized or closed); ask the user to bring it back, or to hand it over again with Agent'a ver`;
+  if (!grant) return `Bot screen: no window${where(device)} is handed to this agent any more; ask the user to pick one with Hand to agent in Hermes Deck`;
+  return `Bot screen: the handed window, ${describe(grant)}, is not on screen${where(device)} (minimized or closed); ask the user to bring it back, or to hand it over again with Hand to agent`;
 }
 
 /** A JSON-RPC tools/call result carrying an error the agent can read. */
@@ -268,7 +268,7 @@ class McpFence {
     // unfiltered. The refusal goes back under that id, as one more answer to a call Hermes itself duplicated.
     if (hasId && this.inflight.has(key)) {
       this.refused += 1;
-      const why = `Bot ekranı: request id ${String(msg.id).slice(0, 40)} is already waiting for an answer`;
+      const why = `Bot screen: request id ${String(msg.id).slice(0, 40)} is already waiting for an answer`;
       this._reply(m === "tools/call" ? toolError(msg.id, why) : rpcError(msg.id, why, -32600));
       return;
     }
@@ -279,7 +279,7 @@ class McpFence {
     }
     if (m !== "tools/call") {
       this.refused += 1;
-      if (hasId) this._reply(rpcError(msg.id, `Bot ekranı: ${String(m).slice(0, 60)} is not allowed on this device`));
+      if (hasId) this._reply(rpcError(msg.id, `Bot screen: ${String(m).slice(0, 60)} is not allowed on this device`));
       return;
     }
     const p = msg.params && typeof msg.params === "object" ? msg.params : {};

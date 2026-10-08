@@ -1095,8 +1095,8 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     else kids.push(h("div", { class: "later-pane" }, h("h3", null, i18nNode("U0476")), i18nNode("U0477")));
   }
 
-  // ---------------------------------------------------------------- Bot ekranı tab (renderer/botscreen.js)
-  // An agent's own screenshots and clicks on a desktop, "Agent'a ver", Durdur. Mounted like the workspace.
+  // ---------------------------------------------------------------- Bot screen tab (renderer/botscreen.js)
+  // An agent's own screenshots and clicks on a desktop, "Hand to agent", Stop. Mounted like the workspace.
   const botscreen = window.DeckBotScreen
     ? window.DeckBotScreen({
         h,
@@ -1438,7 +1438,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
         h("span", { class: "model", title: s.model || null }, s.model || ""),
         h("span", { class: "when", title: new Date(s.lastTs * 1000).toLocaleString(i18nLocale()) }, ago(s.lastTs))
       ),
-      // F2: the request first, its Telegram context folded into "bağlam" (agents.js)
+      // F2: the request first, its Telegram context folded into "context" (agents.js)
       s.lastMsg ? (AG ? AG.ask(s) : h("p", { class: "ask" }, s.lastMsg)) : null,
       isLive(s) && s.curTool ? h("p", { class: "now" }, ticker(s.curTool.since, `${s.curTool.tool} · `)) : null,
       statsRow(s),
@@ -2267,7 +2267,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
 
   /** Native title when it says something; generic names ("Hermes · Telegram") fall back to source + id. */
   /**
-   * Hermes prefixes prompts that come in from Telegram: "[Replying to: \"…\"]", "[Name|12345]", "[Grup bağlamı …]",
+   * Hermes prefixes prompts that come in from Telegram: "[Replying to: \"…\"]", "[Name|12345]", "[Group context …]",
    * and in groups a bare "[Name]" sender tag before an "[IMPORTANT: …]" note. A title shows what was asked, so
    * leading blocks like these are dropped.
    */
@@ -2738,7 +2738,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     mark("rail", "head", "msgs", "strip", "panel", true);
   }
 
-  /** "+ Yeni oturum" under a profile heading: an empty session in that profile, opened and focused. */
+  /** "+ New session" under a profile heading: an empty session in that profile, opened and focused. */
   function newSessionRow(profile) {
     return h("button", { class: "row new-session", type: "button", title: i18nText("U0585"), dataset: { fk: `hnew:${profile}` }, onclick: () => newHermesSession(profile) , "data-i18n-title": "U0585"}, h("span", { class: "plus", "aria-hidden": "true" }, "+"), h("span", null, i18nNode("A0272")));
   }
@@ -3534,7 +3534,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     }
   }
 
-  // ------------------------------------------------------------ session controls (Araya gir · Durdur · Model)
+  // ------------------------------------------------------------ session controls (Steer · Stop · Model)
   function ctlState(sid) {
     let c = H.ctl.get(sid);
     if (!c) {
@@ -3843,7 +3843,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     for (const c of H.nodes.values()) if (c.parent === n.sid) kids.push(hermesNodeCard(c));
   }
 
-  // ------------------------------------------------------------ Settings → Doğrudan Hermes bağlantısı
+  // ------------------------------------------------------------ Settings → Direct Hermes connection
   function paneHermesSettings(kids, { firstRun = false } = {}) {
     const saved = (S.settings && S.settings.bridge) || {};
     if (!H.draft) H.draft = { mode: saved.mode || "off", target: saved.target || "", python: saved.python || "", stream: saved.stream || "", distribution: saved.distribution || "" };
@@ -4276,7 +4276,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     activeChatMode = CM.start(S.settings && S.settings.chat);
     S.deskInfo = st.desktop || null; // desktop shell: build type, start-at-login support
     if (st.hostVersions) applyHostVersions(st.hostVersions); // relay / plugin versions on the host
-    S.riskyExt = new Set(Array.isArray(st.riskyExt) ? st.riskyExt : []); // msgview.js: no "Aç" for these
+    S.riskyExt = new Set(Array.isArray(st.riskyExt) ? st.riskyExt : []); // msgview.js: no "Open" for these
     S.avatars = st.avatars || {};
     MV.people(st.people);
     MV.setScene(ui.scene); // fixture screenshots only

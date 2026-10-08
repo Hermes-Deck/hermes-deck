@@ -8,7 +8,7 @@
 //   AgentTracker  reads one agent socket: which page each command acts on, and whether it is real use or
 //                 connection bookkeeping (Hermes's CDP supervisor attaching to about:blank is not use)
 //   LiveView      screencast + tabs of one agent browser; follows the page the agent works on, keeps the
-//                 last frame ("Son görülen") when the agent closes it, and never hides the agent's tab
+//                 last frame ("Last seen") when the agent closes it, and never hides the agent's tab
 //   Trail         where the agent went, recorded while nobody watches
 //   wallOf        "this page is a robot check": the user is told and solves it; nothing here solves or hides it
 const { EventEmitter } = require("events");
@@ -44,7 +44,7 @@ class CdpClient extends EventEmitter {
       ws.on("close", () => {
         for (const c of this.calls.values()) {
           clearTimeout(c.timer);
-          c.reject(new Error("CDP bağlantısı kapandı"));
+          c.reject(new Error("CDP connection closed"));
         }
         this.calls.clear();
         this.emit("close");
@@ -74,14 +74,14 @@ class CdpClient extends EventEmitter {
   }
 
   send(method, params = {}, sessionId = null, timeoutMs = 15_000) {
-    if (!this.open) return Promise.reject(new Error("CDP bağlı değil"));
+    if (!this.open) return Promise.reject(new Error("CDP is not connected"));
     const id = this.nextId++;
     const msg = { id, method, params };
     if (sessionId) msg.sessionId = sessionId;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.calls.delete(id);
-        reject(new Error(`${method} zaman aşımı`));
+        reject(new Error(`${method} timed out`));
       }, timeoutMs);
       this.calls.set(id, { resolve, reject, timer });
       this.ws.send(JSON.stringify(msg));
@@ -270,7 +270,7 @@ function normalizeUrl(input) {
  * hidden tab slows or hangs the agent's screenshots there. So a tab comes to the front only for the user
  * who holds control, or when it is the page the agent itself acted on last (_mayFront). Any other tab is
  * watched where it is; if it is hidden, status().hidden says so ("arka plan sekmesi") until it paints.
- * When the shown page closes, the last frame stays as "Son görülen".
+ * When the shown page closes, the last frame stays as "Last seen".
  *
  * @param {object} browser {port, wsPath, controller: "agent"|"user", lastAct?}, an EventEmitter of
  *   "agent-act" {targetId, act: "nav"|"input"|"look"|"create", at}
@@ -285,7 +285,7 @@ class LiveView extends EventEmitter {
     this.cdp = null;
     this.targets = new Map(); // targetId -> targetInfo: pages of every browser context
     this.used = new Map(); // targetId -> when the agent last worked there
-    this.targetId = null; // the page on screen; null once it closed ("Son görülen")
+    this.targetId = null; // the page on screen; null once it closed ("Last seen")
     this.session = null;
     this.meta = null;
     this.lastAck = 0;
@@ -610,7 +610,7 @@ class LiveView extends EventEmitter {
     this._emitTabs();
   }
 
-  /** The page on screen closed: keep its last frame ("Son görülen") unless the agent works in another page. */
+  /** The page on screen closed: keep its last frame ("Last seen") unless the agent works in another page. */
   _closedShown(old) {
     this.session = null;
     this.targetId = null;
@@ -647,21 +647,21 @@ class LiveView extends EventEmitter {
   }
 
   _need() {
-    if (this.browser.transferring) throw new Error("Tarayıcı aktarılıyor; işlem bitince yeniden dene.");
-    if (!this.session) throw new Error("sekme hazır değil");
+    if (this.browser.transferring) throw new Error("The browser is being transferred; try again when it finishes.");
+    if (!this.session) throw new Error("tab not ready");
     return this.session;
   }
 
   /** The user picked a tab: following pauses until the agent opens or navigates a page. */
   async selectTab(targetId) {
-    if (!this.targets.has(targetId)) throw new Error("sekme bulunamadı");
+    if (!this.targets.has(targetId)) throw new Error("tab not found");
     this.follow = false;
     // watching a tab is not driving it: it comes to the front only while the user holds control, so the
     // agent's working tab stays visible (a background pick may show "arka plan sekmesi" until control)
     await this._attach(targetId, this.browser.controller === "user");
   }
 
-  /** "Ajanı takip et": follow again, starting with the page the agent used last. */
+  /** "Follow agent": follow again, starting with the page the agent used last. */
   async resume() {
     this.follow = true;
     const la = this.browser.lastAct;
@@ -675,22 +675,22 @@ class LiveView extends EventEmitter {
   }
 
   async newTab(url) {
-    if (this.browser.transferring) throw new Error("Tarayıcı aktarılıyor; işlem bitince yeniden dene.");
+    if (this.browser.transferring) throw new Error("The browser is being transferred; try again when it finishes.");
     const { targetId } = await this.cdp.send("Target.createTarget", { url: normalizeUrl(url) || "about:blank" });
     this.follow = false;
     await this._attach(targetId);
   }
 
   async closeTab(targetId) {
-    if (this.browser.transferring) throw new Error("Tarayıcı aktarılıyor; işlem bitince yeniden dene.");
-    if (!this.targets.has(targetId)) throw new Error("sekme bulunamadı");
+    if (this.browser.transferring) throw new Error("The browser is being transferred; try again when it finishes.");
+    if (!this.targets.has(targetId)) throw new Error("tab not found");
     if (this.targets.size === 1) await this.cdp.send("Target.createTarget", { url: "about:blank" }); // keep one tab
     await this.cdp.send("Target.closeTarget", { targetId });
   }
 
   async navigate(url) {
     const u = normalizeUrl(url);
-    if (!u) throw new Error("Bu adres açılamaz");
+    if (!u) throw new Error("This address cannot be opened");
     await this.cdp.send("Page.navigate", { url: u }, this._need());
   }
 

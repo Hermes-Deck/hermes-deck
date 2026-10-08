@@ -4,10 +4,10 @@ const { t: i18nText, getLocale: i18nLocale } = require("../../renderer/i18n");
 // computer_use on this computer, in the one window the user handed over ("Agent'a ver"), through a
 // cua-driver this Deck supervises in the user's session. The user keeps their own mouse: the driver acts in
 // the background and draws its own agent cursor. While an agent may act the user always sees it (the bar,
-// a red tray icon, notifications) and can stop it at once: Durdur on the bar, the tray, the Bot ekranı tab,
+// a red tray icon, notifications) and can stop it at once: Stop on the bar, the tray, the Bot screen tab,
 // or Ctrl+Alt+Shift+S (⌃⌥⌘S on macOS). Durdur is local first and works with the relay or Hermes offline.
 //
-// Off unless the user switched on "Masaüstü kontrolü" here (Settings → Bu cihaz: presence's "desktop"
+// Off unless the user switched on "Desktop control" here (Settings → This device: presence's "desktop"
 // hosting switch; nothing from the relay can turn it on), and only for the agents allowed there.
 // main.js: init() once the window exists, attachRelay() when the relay connection changes, shotBar() for
 // --shot-botbar. Renderer: renderer/botscreen.js through deck.botscreen (preload.js).
@@ -179,7 +179,7 @@ async function gate(m) {
   const profile = String(m.profile || "");
   if (!profile || !allowed().includes(profile)) return { ok: false, code: 1, error: `agent profile "${profile}" is not allowed on this device` };
   if (GRANT_VERBS.has(v.verb)) {
-    if (!S.grant) return { ok: false, code: 1, error: "no window was handed over on this device: ask the user to use \"Agent'a ver\" in Hermes Deck" };
+    if (!S.grant) return { ok: false, code: 1, error: "no window was handed over on this device: ask the user to use \"Hand to agent\" in Hermes Deck" };
     if (profile !== S.grant.profile) return { ok: false, code: 1, error: `this device's window was handed to ${S.grant.agent}, not to this agent` };
     try {
       await S.driver.ensure(grantManifest());
@@ -307,7 +307,7 @@ async function frame(p) {
   return `data:${type};base64,${buf.toString("base64")}`;
 }
 
-/** Kontrolü al / geri ver: Hermes' own lease for that agent, through the relay. */
+/** Take control / Return control: Hermes' own lease for that agent, through the relay. */
 async function lease(profile, hold) {
   if (!G.PROFILE_RE.test(profile)) throw new Error(i18nText("U0154"));
   if (S.fixture) {
@@ -855,7 +855,7 @@ function init(o) {
   // o.test (scripts/botscreen-e2e.js only): a fake installer and driver; the real wiring runs, headless
   const t = o.test || null;
   S.inert = S.shot && !S.fixture && !t;
-  if (SUPPORTED) S.presence.register("desktop", false); // "Masaüstü kontrolü" exists on this platform
+  if (SUPPORTED) S.presence.register("desktop", false); // "Desktop control" exists on this platform
   registerIpc();
   if (S.fixture) return fixtureInit();
   S.installer = t ? t.installer : new Installer({ dir: driverDir(), pins: PINS });

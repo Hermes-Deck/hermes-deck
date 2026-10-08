@@ -4,7 +4,7 @@
 // connection, so this computer opens no inbound port. Only this deck's agent browsers are reachable:
 // every request is checked, and sockets only ever go to 127.0.0.1:<port of an agent browser this deck
 // launched>, never to Hermes Deck's own window (Electron's DevTools port is never opened).
-// Nothing happens unless the user allowed agent browsers on this device (Settings > Bu cihaz).
+// Nothing happens unless the user allowed agent browsers on this device (Settings > This device).
 // Pure Node (no electron import). Framing must match relay/src/cdp.js.
 // Each agent socket is read by an AgentTracker (cdp-view.js): which page a command acts on, and whether it
 // is real use; the host passes that on to the live view, which follows the agent.

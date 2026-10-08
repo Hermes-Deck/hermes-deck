@@ -32,7 +32,7 @@ body.dragging .pet-hit { cursor: grabbing; }
 .pet-count, .pet-runs {
   position: absolute; display: block; color: var(--obsidian); text-align: center; white-space: nowrap; pointer-events: none;
   box-shadow: 0 0 0 1.5px var(--obsidian);
-  /* --badge-ms: the length of a transition strip while one plays (Karakter), so a badge moves with the figure */
+  /* --badge-ms: the length of a transition strip while one plays (Character), so a badge moves with the figure */
   transition: top var(--badge-ms, 0.25s) ease-in-out, left var(--badge-ms, 0.25s) ease-in-out, right var(--badge-ms, 0.25s) ease-in-out;
 }
 .pet-count {
@@ -132,7 +132,7 @@ body.open .pet-bar { opacity: 1; transform: none; pointer-events: auto; }
 .pet-btn.primary:hover { background: var(--marble-hover); }
 
 /* ---------- motion off, hidden, dev captures ---------- */
-/* "Pet animasyonları" off or the system asks for reduced motion: the skins show stills (body.still) */
+/* "Pet animations" off or the system asks for reduced motion: the skins show stills (body.still) */
 body.still .pet-stage { animation: none !important; }
 /* the window is hidden, minimized or covered: nothing moves until it is back */
 body.paused *, body.paused *::before, body.paused *::after { animation-play-state: paused !important; }

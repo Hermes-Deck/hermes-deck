@@ -470,7 +470,7 @@ class FallbackHost extends EventEmitter {
    */
   setController(slug, who) {
     const a = this.peek(slug);
-    if (!a || (who === "user" && a.status !== "running")) throw Object.assign(new Error("tarayıcı çalışmıyor"), { status: 409 });
+    if (!a || (who === "user" && a.status !== "running")) throw Object.assign(new Error("browser is not running"), { status: 409 });
     a.controller = who === "user" ? "user" : "agent";
     a._changed();
   }

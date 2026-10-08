@@ -1,4 +1,4 @@
-/* Sprite skins (pets/skins/sprite.js): Karakter and the other illustrated pets. One layer per animation, each
+/* Sprite skins (pets/skins/sprite.js): Character and the other illustrated pets. One layer per animation, each
    a 4-frame strip (pets/<id>/)
    moved by steps() inside the 144 px stage: translateX(-25%) of the strip is one frame. The source frames
    share one canvas, baseline and scale, so every frame of every strip lines up. */

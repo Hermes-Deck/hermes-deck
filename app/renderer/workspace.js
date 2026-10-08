@@ -10,7 +10,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
 // The browser runs on this computer or on the agent host (the relay's machine). The header pill says where
 // and opens the host picker ("Otomatik" / "Bu bilgisayar" / the agent host), which the relay keeps per agent.
 // The view follows the page the agent works on; a tab the user picks pauses that until the agent opens or
-// navigates a page. A closed page stays on screen as "Son görülen", with the agent's recent steps below.
+// navigates a page. A closed page stays on screen as "Last seen", with the agent's recent steps below.
 window.DeckWorkspace = function DeckWorkspace(ctx) {
   const { h, deck } = ctx;
   const api = deck.workspace;
@@ -469,7 +469,7 @@ window.DeckWorkspace = function DeckWorkspace(ctx) {
     overlay.replaceChildren(h("div", { class: "ws-card" }, title ? h("h3", null, title) : null, text ? h("p", null, text) : null, action || null));
   }
 
-  /** "Son görülen": the shown page closed; its last frame stays under this strip. */
+  /** "Last seen": the shown page closed; its last frame stays under this strip. */
   function renderSeen() {
     const s = live() && W.lastSeen && !shownTab() && W.hasFrame ? W.lastSeen : null;
     seenEl.hidden = !s;
@@ -957,7 +957,7 @@ window.DeckWorkspace = function DeckWorkspace(ctx) {
       update();
     });
   }
-  // status text ages ("az önce"), and the tab can be hidden without a re-render
+  // status text ages ("just now"), and the tab can be hidden without a re-render
   setInterval(() => {
     // the panel was closed or switched to another tab behind the large view: it ends with it
     if (W.expanded && (!root.isConnected || root.getClientRects().length === 0)) setExpanded(false, { focus: false });
@@ -977,8 +977,8 @@ window.DeckWorkspace = function DeckWorkspace(ctx) {
     })
     .catch(() => {});
 
-  // ---------------------------------------------------------------- Settings > Bu cihaz
-  /** Rows for the Settings tab's "Bu cihaz" section (hosting is a per-device choice, off by default). */
+  // ---------------------------------------------------------------- Settings > This device
+  /** Rows for the Settings tab's "This device" section (hosting is a per-device choice, off by default). */
   function settingsRows() {
     const st = W.st;
     const box = h("input", { type: "checkbox", id: "s-host-browser", checked: st && st.allowed ? true : null, disabled: st ? null : true });

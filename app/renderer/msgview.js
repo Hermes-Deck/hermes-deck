@@ -6,7 +6,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
 // Hermes Deck message view (window.DeckMsgView.create(ctx)). Builds one Telegram message as DOM and
 // owns the chat pieces around messages: media (lazy thumbnails, lightbox, files, audio, stickers,
 // videos), group senders (photo, stable name colour, owner/admin badge), reply quotes, inline
-// keyboards, Bot API rich messages (blocks from main/telegram.js richOf, with a "Telegram'da aç"
+// keyboards, Bot API rich messages (blocks from main/telegram.js richOf, with a "Open in Telegram"
 // note only for parts that cannot be drawn), markdown text, the right-click menu, the reply bar and toasts.
 // app.js keeps the state (S) and the render scheduling; this file reads S and reaches the main process
 // only through deck.*. Message strings always enter the DOM as text nodes.
@@ -14,7 +14,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   const MAX_FULL = 25 * 1024 * 1024; // main refuses full downloads above this
   const PALETTE = 6; // name colours, see messages.css (--who-0..5)
   const INLINE_IMAGE = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
-  // opened only through "İndir": main refuses "Aç" for these (media.isRisky); its list comes with deck.ready()
+  // opened only through "Download": main refuses "Open" for these (media.isRisky); its list comes with deck.ready()
   // as S.riskyExt, so the button is hidden for exactly the same names (security audit L9)
   const risky = (S, name) => {
     const m = /\.([^.\\/]+)$/.exec(String(name || ""));
@@ -352,7 +352,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     }
 
     /**
-     * "Aç" (default app; downloads into the cache first) and "İndir" (save as). Over 25 MB: Telegram only.
+     * "Open" (default app; downloads into the cache first) and "Download" (save as). Over 25 MB: Telegram only.
      * sized: the block above shows no size line (videos), so the note carries it.
      */
     function fileActions(m, sized = false) {
@@ -587,7 +587,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     // m.rich comes from main/telegram.js richOf(): blocks with text runs {text, ents} in the message
     // entity shapes (drawn by renderText), media blocks with a ref that the media builders above load
     // through a stand-in record, and button rows numbered for "rich" callbacks. A built message is
-    // reused across list renders (like media nodes) so an opened "Düşünme" or details block stays open.
+    // reused across list renders (like media nodes) so an opened "Thinking" or details block stays open.
     const RICH_DEPTH = 20;
     const richNodes = new Map(); // "key:id" -> {sig, el}
     const run = (r) => (r && r.text ? renderText(r.text, r.ents || []) : null);

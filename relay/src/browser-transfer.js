@@ -36,7 +36,7 @@ class BrowserTransfers {
       const checkpoint = target && this.bundles.latestCheckpoint(source, old.sessionKey);
       if (!checkpoint || checkpoint.target !== target || !this.bundles.identity(target)?.fresh) {
         if (presence.holdTransfer(old.sessionKey, "browser", old)) presence.finishTransfer(old.sessionKey, "browser");
-        this.broadcast({ t: "bundle-status", slug: old.sessionKey, status: "error", error: "Tarayıcı kaynağı çevrimdışı. Onaylı şifreli checkpoint veya hazır hedef bulunamadı; kaynak sabit tutuldu." });
+        this.broadcast({ t: "bundle-status", slug: old.sessionKey, status: "error", error: "The browser source is offline. No approved encrypted checkpoint or ready target was found; the source was kept." });
         return;
       }
       this.stored(checkpoint, old).catch(() => {});
@@ -59,8 +59,8 @@ class BrowserTransfers {
 
   policy(ws, { autoTarget }) {
     const actor = this.bundles.boundDevice(ws);
-    if (!actor) throw new Error("Cihaz kimliği doğrulanmadı.");
-    if (autoTarget !== null && (!this.bundles.identity(autoTarget)?.fresh || autoTarget === actor)) throw new Error("Aktarım hedefi hazır değil.");
+    if (!actor) throw new Error("Device identity was not verified.");
+    if (autoTarget !== null && (!this.bundles.identity(autoTarget)?.fresh || autoTarget === actor)) throw new Error("The transfer target is not ready.");
     if (autoTarget) this.policies.set(actor, autoTarget);
     else this.policies.delete(actor);
     if (this.policyFile) {
@@ -73,21 +73,21 @@ class BrowserTransfers {
 
   check(meta) {
     const old = this.presence.routes.get(`browser\t${meta.slug}`);
-    if (!old || sourceOf(old) !== meta.source || this.pending.has(meta.slug)) throw new Error("Bu tarayıcının kaynağı değişti; aktarımı yeniden dene.");
-    if (meta.reason !== "checkpoint" && !this.bundles.identity(meta.target)?.fresh) throw new Error("Aktarım hedefi hazır değil.");
+    if (!old || sourceOf(old) !== meta.source || this.pending.has(meta.slug)) throw new Error("This browser's source changed; try the transfer again.");
+    if (meta.reason !== "checkpoint" && !this.bundles.identity(meta.target)?.fresh) throw new Error("The transfer target is not ready.");
   }
 
   async request(ws, slug, { target }) {
-    if (!this.bundles.boundDevice(ws)) throw new Error("Aktarım için cihaz anahtarını Ayarlar > Bu cihaz bölümüne ekle.");
+    if (!this.bundles.boundDevice(ws)) throw new Error("Add the device key in Settings > This device to transfer the browser.");
     const dest = this.bundles.identity(target);
-    if (!dest?.fresh) throw new Error("Hedef cihaz ajan tarayıcısına açık değil.");
+    if (!dest?.fresh) throw new Error("The target device does not allow agent browsers.");
     const route = this.presence.routes.get(`browser\t${slug}`) || this.presence.routeFor(slug, "browser");
-    if (!route || sourceOf(route) === target) throw new Error("Ajan tarayıcısı başka bir cihazda çalışmalı.");
+    if (!route || sourceOf(route) === target) throw new Error("The agent browser must be running on another device.");
     const source = sourceOf(route);
     if (source === "fallback") {
-      if (!this.fallback || !this.identity) throw new Error("Ajan makinesinde aktarım hazır değil.");
+      if (!this.fallback || !this.identity) throw new Error("Transfer is not ready on the agent host.");
       const browser = this.fallback.peek(slug);
-      if (!browser || browser.status !== "running") throw new Error("Tarayıcı çalışmıyor.");
+      if (!browser || browser.status !== "running") throw new Error("The browser is not running.");
       browser.transferring = true;
       try {
         const state = await exportState(browser, CdpClient);
@@ -95,7 +95,7 @@ class BrowserTransfers {
       } catch (e) { browser.transferring = false; throw e; }
     } else {
       const sourceConn = this.bundles.connOf(source);
-      if (!sourceConn) throw new Error("Kaynak cihaz bağlı değil.");
+      if (!sourceConn) throw new Error("The source device is not connected.");
       send(sourceConn, { t: "bundle-export", slug, target, publicKey: dest.publicKey });
     }
     return { queued: true };
@@ -106,7 +106,7 @@ class BrowserTransfers {
     if (!old || sourceOf(old) !== meta.source || this.pending.has(meta.slug)) return;
     const target = this.bundles.identity(meta.target);
     if (!target?.fresh || !this.presence.holdTransfer(meta.slug, "browser", old)) return;
-    const timer = setTimeout(() => this.failed(meta.id, "Aktarım hedefi 60 saniyede yanıt vermedi."), 60_000);
+    const timer = setTimeout(() => this.failed(meta.id, "The transfer target did not respond within 60 seconds."), 60_000);
     if (timer.unref) timer.unref();
     this.pending.set(meta.slug, { ...meta, timer });
     this.broadcast({ t: "bundle-status", slug: meta.slug, status: "importing", target: meta.target, checkpointAt: meta.createdAt });
@@ -118,7 +118,7 @@ class BrowserTransfers {
         this.applied(null, meta.id, "fallback");
       } else {
         const ws = this.bundles.connOf(meta.target);
-        if (!ws) throw new Error("Hedef cihaz bağlı değil.");
+        if (!ws) throw new Error("The target device is not connected.");
         send(ws, { t: "bundle-ready", ...meta });
       }
     } catch (e) { this.failed(meta.id, String(e.message || e)); }
@@ -127,13 +127,13 @@ class BrowserTransfers {
   applied(ws, id, internal = null) {
     const actor = internal || this.bundles.boundDevice(ws);
     const pending = [...this.pending.values()].find((m) => m.id === id);
-    if (!pending || pending.target !== actor) throw new Error("Aktarım sahipliği doğrulanmadı.");
+    if (!pending || pending.target !== actor) throw new Error("Transfer ownership was not verified.");
     if (actor === "fallback") this.bundles.getServer(id);
     else this.bundles.get(actor, id); // fails closed if expiry/revocation deleted it during import
-    if (!this.bundles.identity(actor)?.fresh) throw new Error("Hedef cihaz artık hazır değil.");
+    if (!this.bundles.identity(actor)?.fresh) throw new Error("The target device is no longer ready.");
     if (actor === "fallback") this.bundles.ackServer(id);
     else this.bundles.ack(actor, id); // acknowledge storage successfully before making the route usable
-    if (!this.presence.finishTransfer(pending.slug, "browser", actor)) throw new Error("Hedef cihaz artık hazır değil.");
+    if (!this.presence.finishTransfer(pending.slug, "browser", actor)) throw new Error("The target device is no longer ready.");
     clearTimeout(pending.timer);
     this.pending.delete(pending.slug);
     if (pending.source === "fallback") {
@@ -165,13 +165,13 @@ class BrowserTransfers {
     if (m.op === "transfer-policy") return this.policy(ws, m);
     if (m.op === "transfer-export") return this.request(ws, slug, m);
     if (m.op === "transfer-applied") return this.applied(ws, m.bundleId);
-    if (m.op === "transfer-failed") return this.failed(m.bundleId, m.error || "Aktarım reddedildi.", ws);
+    if (m.op === "transfer-failed") return this.failed(m.bundleId, m.error || "The transfer was rejected.", ws);
     if (m.op === "transfer-state") {
       const actor = this.bundles.boundDevice(ws);
-      if (!actor) throw new Error("Cihaz kimliği doğrulanmadı.");
+      if (!actor) throw new Error("Device identity was not verified.");
       const pending = this.pending.get(slug);
       if (pending) {
-        if (pending.target !== actor || pending.id !== m.bundleId) throw new Error("Aktarım sahipliği doğrulanmadı.");
+        if (pending.target !== actor || pending.id !== m.bundleId) throw new Error("Transfer ownership was not verified.");
         return { committed: false, pending: true };
       }
       const route = this.presence.routes.get(`browser\t${slug}`);
@@ -180,25 +180,25 @@ class BrowserTransfers {
     }
     if (m.op === "transfer-abort") {
       const actor = this.bundles.boundDevice(ws);
-      if (!actor) throw new Error("Cihaz kimliği doğrulanmadı.");
+      if (!actor) throw new Error("Device identity was not verified.");
       const pending = this.pending.get(slug);
       if (pending) {
-        if (pending.source !== actor) throw new Error("Kaynak cihaz doğrulanmadı.");
-        this.failed(pending.id, "Kaynak cihaz aktarımı iptal etti.");
+        if (pending.source !== actor) throw new Error("The source device was not verified.");
+        this.failed(pending.id, "The source device cancelled the transfer.");
         return { committed: false };
       }
       const route = this.presence.routes.get(`browser\t${slug}`);
       const pin = this.presence.pinOf(slug, "browser");
       return { committed: !!(route && sourceOf(route) !== actor) || !!(pin && (pin.kind === "fallback" ? "fallback" : pin.id) !== actor) };
     }
-    throw new Error("Geçersiz aktarım isteği.");
+    throw new Error("Invalid transfer request.");
   }
 
   stop() {
     this.presence.off("route", this.lost);
     this.presence.off("sleep", this.sleep);
     for (const timer of this.sleepTimers.values()) clearTimeout(timer);
-    for (const m of this.pending.values()) this.failed(m.id, "Relay kapanıyor.");
+    for (const m of this.pending.values()) this.failed(m.id, "The relay is closing.");
   }
 
   connected(ws) {

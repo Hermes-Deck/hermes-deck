@@ -1,15 +1,20 @@
 # Agent spaces
 
-Agents that use `computer_use` can work on their own desktop, a **space**, instead of yours. Shared mode uses
-the agent host's logged-in macOS desktop, where agents take turns. Agent mode gives each agent its own Linux
-desktop in a container; overflow mode uses one when the shared desktop is busy. Deck shows it live in the **Bot
-screen** tab, where you can watch, join in or take full control. One click moves an agent to the device where Deck
-is open (**Work on this device**), and another sends it back (**Send back to its space**).
+Agents that use `computer_use` can work on their own desktop, a **space**, instead of yours. Agent mode gives each
+agent its own Linux desktop in a container and works with a Linux or macOS agent host
+([Phase 2](#phase-2-one-desktop-per-agent)). Shared mode uses the agent host's logged-in desktop, where agents take
+turns; it needs a macOS agent host. Overflow mode uses the shared desktop first and an own desktop when it is busy,
+so it needs both. Deck shows it live in the **Bot screen** tab, where you can watch, join in or take full control.
+One click moves an agent to the device where Deck is open (**Work on this device**), and another sends it back
+(**Send back to its space**).
 
 Status: experimental. Per-agent desktops support activity logs, risky-command approval and home-folder undo
 points. These controls apply to agents on their own desktops, including overflow, not shared or user-device routes.
 
 ## How it fits together
+
+The sections up to [Phase 2](#phase-2-one-desktop-per-agent) describe the shared desktop (shared and overflow
+modes). For agent mode alone, skip to Phase 2.
 
 - **cua-spacesd** (from the [Cua](https://github.com/trycua/cua) project, used unmodified as a separate download)
   runs on the agent host.
@@ -34,6 +39,8 @@ Deck "Work on this device" <── device channel ── bounded cua-driver on y
 ```
 
 ## Install on the agent host
+
+This part is for the shared desktop and needs a macOS agent host. Agent mode does not use it.
 
 1. Run the repository's `relay/tools/install-spacesd.sh` on the agent host as the logged-in user:
 
@@ -134,13 +141,14 @@ neither an operation in progress nor recovery pending. The activity drawer expos
 
 ## Phase 2: one desktop per agent
 
-Each agent gets its own Linux desktop in a Docker container, so agents no longer take turns. The shared desktop above stays as the fallback. The container image and its digest pin are in `app/main/desktops-pin.json`; the network isolation is described under "Limits and isolation" below.
+Each agent gets its own Linux desktop in a Docker container, so agents no longer take turns. The agent host can run Linux or macOS. On a macOS agent host with the shared desktop installed, that desktop stays as the fallback. On any other agent host, set `DECK_SPACES_SHARED_FALLBACK=0` (below), so an agent without a desktop gets a tool error instead of a fallback that does not exist. The container image and its digest pin are in `app/main/desktops-pin.json`; the network isolation is described under "Limits and isolation" below.
 
 ### Requirements
 
 - **A desktop host.** This is a machine that runs the containers. Either of these works, and both can host at the same time:
   - **A Deck computer** with Docker Desktop running.
   - **The agent host** with Docker or colima, hosting through the relay.
+- **The profile setting.** `HERMES_CUA_DRIVER_CMD` pointing at `relay/bin/deck-cua` in each agent's profile, as for desktop control (see [relay.md](relay.md#desktop-control)). An agent's own desktop needs no `cua-driver` on the agent host; only the shared desktop does.
 - **Docker must be running.** The relay checks it when it starts, so start Docker before the relay, and restart the relay if you start Docker later. If Docker is not running, the host offers no desktops and says why.
 - **The pinned images.** The desktop image and a small helper image for the firewall rules are both pinned by digest in `app/main/desktops-pin.json`. The Deck pulls them after its consent sheet. The relay never pulls them: pull them yourself on the agent host (below).
 - **RAM.** A desktop is limited to 1.5 GB (it idles at about 200 to 275 MiB). The agent host defaults to a limit of 1 desktop, and to 0 on a machine with less than 16 GB of RAM unless you set the limit yourself. Docker needs room for its own VM on top of that.
@@ -168,7 +176,7 @@ The relay talks to Docker through the `docker` command, so the Docker context th
 
 ### Turn it on
 
-1. **Mode.** In the relay's `.env`, set `DECK_SPACES=agent` and restart the relay. The Deck can also switch between "Shared desktop" and "Own desktop per agent" in Settings > This device > Agent spaces, but that switch lives in the relay's memory only: at the next relay restart the mode is `DECK_SPACES` again. While no machine hosts desktops, the Deck says so and agents use the shared desktop.
+1. **Mode.** In the relay's `.env`, set `DECK_SPACES=agent` and restart the relay. The Deck can also switch between "Shared desktop" and "Own desktop per agent" in Settings > This device > Agent spaces, but that switch lives in the relay's memory only: at the next relay restart the mode is `DECK_SPACES` again. While no machine hosts desktops, the Deck says so and agents use the shared desktop (or get a tool error with the fallback off).
 2. **Hosting on the agent host.** Add to the relay's `.env`:
 
    ```bash
@@ -384,10 +392,5 @@ No exact Hermes approval setting was verified from the material in this reposito
 
 Automated coverage uses fake Docker, fake MCP answers and fake DOM. It covers split typing, one-shot approval/expiry/denial, audit masking/retention/caps, archive pause cleanup, restore failure/rollback, tunnel disconnect, authenticated endpoints and panel/settings behavior.
 
-Automated verification is incomplete: the Windows full-suite run on 2026-10-07 reported updater and Chrome failures,
-and new panel review regressions were still failing. Passing fake-host checks do not establish a successful physical
-restore. Panel and settings review fixes remain pending at this checkpoint.
-
-Real-agent side test: not run by this implementation plan's automated steps. It requires a separately authorized test desktop and visible review. The future observation is: an agent requests a harmless command beginning with sudo; Deck shows its exact card; approve once; the identical retry passes once; an undo point is listed; create a disposable file change; confirm restore; the earlier home content returns and the desktop stays off until the next agent call. Record actual observations separately and do not infer a successful physical restore from fake-runner tests. Docker Desktop and colima pause support also remain runtime checks.
-
-Türkçe: Etkinlik ve güvenlik ayarları relay üzerinde ortaktır. Yazılan metin varsayılan olarak yalnızca uzunluğuyla kaydedilir; onay isteyen komutlar, kayıt açıkken tam saklanır. Ekran görüntülerini kapatabilirsiniz. Riskli komut kontrolü bir uyarı kapısıdır; güvenlik sınırı konteyner izolasyonudur. Onay yalnızca aynı eylemin bir tekrarına ve 10 dakikaya izin verir. Geri dönüş noktası alınamazsa Yine de onayla veya Reddet seçenekleri sunulur. Geri yükleme masaüstünü kapalı bırakır ve geri alma öncesi noktayı korur. Başarısız veya belirsiz geri yüklemeden sonra otomatik başlatma engellenir; başarılı bir geri yükleme ile çözülür. Bu depoda Hermes onaylarını gevşeten kesin bir ayar doğrulanmadı; bu nedenle ayar adı önerilmiyor. Gerçek agent testi ve fiziksel Docker doğrulaması henüz yapılmadı.
+A real-agent test on Docker Desktop (2026-10-08) passed: the approval card, approve once, deny, an undo point
+(container pause took about 1 s) and a restore (about 5 s). Pause support on colima is not verified yet.

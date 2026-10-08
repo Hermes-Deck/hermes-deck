@@ -11,10 +11,11 @@ permissions:
   contents: read
 
 # github.workflow is the caller's name when release.yml calls this file, so a release's test gate never
-# cancels (or is cancelled by) the ordinary CI run of the same commit.
+# cancels (or is cancelled by) the ordinary CI run of the same commit. Only pull request runs cancel each other:
+# a push run scans just its own before..after range, so cancelling one would leave those commits unscanned.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   js:
@@ -39,11 +40,11 @@ jobs:
             app/package-lock.json
             relay/package-lock.json
 
-      - name: node --check (app + relay)
+      - name: node --check (app + relay + push)
         run: |
-          find app relay -name '*.js' -not -path '*/node_modules/*' -not -path '*/dist/*' -print0 \
+          find app relay push -name '*.js' -not -path '*/node_modules/*' -not -path '*/dist/*' -print0 \
             | xargs -0 -n1 node --check
-          echo "node --check passed for $(find app relay -name '*.js' -not -path '*/node_modules/*' -not -path '*/dist/*' | wc -l) files"
+          echo "node --check passed for $(find app relay push -name '*.js' -not -path '*/node_modules/*' -not -path '*/dist/*' | wc -l) files"
 
       # The app's tests load teleproto (the Telegram serializers), so its dependencies are installed. That also
       # checks the lockfile and the postinstall step on Linux, and lets the relay's CDP tests drive the app's
@@ -62,6 +63,7 @@ jobs:
       - name: Relay tests
         working-directory: relay
         run: npm test
+
 
   plugin:
     name: Hermes plugin tests

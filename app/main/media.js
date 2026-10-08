@@ -8,7 +8,7 @@ const path = require("path");
 const MAX_FULL = 25 * 1024 * 1024; // full downloads stop here; bigger files are opened in Telegram
 const INLINE_IMAGE = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 
-// Never handed to shell.openPath: these run code (or point at code) when opened. "İndir" still saves them.
+// Never handed to shell.openPath: these run code (or point at code) when opened. "Download" still saves them.
 const RISKY_EXT = new Set(
   (
     "exe msi msp bat cmd com scr pif cpl msc ps1 psm1 psd1 vbs vbe js jse wsf wsh hta lnk url reg inf " +

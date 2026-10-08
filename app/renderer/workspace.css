@@ -1,4 +1,4 @@
-/* Workspace tab additions (renderer/workspace.js): the host picker, following the agent, "Son görülen",
+/* Workspace tab additions (renderer/workspace.js): the host picker, following the agent, "Last seen",
    the robot-check banner and the agent's recent steps. Tokens from styles.css: patina = live, gilt =
    needs the user, amphora = failure. The base Workspace styles stay in styles.css. */
 
@@ -57,7 +57,7 @@
 .ws-wall strong { color: var(--gilt); }
 .ws-wall .btn { flex: none; border-color: var(--gilt); }
 
-/* ---------- "Son görülen": the page closed, its last frame stays ---------- */
+/* ---------- "Last seen": the page closed, its last frame stays ---------- */
 .ws-seen {
   position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: baseline; gap: 10px; padding: 8px 12px;
   border-bottom: 1px solid var(--vein); background: rgb(var(--obsidian-rgb) / 0.88); font-size: 12px;

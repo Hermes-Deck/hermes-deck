@@ -62,7 +62,7 @@ class DeckTray {
   }
 
   /**
-   * Bot screen (main/cua): red icon, the alert as tooltip and a "Durdur" item on top of the menu while an
+   * Bot screen (main/cua): red icon, the alert as tooltip and a "Stop" item on top of the menu while an
    * agent may act on this computer. alert(false) restores the normal icon.
    * @param {boolean} on
    * @param {{text: string, stopLabel?: string, onStop: () => void}} [info]
@@ -85,7 +85,7 @@ class DeckTray {
         { label: i18nText("U0332"), click: () => this.onShow() },
         { type: "separator" },
         { label: i18nText("A0183"), type: "checkbox", checked: this.flags.pet, click: (item) => this.onToggle("pet", item.checked) },
-        // A10: the pet's look, the same choice as Settings → Masaüstü → Pet görünümü
+        // A10: the pet's look, the same choice as Settings → Desktop → Pet look
         {
           label: i18nText("U0333"),
           submenu: require("../renderer/pets/catalog").SKINS.map(({ id, label }) => ({

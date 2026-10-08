@@ -1,4 +1,4 @@
-/* Ajan skin (pets/skins/agent.js): a 72 px medallion with a state ring, standing on a name tag. */
+/* Agent skin (pets/skins/agent.js): a 72 px medallion with a state ring, standing on a name tag. */
 .ag { position: absolute; inset: 0; }
 .ag-medal {
   position: absolute; left: 32px; top: 34px; width: 80px; height: 80px; transform-origin: 50% 100%;

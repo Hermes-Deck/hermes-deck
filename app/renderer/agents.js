@@ -4,12 +4,12 @@ var i18nBind = (el, attr, key, vars) => (typeof module === "object" && module.ex
 var i18nText = typeof module === "object" && module.exports ? require("./i18n").t : window.DeckI18n.t;
 var i18nLocale = typeof module === "object" && module.exports ? require("./i18n").getLocale : window.DeckI18n.getLocale;
 // Hermes Deck sub-agent views (window.DeckAgents.create(ctx)):
-//   B1  one session or sub-agent in the chat column: header, message history, live steps, "Sohbete dön"
-//   B2  "Şu an çalışanlar": every running session and sub-agent across agents, on top of Activity
+//   B1  one session or sub-agent in the chat column: header, message history, live steps, "Back to chat"
+//   B2  "Running now": every running session and sub-agent across agents, on top of Activity
 //   B3  tool calls that open to their full arguments and result (monospace, copy button)
 //   B4  the sub-agent tree on Activity cards: nesting depth, retries linked, tokens/cost per branch
 //   A13 role and OMH provenance chips on sub-agent rows
-//   F2  prompts with their Telegram context ([Replying to: …], [Name|id], [Grup bağlamı …]) folded away
+//   F2  prompts with their Telegram context ([Replying to: …], [Name|id], [Group context …]) folded away
 // app.js owns the state (S), the scheduler and the prompt-prefix parser (splitPrompt); this file reads
 // S.relay and reaches main only through deck.messages / messageFull / toolCall / session. Every string
 // from the relay enters the DOM as a text node (or through DeckMarkdown, which never parses HTML).
@@ -151,7 +151,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     const copyBtn = (text) => h("button", { class: "copy", type: "button", title: i18nText("A0195"), onclick: (e) => copyText(text, e.currentTarget) , "data-i18n-title": "A0195"}, i18nNode("A0053"));
 
     // ---------------------------------------------------------------- F2: prompt context
-    const ctxOpen = new Set(); // keys whose "bağlam" is expanded
+    const ctxOpen = new Set(); // keys whose "context" is expanded
 
     function ctxLines(blocks) {
       return blocks.map((b) =>
@@ -161,7 +161,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       );
     }
 
-    /** The "bağlam" chip (and its box when open) for blocks split off a prompt; key keeps it open across renders. */
+    /** The "context" chip (and its box when open) for blocks split off a prompt; key keeps it open across renders. */
     function ctxChip(key, blocks) {
       if (!blocks.length) return null;
       const open = ctxOpen.has(key);
@@ -194,7 +194,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       return { req, reply: blocks.find((b) => b.kind === "reply") || null, blocks };
     }
 
-    /** Activity card prompt: the request first, everything bracketed folded into "bağlam". */
+    /** Activity card prompt: the request first, everything bracketed folded into "context". */
     function ask(s) {
       const { req, blocks } = promptParts(s.lastMsg);
       return h("div", { class: "ask-wrap" },
@@ -367,7 +367,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
         kids.map((c) => node(c, 1, compact)));
     }
 
-    /** "Oturum ayrıntısı" on a card: opens B1 for the top-level session itself. */
+    /** "Session details" on a card: opens B1 for the top-level session itself. */
     const detailLink = (s) => h("button", { class: "linkbtn", type: "button", dataset: { fk: `open:${s.sid}` }, onclick: () => open(s.sid) }, i18nNode("U0373"));
 
     // ---------------------------------------------------------------- B2: running now

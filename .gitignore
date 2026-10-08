@@ -7,7 +7,7 @@ __pycache__/
 
 # generated at install time (npm postinstall copies fonts out of @fontsource)
 app/renderer/fonts/
-app/renderer/fonts.css
+app/renderer/fonts*.css
 
 # per-install secrets and state: never commit
 .env
@@ -32,8 +32,16 @@ relay/logs/
 Thumbs.db
 !app/build/*.png
 
-# local agent worktrees / tooling
+# local agent worktrees / tooling, editors, scratch and test caches
 .claude/
+.superpowers/
+.preview/
+.port/
+.pytest_cache/
+.vscode/
+.idea/
+tmp/
+.tmp/
 
 # Native generated binaries, private signing/app credentials and local proof
 work/
@@ -45,5 +53,5 @@ xcuserdata/
 # written by scripts/build-info.js for packaged builds
 app/main/build-info.json
 
-# make-pet-rig.py --preview sheets
-app/art/pet-*/rig/_preview-*.png
+# make-pet-rig.py --preview sheets (last, so the !app/art/pet-* re-includes above can't bring them back)
+app/art/**/_preview-*.png

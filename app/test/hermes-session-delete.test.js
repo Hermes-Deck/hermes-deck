@@ -13,7 +13,7 @@ beforeEach(() => I18N.setLanguage("en"));
 
 const SRC = fs.readFileSync(path.join(__dirname, "../renderer/app.js"), "utf8");
 const START = SRC.indexOf("  // ------------------------------------------------------------ session menu (right-click > Delete)");
-const END = SRC.indexOf('  /** "+ Yeni oturum" under a profile heading');
+const END = SRC.indexOf('  /** "+ New session" under a profile heading');
 assert.ok(START > 0 && END > START, "session menu block found in app.js");
 
 function element(tag, attrs, ...kids) {

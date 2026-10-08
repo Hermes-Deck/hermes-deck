@@ -15,7 +15,7 @@ const { Notifier, clip, textOf } = require("./notify");
 const { Pet, statusParts, SKINS: PET_SKINS } = require("./pet");
 const { PetFeed } = require("./pet-model"); // pet events: replies, questions, finished runs
 const { DeckTray } = require("./tray");
-const autostart = require("./autostart"); // G2: "Bilgisayar açılınca başlat"
+const autostart = require("./autostart"); // G2: "Start at login"
 const { createUpdateNotice } = require("./updates");
 const { badgeText, badgeCount, badgePng } = require("./taskbar-badge");
 
@@ -129,7 +129,7 @@ function petWho(key, m) {
   return { agent: chatTitle(key) || "Hermes", avatar: key ? S.avatars[key] : undefined };
 }
 
-/** A pet event goes to the pet; its agent becomes the one the Ajan skin shows. */
+/** A pet event goes to the pet; its agent becomes the one the Agent skin shows. */
 function petEvent(ev) {
   if (!pet) return;
   pet.event(ev);
@@ -176,7 +176,7 @@ function fromRelay(m) {
     // a top-level session that stopped running. Not: a sub-agent, a cron job (its result arrives as a
     // message), a context-compression hand-over to a new session id, or a session that only went quiet.
     if (was && !now && !s.parent && !s.cron && !s.splitInto && !s.stale) sessionDone(s);
-    // the pet's Ajan skin shows the agent that started working last
+    // the pet's Agent skin shows the agent that started working last
     if (!was && now && !s.parent && s.agent && pet) pet.setAgent({ name: s.agent, avatar: petWho(sessionKey(s)).avatar });
   }
   while (S.live.size > 3000) S.live.delete(S.live.keys().next().value);
@@ -257,7 +257,7 @@ function setFlag(name, on) {
   toRenderer({ t: "settings", settings: S.settings.publicView() }); // the Settings tab shows the change
 }
 
-/** Tray "Pet görünümü": Karakter / Küre / Ajan. */
+/** Tray "Pet look": Character / Orb / Agent. */
 function setSkin(name) {
   if (!PET_SKINS.includes(name)) return;
   S.settings.update({ desktop: { petSkin: name } });
@@ -265,7 +265,7 @@ function setSkin(name) {
   toRenderer({ t: "settings", settings: S.settings.publicView() });
 }
 
-/** What the pet page follows from Settings → Masaüstü. */
+/** What the pet page follows from Settings → Desktop. */
 function petOptions() {
   const f = flags();
   return { skin: f.petSkin, motion: f.petMotion !== false, bubbles: !!f.notifications, size: f.petSize };
@@ -294,7 +294,7 @@ function syncAutostart(real) {
 }
 
 /**
- * G2, called by main.js before the window exists: a login start with "Kapatınca tepside çalışsın" on
+ * G2, called by main.js before the window exists: a login start with "Keep running in tray on close" on
  * opens straight into the tray. init() still shows the window when no tray icon could be made.
  */
 function startHidden(settings) {
@@ -307,13 +307,13 @@ function info() {
   return { packaged: app.isPackaged, autostart: autostart.support() };
 }
 
-/** Bot screen (main/cua): the tray turns red with a "Durdur" item while an agent may act here. */
+/** Bot screen (main/cua): the tray turns red with a "Stop" item while an agent may act here. */
 function trayAlert(on, alert) {
   if (tray) tray.alert(on, alert);
 }
 
 /**
- * Tray "Çıkış" and `--quit`: a real quit, also when closing the window only hides it. app.quit() closes every
+ * Tray "Quit" and `--quit`: a real quit, also when closing the window only hides it. app.quit() closes every
  * window (the deck's, the pet's, the bot screen's bar), so the quit never waits on "window-all-closed": an
  * open bar window kept the app alive when only the deck's window was closed. main.js's will-quit cleanup
  * runs either way.
@@ -440,7 +440,7 @@ const PET_EVENTS = {
  *   --theme=basalt|marble|aegean       the colour theme of the bar and bubble
  *   --pet-size=0.75|1|1.25|1.5         the pet size (Settings > Desktop)
  *   --pet-motion=off  --pet-side=left|right  --pet-open | --pet-hover  --pet-bg=#rrggbb  --wait=ms
- *   --pet-agent=<name> [--pet-avatar]  the Ajan skin's agent (--pet-avatar: the app icon as its avatar)
+ *   --pet-agent=<name> [--pet-avatar]  the Agent skin's agent (--pet-avatar: the app icon as its avatar)
  *   --pet-cpu=<seconds> [--pet-cpu-live [--pet-cpu-paused]]  measure CPU instead (hidden pet; live = kept drawing),
  *                                      the JSON result goes to the --shot-pet file
  */

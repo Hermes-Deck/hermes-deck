@@ -170,7 +170,7 @@ contextBridge.exposeInMainWorld("deck", {
     state: () => ipcRenderer.invoke("device:state"),
     setHosting: (capability, on) => ipcRenderer.invoke("device:set-hosting", capability, on),
   },
-  // --- Bot ekranı (main/cua): the "desktop" switch itself is deck.device.setHosting("desktop", on) ---
+  // --- Bot screen (main/cua): the "desktop" switch itself is deck.device.setHosting("desktop", on) ---
   botscreen: {
     state: () => ipcRenderer.invoke("bs:state"),
     setAgents: (profiles) => ipcRenderer.invoke("bs:agents", profiles),

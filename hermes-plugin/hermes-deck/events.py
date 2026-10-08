@@ -17,10 +17,10 @@ The gateway process also writes ``~/.hermes-deck/state/<profile>.json`` every SN
 (gateway/platform health + a cron job summary, no prompts or scripts), again so the relay never
 has to read the profile directory.
 
-One exception, off by default: Bot ekranı (bot screen). When a profile routes computer_use through the
+One exception, off by default: Bot screen. When a profile routes computer_use through the
 relay's deck-cua wrapper, the plugin fences that one tool (it may block or rewrite a computer_use call,
 asking the relay over its local Unix socket where the call goes) and stores the frames the agent saw.
-See the "Bot ekranı" section below and docs/bot-screen-protocol.md.
+See the "Bot screen" section below and docs/bot-screen-protocol.md.
 """
 from __future__ import annotations
 
@@ -184,7 +184,7 @@ def on_pre_tool_call(tool_name: str = "", args=None, session_id: str = "", task_
     _emit("tool_start", sid=session_id, tool=tool_name, call=tool_call_id, task=task_id,
           args=_clip(args))
     if tool_name == CU_TOOL:
-        return _cu_pre(args, session_id)          # None unless Bot ekranı is on for this profile
+        return _cu_pre(args, session_id)          # None unless Bot screen is on for this profile
     return None                                   # never block or modify any other tool call
 
 
@@ -427,7 +427,7 @@ def on_agent_loop_stopped(session_key: str = "", **_):
     _emit("stopped", skey=session_key or None)
 
 
-# ---------------------------------------------------------------------------- Bot ekranı (computer_use)
+# ---------------------------------------------------------------------------- Bot screen (computer_use)
 #
 # Off unless this profile routes computer_use through the relay's deck-cua wrapper
 # (HERMES_CUA_DRIVER_CMD -> .../relay/bin/deck-cua) or DECK_BOT_SCREEN=1 (0 forces it off). Then, for the
@@ -588,7 +588,7 @@ def _cu_pre(args, session_id):
     try:
         return _cu_fence(args if isinstance(args, dict) else {}, str(session_id or ""))
     except Exception as e:  # fail closed: an unchecked call could land on the user's own window
-        return _block(f"Bot ekranı: the Hermes Deck fence failed ({type(e).__name__}); computer_use was "
+        return _block(f"Bot screen: the Hermes Deck fence failed ({type(e).__name__}); computer_use was "
                       "refused to be safe. Tell the user.")
 
 
@@ -596,7 +596,7 @@ def _cu_fence(args: dict, session_id: str):
     """pre_tool_call for computer_use: None to proceed, else a block or modify directive."""
     action = str(args.get("action") or "").strip().lower()
     if action == "kill_app":
-        return _block("Bot ekranı: kill_app is never allowed through Hermes Deck.")
+        return _block("Bot screen: kill_app is never allowed through Hermes Deck.")
     st = _cu_state(session_id)
     st["routed"] = False                      # until the relay names a host for this call
     ident = _route_identity()
@@ -618,12 +618,12 @@ def _cu_fence(args: dict, session_id: str):
             break                             # out of time mid-answer: the last busy answer stands
         r = nxt
     if r is None:
-        return _block("Bot ekranı: the Hermes Deck relay is not reachable on the agent host, so computer_use "
+        return _block("Bot screen: the Hermes Deck relay is not reachable on the agent host, so computer_use "
                       "has no route. Tell the user.")
     if not r.get("ok"):
         if r.get("busy"):
             return _block(f"{r.get('error') or 'The desktop is in use.'} Retry the same action now to keep your place in line.")
-        return _block(str(r.get("error") or "Bot ekranı: no device is available for computer_use."))
+        return _block(str(r.get("error") or "Bot screen: no device is available for computer_use."))
     st["routed"] = True
     device = r.get("device")
     if st["device"] is not None and device != st["device"]:
@@ -636,7 +636,7 @@ def _cu_fence(args: dict, session_id: str):
     st["device"], st["epoch"] = device, r.get("epoch")
     deck_pid = _pos_int(r.get("deckPid"))
     if deck_pid and _pos_int(args.get("pid")) == deck_pid:
-        return _block("Bot ekranı: that process is Hermes Deck itself; computer_use may not drive it.")
+        return _block("Bot screen: that process is Hermes Deck itself; computer_use may not drive it.")
     if device == "host":
         st["grant"] = None
         return None
@@ -653,18 +653,18 @@ def _device_fence(action: str, args: dict, st: dict, where: str, grant, deck_pid
     gpid, gwid, gapp = _pos_int(win.get("pid")), _pos_int(win.get("id")), str(g.get("app") or "")
     if not (gpid and gwid) or (deck_pid and gpid == deck_pid):
         st["grant"] = None
-        return _block(f"Bot ekranı: the user has not handed you a window on {where}. Ask them to pick one "
-                      "with Agent'a ver in Hermes Deck, or to let this run on the agent host.")
+        return _block(f"Bot screen: the user has not handed you a window on {where}. Ask them to pick one "
+                      "with Hand to agent in Hermes Deck, or to let this run on the agent host.")
     st["grant"] = {"pid": gpid, "window_id": gwid, "app": gapp}
     title = str(win.get("title") or "") or f"window {gwid}"
     label = f"{gapp or 'the handed app'} ({title})"
     foreground = args.get("delivery_mode") == "foreground"
     if g.get("foreground") is True and (args.get("bring_to_front") or (action == "focus_app" and args.get("raise_window"))):
-        return _block('Bot ekranı: use delivery_mode "foreground" on the input action itself; '
+        return _block('Bot screen: use delivery_mode "foreground" on the input action itself; '
                       'Hermes Deck brings the handed window forward for it.')
     if ((foreground and not (g.get("foreground") is True and action in _INPUT)) or args.get("bring_to_front")
             or (action == "focus_app" and args.get("raise_window"))):
-        return _block(f"Bot ekranı: foreground input would take over the user's mouse and keyboard on {where}. "
+        return _block(f"Bot screen: foreground input would take over the user's mouse and keyboard on {where}. "
                       "Retry the same action without delivery_mode (background input reaches most apps and leaves "
                       "the user's own pointer alone). Only if the app ignores it: ask the user to allow foreground "
                       "control for this session in the Deck, or use the host.")
@@ -672,31 +672,31 @@ def _device_fence(action: str, args: dict, st: dict, where: str, grant, deck_pid
     pinned = {"pid": gpid, "window_id": gwid, "app": gapp or None}
     if action == "capture":
         if asked.lower() in _FULL_SCREEN_APPS:
-            return _block(f"Bot ekranı: full-screen and desktop captures are off on {where}; you can only see "
+            return _block(f"Bot screen: full-screen and desktop captures are off on {where}; you can only see "
                           f"{label}.")
         pid, wid = _pos_int(args.get("pid")), _pos_int(args.get("window_id"))
         if (pid and pid != gpid) or (wid and wid != gwid) or (asked and gapp and not _app_matches(asked, gapp)):
-            return _block(f"Bot ekranı: on {where} you can only capture {label}.")
+            return _block(f"Bot screen: on {where} you can only capture {label}.")
         st["pinned"] = (gpid, gwid)
         return {"action": "modify", "args": pinned}
     if action == "focus_app":
         if not (asked and gapp and _app_matches(asked, gapp)):
-            return _block(f"Bot ekranı: on {where} you can only use {label}.")
+            return _block(f"Bot screen: on {where} you can only use {label}.")
         st["pinned"] = (gpid, gwid)
         # focusing only picks the input target; an exact capture of the handed window does that without
         # landing on another window of the same app
         return {"action": "modify", "args": {"action": "capture", "mode": "ax", "raise_window": None, **pinned}}
     if action in _LISTINGS:
-        return _block(f"Bot ekranı: listing apps and windows is off on {where}; you can only see {label}, and "
+        return _block(f"Bot screen: listing apps and windows is off on {where}; you can only see {label}, and "
                       "capture() targets it.")
     if action in _INPUT:
         pid, wid = _pos_int(args.get("pid")), _pos_int(args.get("window_id"))
         if (pid and pid != gpid) or (wid and wid != gwid):
-            return _block(f"Bot ekranı: on {where} input only goes to {label}.")
+            return _block(f"Bot screen: on {where} input only goes to {label}.")
         if asked and gapp and not _app_matches(asked, gapp):
-            return _block(f"Bot ekranı: on {where} input only goes to {label}.")
+            return _block(f"Bot screen: on {where} input only goes to {label}.")
         if st["pinned"] != (gpid, gwid):
-            return _block(f"Bot ekranı: capture first. On {where} capture() targets {label}, and input goes "
+            return _block(f"Bot screen: capture first. On {where} capture() targets {label}, and input goes "
                           "to the last capture.")
         if foreground:
             return {"action": "modify", "args": pinned}

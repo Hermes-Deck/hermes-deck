@@ -323,10 +323,10 @@ test("cdp gateway: loopback only, no foreign Host or Origin, unknown paths refus
   const [req, res] = await once(ws, "unexpected-response");
   assert.strictEqual(res.statusCode, 403); // a web page can never reach an agent browser
   req.destroy();
-  // nobody hosts and there is no fallback: "çalışma alanı yok"
+  // nobody hosts and there is no fallback: "no workspace"
   const r = await fetch(`http://127.0.0.1:${port}/agent/demo/json/version`);
   assert.strictEqual(r.status, 503);
-  assert.match((await r.json()).error, /çalışma alanı yok/);
+  assert.match((await r.json()).error, /no workspace: this relay has no agent host browser/);
 });
 
 test("cdp: a deck that switches hosting off stops getting work; the relay host's fallback takes over", async (t) => {

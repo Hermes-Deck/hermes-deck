@@ -7,9 +7,9 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
 //  - The clip button opens the main-process file picker; files dropped on the chat column and images
 //    pasted into the message box are staged the same way. Main keeps every staged file; this page only
 //    holds a token, a name, a size and (for images) a small preview. It never sees a path.
-//  - Staged files sit in a tray above the composer, per chat. "Gönder" uploads them one after another;
+//  - Staged files sit in a tray above the composer, per chat. "Send" uploads them one after another;
 //    the typed text becomes the first file's caption and the reply target (if any) the first file's.
-//  - Photos go as compressed photos unless "Dosya olarak gönder" is ticked. A running upload shows its
+//  - Photos go as compressed photos unless "Send as file" is ticked. A running upload shows its
 //    progress and can be cancelled.
 //  - Both channels take any file (paste, drop, picker; screenshots, video, text, PDF...). Telegram uploads them
 //    one by one; direct Hermes sends the whole tray with the message through its bounded host method.
@@ -26,7 +26,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   function create(ctx) {
     const { h, S, deck, els, MV, mark, cleanErr, hermesMode, setChannel, onSent, renderNote } = ctx;
     const trays = new Map(); // chat key -> [{token, name, size, kind, risky, preview, p?, state?}]
-    const asFile = new Map(); // chat key -> "Dosya olarak gönder" ticked
+    const asFile = new Map(); // chat key -> "Send as file" ticked
     let busyKey = null; // chat whose files are uploading now
     let current = null; // token uploading now
     let capturing = false;
@@ -415,7 +415,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     }).catch(e => note(i18nText("draft.attachRestoreFailed", { e: cleanErr(e) }))) : Promise.resolve();
 
     return {
-      /** Whether "Gönder" should upload this chat's tray instead of sending text. */
+      /** Whether "Send" should upload this chat's tray instead of sending text. */
       pending,
       ready,
       forgetChat(key) {

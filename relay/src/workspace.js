@@ -28,12 +28,12 @@ const sizeOf = (m) => {
 };
 const MAX_WATCHED = 2; // per deck: the one on screen, and one being switched to
 const ERR = {
-  bad: "Geçersiz istek.",
-  device: "Bu cihaz şu an ajan tarayıcısına açık değil (Ayarlar > Bu cihaz).",
-  fallback: "Ajan makinesinde bu ajan için tarayıcı yok: relay .env dosyasında DECK_FALLBACK_BROWSER=1 ya da DECK_FALLBACK_BROWSER_CDP olmalı.",
-  unknown: "Bu cihaz relay'e henüz bildirilmedi; birkaç saniye sonra yeniden dene.",
-  view: "Bu tarayıcı izlenmiyor.",
-  control: "Önce kontrolü al.",
+  bad: "Invalid request.",
+  device: "This device does not allow agent browsers right now (Settings > This device).",
+  fallback: "The agent host has no browser for this agent: the relay .env must set DECK_FALLBACK_BROWSER=1 or DECK_FALLBACK_BROWSER_CDP.",
+  unknown: "This device has not reported to the relay yet; try again in a few seconds.",
+  view: "This browser is not being watched.",
+  control: "Take control first.",
 };
 const fail = (msg) => Object.assign(new Error(msg), { user: true });
 

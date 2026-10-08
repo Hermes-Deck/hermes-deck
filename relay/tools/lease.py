@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Kontrolü al / geri ver for Hermes Deck: take or hand back a profile's Bot Desktop lease.
+"""Take control / Return control for Hermes Deck: take or hand back a profile's Bot Desktop lease.
 
 While a human holds the lease, Hermes' computer_use refuses every call, captures included. The relay
 (POST /desktop/lease) runs this with Hermes' own Python (DECK_HERMES_PYTHON), so the lease goes through
@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 VIEWER = "hermes-deck"               # the lease holder id: releasing never yanks another viewer's control
-REASON = "Hermes Deck: Kontrolü al"
+REASON = "Hermes Deck: Take control"
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 

@@ -1,6 +1,6 @@
 "use strict";
 const { t: i18nText, getLocale: i18nLocale } = require("../../renderer/i18n");
-// One "Agent'a ver" grant: which agent may act in which window of this device, and until when.
+// One "Hand to agent" grant: which agent may act in which window of this device, and until when.
 // Pure; unit-tested in app/test/cua-protocol.test.js.
 
 const MAX_MS = 2 * 60 * 60 * 1000; // a grant lasts at most 2 h (docs/bot-screen-protocol.md, Consent defaults)

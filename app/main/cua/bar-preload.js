@@ -1,5 +1,5 @@
 "use strict";
-// The bot screen bar's only door to main: its state comes in; Durdur and hover go out.
+// The bot screen bar's only door to main: its state comes in; Stop and hover go out.
 const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("deckLanguage", process.argv.includes("--deck-language=tr") ? "tr" : "en");
 // colour theme: the first paint uses the --deck-theme argument, later changes arrive as "theme" (main/theme.js)

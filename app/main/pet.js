@@ -1,7 +1,7 @@
 "use strict";
 const { t: i18nText, getLocale: i18nLocale, getLanguage: i18nLanguage } = require("../renderer/i18n");
 // A10: the status pet. A small frameless, transparent, always-on-top window with an animated pet in one of
-// three skins (Karakter, Küre, Ajan). Its state is the summary the deck renderer sends (desktop.js forwards
+// three skins (Character, Orb, Agent). Its state is the summary the deck renderer sends (desktop.js forwards
 // it here); events (a reply, a question, a finished run) make it hop and show a speech bubble.
 // The window is click-through except over the pet, its bar and its bubble, can be dragged anywhere, remembers
 // where it was left and snaps back into the visible work area. Its page: renderer/pet.html (+ pet.js,
@@ -52,15 +52,15 @@ class Pet {
    * @param {object} o
    * @param {() => ({x: number, y: number}|null)} o.loadPos  the pet box's saved screen position (DIP)
    * @param {(pos: {x: number, y: number}) => void} o.savePos
-   * @param {(key: string|null) => void} o.onOpen  click on the pet or "Deck'i aç" (null), or on a bubble (its chat)
-   * @param {() => void} o.onHide  "Gizle"
-   * @param {() => ({skin?: string, motion?: boolean, bubbles?: boolean})} o.options  Settings → Masaüstü
+   * @param {(key: string|null) => void} o.onOpen  click on the pet or "Open Deck" (null), or on a bubble (its chat)
+   * @param {() => void} o.onHide  "Hide"
+   * @param {() => ({skin?: string, motion?: boolean, bubbles?: boolean})} o.options  Settings → Desktop
    */
   constructor({ loadPos = () => null, savePos = () => {}, onOpen = () => {}, onHide = () => {}, options = () => ({}) } = {}) {
     Object.assign(this, { loadPos, savePos, onOpen, onHide, options });
     this.win = null;
     this.state = { running: 0, subs: 0, unread: 0, pending: 0, offline: true };
-    this.agent = null; // {name, avatar?}: the agent the Ajan skin shows
+    this.agent = null; // {name, avatar?}: the agent the Agent skin shows
     this.box = null; // the pet box's top-left on screen
     this.side = "right"; // where the box sits in the window; the bar opens toward the screen's middle
     this.drag = null;
@@ -90,7 +90,7 @@ class Pet {
     this._send();
   }
 
-  /** The agent shown by the Ajan skin: {name, avatar?: data URL}. */
+  /** The agent shown by the Agent skin: {name, avatar?: data URL}. */
   setAgent(a) {
     const next = a && typeof a.name === "string" && a.name ? { name: M.clip(a.name, 40), avatar: M.avatarUrl(a.avatar) } : null;
     if (JSON.stringify(next) === JSON.stringify(this.agent)) return;

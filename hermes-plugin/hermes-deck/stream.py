@@ -49,7 +49,7 @@ RUNTIME_DIR = "hermes-deck"
 # The product version (root compat.json; relay/test/compat.test.js keeps these equal) and the wire protocol, which
 # changes only on a breaking change. deck.version answers with them here, without asking Hermes: this file is also
 # installed alone as <home>/hermes-deck/stream.py, so it carries its own copy. Apps before 0.3.6 never ask.
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 PROTOCOL = 1
 VERSION_METHOD = "deck.version"
 CONNECTION_ID = "hermes"

@@ -92,7 +92,7 @@ function clip(s, n) {
   return t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t;
 }
 
-/** Only a small inline image may ride along with an event (the Ajan skin's medallion). */
+/** Only a small inline image may ride along with an event (the Agent skin's medallion). */
 function avatarUrl(u) {
   return typeof u === "string" && /^data:image\/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(u) && u.length < 400000 ? u : undefined;
 }

@@ -3,7 +3,7 @@
 
 The deck-events test, run through the hermes-deck plugin: loads __init__.py from this directory with the
 bridge part off, so register() must hand Hermes exactly the deck-events hooks, then drives every hook with
-the payload shapes from hermes_cli/hooks.py (_DEFAULT_PAYLOADS) and checks the NDJSON output. The Bot ekranı
+the payload shapes from hermes_cli/hooks.py (_DEFAULT_PAYLOADS) and checks the NDJSON output. The Bot screen
 part replaces the relay's socket and Hermes' session release with fakes. test_bridge.py covers the bridge
 part and the hooks both parts share.
 """
@@ -135,7 +135,7 @@ def checks():
     (home / "gateway_state.json").write_text(json.dumps(gs), encoding="utf-8")
     assert de._snapshot_once(home) is False
 
-    # ---- Bot ekranı: the computer_use fence (fake relay socket, fake Hermes session release) ----------
+    # ---- Bot screen: the computer_use fence (fake relay socket, fake Hermes session release) ----------
     deck_home = Path(tmp) / "deck-home"
     os.environ["DECK_HOME"] = str(deck_home)
     os.environ["HERMES_CUA_DRIVER_CMD"] = "/opt/hermes-deck/relay/bin/deck-cua"   # the switch that turns it on
@@ -167,7 +167,7 @@ def checks():
 
     # input before any capture is refused (Hermes' input target could still be the user's own window), and the
     # routing identity is what Hermes hands deck-cua: profile from HERMES_HOME plus the gateway session key
-    assert pre({"action": "click", "coordinate": [5, 5]})["message"].startswith("Bot ekranı: capture first")
+    assert pre({"action": "click", "coordinate": [5, 5]})["message"].startswith("Bot screen: capture first")
     assert queries[-1] == {"sid": "", "skey": "agent:main:telegram:dm:1001", "profile": "scout"}, queries[-1]
     # an untargeted capture gets the handed window; the same app by name with zero-filled ids too
     assert pre({"action": "capture", "mode": "som"}) == {"action": "modify",
@@ -234,10 +234,10 @@ def checks():
     assert pre({"action": "wait", "seconds": 1}) is None
     # no grant, a grant on the Deck's own window, no route, relay down: refused, in words the agent can pass on
     route["grant"] = None
-    assert "Agent'a ver" in pre({"action": "capture"})["message"]
+    assert "Hand to agent" in pre({"action": "capture"})["message"]
     route["grant"] = dict(GRANT, window={"id": 5, "pid": 999, "title": "Hermes Deck"})
-    assert "Agent'a ver" in pre({"action": "capture"})["message"]
-    route.update(ok=False, error="Bot ekranı: no device is available for computer_use. Ask the user.")
+    assert "Hand to agent" in pre({"action": "capture"})["message"]
+    route.update(ok=False, error="Bot screen: no device is available for computer_use. Ask the user.")
     assert pre({"action": "capture"})["message"] == route["error"]
     route.update(ok=True, grant=dict(GRANT))
     relay["up"] = False
@@ -324,7 +324,7 @@ def checks():
     del os.environ["DECK_BOT_SCREEN"]
 
 
-    # ---- Bot ekranı: frames and cu events --------------------------------------------------------------------
+    # ---- Bot screen: frames and cu events --------------------------------------------------------------------
     def png(w, h_):
         """A valid grey PNG, no Pillow needed."""
         raw = b"".join(b"\x00" + b"\x80" * w for _ in range(h_))
@@ -353,8 +353,8 @@ def checks():
                       {"type": "image_url", "image_url": {"url": "data:image/png;base64," + shot}}]})
     post({"action": "click", "element": 3}, json.dumps({"ok": True, "action": "click"}))
     post({"action": "right_click", "coordinate": [1000, 500]}, json.dumps({"ok": True, "action": "right_click"}))
-    post({"action": "type", "text": "x"}, json.dumps({"error": "Bot ekranı: capture first"}), status="blocked",
-         error_message="Bot ekranı: capture first")
+    post({"action": "type", "text": "x"}, json.dumps({"error": "Bot screen: capture first"}), status="blocked",
+         error_message="Bot screen: capture first")
     cap, click, rclick, blocked = cu_events()[-4:]
     frame = deck_home / "cu" / cap["frame"]
     assert cap["action"] == "capture" and cap["device"] == PC and cap["ok"] is True and cap["ts"] > 1e12

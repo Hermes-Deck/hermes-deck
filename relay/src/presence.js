@@ -19,7 +19,7 @@
 // agent host's fallback browser first (relay .env: DECK_FALLBACK_BROWSER / DECK_FALLBACK_BROWSER_CDP) and to the
 // active device only when the agent host cannot host; DECK_BROWSER_DEFAULT=device restores the earlier order
 // (active device first, fallback second). The bot screen is always device-first. With neither a device nor a
-// fallback there is no route at all (the deck shows "çalışma alanı yok").
+// fallback there is no route at all (the deck shows "no workspace").
 //
 // Pins (Workspace tab host picker). The user can fix where one agent's work runs: a device ("Bu
 // bilgisayar") or the agent host's fallback; no pin is "Otomatik" (the rules above). A pinned session goes

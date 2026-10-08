@@ -313,7 +313,7 @@ class CdpGateway {
       // no device name here: this text reaches the agent's context (and its model provider)
       if (pin && pin.kind === "device") throw httpError(503, "no workspace: the user pinned this agent's browser to one of their computers (Hermes Deck, Workspace tab), which is offline or has agent browsers switched off. Ask the user.");
       if (pin) throw httpError(503, "no workspace: the user pinned this agent's browser to the agent host, but no browser is set up there for this agent (relay .env DECK_FALLBACK_BROWSER / DECK_FALLBACK_BROWSER_CDP). Ask the user.");
-      throw httpError(503, "no workspace (çalışma alanı yok): this relay has no agent host browser for this agent and no Hermes Deck allows agent browsers right now");
+      throw httpError(503, "no workspace: this relay has no agent host browser for this agent and no Hermes Deck allows agent browsers right now");
     }
     const t = r.host.kind === "fallback" ? this.fallback : this.links.get(this.presence.connOf(r.host.id));
     if (!t) throw httpError(502, "the agent's device is not reachable");

@@ -1,4 +1,4 @@
-/* Küre skin (pets/skins/orb.js): an 80 px orb standing on the stage's floor. --orb-c is registered so the
+/* Orb skin (pets/skins/orb.js): an 80 px orb standing on the stage's floor. --orb-c is registered so the
    gradient, the glow and the rim flow from one state's colour into the next. */
 @property --orb-c {
   syntax: "<color>";

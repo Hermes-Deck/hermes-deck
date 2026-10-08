@@ -177,7 +177,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
 
   /**
    * d: h, svg, deck, store, mark, H (getter), bridgeOpen, hermesMode, statusText, nodeLive, ago, hm, cleanErr,
-   * hermesSelect, hermesOpen, hermesRow, newSessionRow (app's "+ Yeni oturum" row for a profile), reselect
+   * hermesSelect, hermesOpen, hermesRow, newSessionRow (app's "+ New session" row for a profile), reselect
    * (app's hermesAutoSelect), renderNote, fleet (relay fleet), compact (rail folded to coins).
    */
   function create(d) {
@@ -194,7 +194,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       chats: new Map(), // name -> {sid, loading, error, checked}
       want: store.get("deck.hbot") || null, // the bot to open in this view
       pendingOpen: false, // open `want` once the roster is known
-      fold: false, // "Diğer oturumlar" under the open bot
+      fold: false, // "Other sessions" under the open bot
     };
     const H = () => d.H();
 
@@ -323,7 +323,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       for (const bot of list) {
         kids.push(botRow(bot));
         if (!d.compact() && isOpenBot(bot)) {
-          // the open bot: "+ Yeni oturum" (an ordinary session in its profile, beside its one Bot Chat), then
+          // the open bot: "+ New session" (an ordinary session in its profile, beside its one Bot Chat), then
           // its other sessions behind one fold
           if (d.bridgeOpen()) kids.push(d.newSessionRow(bot.name));
           kids.push(...foldRows(bot));

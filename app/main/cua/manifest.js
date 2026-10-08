@@ -113,7 +113,7 @@ function grantManifest({ grant, ident, platform, now = Date.now(), known = null 
   }
   const text = render({
     comment: [
-      "Hermes Deck: one \"Agent'a ver\" grant (rewritten on every change)",
+      "Hermes Deck: one \"Hand to agent\" grant (rewritten on every change)",
       `Agent: ${grant.agent} · ends ${new Date(grant.expires).toISOString()}`,
     ],
     expiresMs: grant.expires - now,
@@ -129,7 +129,7 @@ function grantManifest({ grant, ident, platform, now = Date.now(), known = null 
  * The manifest while the consent sheet lists windows and nothing is granted yet. The sheet needs every window
  * (capture thumbnails matched by window id to a pid and an app), and cua-driver 0.33.3 refuses a list_windows
  * without a pid under display: false ("desktop display observation is outside the capability manifest"); every
- * card would then say "Uygulaması belirlenemedi". So this daemon, and only this one, gets desktop.display: true.
+ * card would then say "Could not tell the app". So this daemon, and only this one, gets desktop.display: true.
  * It allows list_windows and its session plumbing and nothing else (no capture, no input, not even
  * get_screen_size), so display: true buys the window list and nothing more. Only the Deck calls it (index.js
  * startPicker, on a private socket); a grant's daemon keeps display: false.

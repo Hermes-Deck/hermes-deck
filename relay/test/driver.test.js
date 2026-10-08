@@ -382,7 +382,7 @@ test("mcp fence: each driver call stays on the handed window; listings are filte
   assert.deepStrictEqual([kept.result.isError, kept.result.content], [true, [{ type: "text", text: why }]]);
   const gone = JSON.parse(toHermes[6]);
   assert.strictEqual(gone.result.isError, true);
-  assert.match(gone.result.content[0].text, /^Bot ekranı: the handed window, Notepad \(notes\.txt\), is not on screen on Test PC/);
+  assert.match(gone.result.content[0].text, /^Bot screen: the handed window, Notepad \(notes\.txt\), is not on screen on Test PC/);
   assert.ok(!toHermes[6].includes("private.txt"));
 
   // a duplicate "pid" key parses here as the last one; the device only ever sees one, the granted pid
@@ -513,7 +513,7 @@ test("bot screen end-to-end: deck-cua over a deck's own relay connection, fenced
   // a CLI `call` is fenced at the door, and its listing comes back filtered
   const bad = wrapper(sock, ["call", "get_desktop_state", "{}"]);
   assert.strictEqual(await bad.exit, 69);
-  assert.match(bad.err, /deck-cua: Bot ekranı: get_desktop_state is not available/);
+  assert.match(bad.err, /deck-cua: Bot screen: get_desktop_state is not available/);
   const lw = wrapper(sock, ["call", "list_windows", "{}"]);
   assert.strictEqual(await lw.exit, 0, lw.err);
   assert.deepStrictEqual(JSON.parse(lw.text()).windows.map((w) => w.window_id), [77]);
@@ -542,7 +542,7 @@ test("bot screen: no route, no relay, and the agent host as fallback", async (t)
   t.after(() => a.relay.stop());
   const w = wrapper(a.sock, ["manifest"]);
   assert.strictEqual(await w.exit, 69);
-  assert.match(w.err, /^deck-cua: Bot ekranı: no device is available/);
+  assert.match(w.err, /^deck-cua: Bot screen: no device is available/);
   assert.ok(w.err.trim().split("\n").pop().length <= 200, "Hermes keeps 200 chars of the last stderr line");
   const q = await query(a.sock);
   assert.strictEqual(q.ok, false);

@@ -87,7 +87,7 @@ In `app/`, `npm run dist:win`, `npm run dist:mac` (on macOS) or `npm run dist` b
 Setup and an x64 ZIP; macOS targets are DMG and ZIP for arm64 and x64. Builds are unsigned (macOS: ad-hoc signature,
 no notarization). The plugin and relay are not part of the desktop installers.
 
-Releases are built and published by CI when a release pull request is merged; see
+Releases are built and published by CI when a release commit reaches `main`; see
 [CONTRIBUTING.md](../CONTRIBUTING.md#versioning-and-releases). Do not publish installers built on your own machine.
 
 ## Local troubleshooting and provisioning

@@ -1,5 +1,5 @@
 "use strict";
-// Sprite skins: frame-animated illustrated characters (Karakter, Baykuş, Filozof, the cats...). One factory,
+// Sprite skins: frame-animated illustrated characters (Character, Owl, Philosopher, the cats...). One factory,
 // window.PetSprite(id, art, {x3}), registers PetSkins[id] with its art folder (pets/<id>/);
 // pets/skins/<id>.js calls it and pets/skins/<id>.css places that figure's hit area and badges.
 // Every animation is one 4-frame strip; CSS steps() moves it inside a 144 px box, so the browser runs the

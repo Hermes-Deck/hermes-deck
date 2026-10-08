@@ -7,7 +7,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
 //  - "+" on the topics header opens an inline form: a title (up to 128 characters) and one of
 //    Telegram's six icon colours. The new topic is selected once it exists.
 //  - Right-click on a topic (or the menu key / Shift+F10 on it) opens the shared context menu:
-//    "Telegram'da aç" for everyone; rename, close/reopen, pin/unpin and delete only when this account
+//    "Open in Telegram" for everyone; rename, close/reopen, pin/unpin and delete only when this account
 //    can manage the group's topics (creator, or admin with manage_topics; delete also needs
 //    delete_messages). General can be neither closed nor deleted, and deleting asks first.
 //  - Closed topics are greyed with a lock, pinned ones carry a pin (main sends them first).

@@ -6,7 +6,7 @@
 const VERBS = new Set(["mcp", "manifest", "--help", "call", "status", "doctor"]);
 // Verbs that talk to the driver daemon. The Deck points them at its own private bounded daemon.
 const SOCKET_VERBS = new Set(["mcp", "call", "status"]);
-// Verbs that can act on the desktop: they need an active grant ("Agent'a ver") for the asking agent.
+// Verbs that can act on the desktop: they need an active grant ("Hand to agent") for the asking agent.
 const GRANT_VERBS = new Set(["mcp", "call"]);
 
 // Flags the Deck sets itself and argv from the relay may never carry: they would point the driver at

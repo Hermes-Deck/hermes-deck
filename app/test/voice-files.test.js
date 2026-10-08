@@ -28,11 +28,11 @@ class FakeRecorder {
   start() { this.state = "recording"; }
   stop() {
     this.state = "inactive";
-    setImmediate(() => {
-      if (FakeRecorder.silent) return this.onstop && this.onstop();
-      if (this.ondataavailable) this.ondataavailable({ data: new Blob([WEBM], { type: this.mimeType }) });
-      if (this.onstop) this.onstop();
-    });
+    // `done` settles once the stop event has been handled, transcription included (onstop returns that promise)
+    this.done = new Promise((resolve) => setImmediate(() => {
+      if (!FakeRecorder.silent && this.ondataavailable) this.ondataavailable({ data: new Blob([WEBM], { type: this.mimeType }) });
+      resolve(this.onstop && this.onstop());
+    }));
   }
 }
 
@@ -40,6 +40,7 @@ function world({ transcribe, now = { t: 0 }, getUserMedia } = {}) {
   const events = { states: [], errors: [], inserted: [], stopped: 0, intervals: [] };
   const track = { stop() { events.stopped++; } };
   FakeRecorder.silent = false;
+  FakeRecorder.last = null;
   const d = new voice.Dictation({
     getUserMedia: getUserMedia || (async () => ({ getTracks: () => [track] })),
     Recorder: FakeRecorder,
@@ -53,7 +54,9 @@ function world({ transcribe, now = { t: 0 }, getUserMedia } = {}) {
   });
   return { d, events, now };
 }
-const settle = () => sleep(15);
+// Waits for the last recorder's stop to be handled, not for a clock: a fixed 15 ms sleep lost the race on a loaded
+// machine (the clip's Blob read outlasted it and the state machine was still "transcribing").
+const settle = () => (FakeRecorder.last && FakeRecorder.last.done) || Promise.resolve();
 
 test("dictation: record, stop, transcribe, insert; the mic is released and nothing is ever sent", async () => {
   const w = world();

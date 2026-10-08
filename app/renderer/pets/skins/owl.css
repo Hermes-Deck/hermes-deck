@@ -1,4 +1,4 @@
-/* Baykuş (pets/skins/owl.js): where its hit area and badges sit, per pose (stage px, feet on y = 136). */
+/* Owl (pets/skins/owl.js): where its hit area and badges sit, per pose (stage px, feet on y = 136). */
 .pet-slot[data-skin="owl"][data-pose="sit"] { --hit-w: 70px; --hit-h: 88px; --hit-b: 6px; }
 .pet-slot[data-skin="owl"][data-pose="stand"] { --hit-w: 76px; --hit-h: 96px; --hit-b: 6px; }
 .pet-slot[data-skin="owl"][data-pose="lie"] { --hit-w: 86px; --hit-h: 62px; --hit-b: 6px; }

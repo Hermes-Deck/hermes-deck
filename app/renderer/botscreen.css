@@ -1,4 +1,4 @@
-/* Bot ekranı tab, its consent sheet and its Settings rows (renderer/botscreen.js). Tokens from styles.css:
+/* Bot screen tab, its consent sheet and its Settings rows (renderer/botscreen.js). Tokens from styles.css:
    patina = live, gilt = warning, amphora = an agent acting on this computer / failure. */
 .bs { display: flex; flex-direction: column; gap: 10px; }
 .bs [hidden] { display: none !important; }
@@ -131,7 +131,7 @@
 .bs-terms li { margin: 3px 0; line-height: 1.5; }
 .bs-terms b { color: var(--marble); font-weight: 500; }
 
-/* ---------- Settings → Bu cihaz ---------- */
+/* ---------- Settings → This device ---------- */
 /* the switch keeps its size next to a long help text (styles.css has a later flex .toggle rule) */
 .toggle.bs-toggle { align-items: flex-start; margin: 12px 2px 6px; }
 .toggle.bs-toggle .sw { flex: none; margin-top: 2px; }

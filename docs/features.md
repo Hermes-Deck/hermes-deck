@@ -61,7 +61,7 @@ or the **Work pane**, one at a time; each keeps its own width.
 | [Status pet, themes and languages](#status-pet-themes-wallpapers-and-languages) | no | no | no | no |
 | [Agent browsers (Browser tab)](#agent-browsers-browser-tab) | no | yes | no | **Agent browser allowed on this device** (only when your computer hosts) |
 | [Desktop control (Screen tab)](#desktop-control-screen-tab) | yes | yes | no | **Desktop control** + device key + window grant |
-| [Agent spaces](#agent-spaces) | yes | yes | no | for **Work on this device** |
+| [Agent spaces](#agent-spaces) | yes | yes | no | **Host agent desktops on this device** (only when your computer hosts), and desktop control for **Work on this device** |
 | [Updates](#updates) | no | no | no | no |
 
 ## Chat modes
@@ -391,9 +391,11 @@ the relay gates each `computer_use` call with a lock and queue. For own desktops
 containers: a Deck computer with Docker Desktop, or the agent host with Docker or colima. The relay routes each agent
 to its desktop and proxies the viewer to Deck with its own token; Deck shows it in an isolated view.
 
-**Needs.** The relay with `DECK_SPACES` set. Shared mode needs a macOS agent host with cua-spacesd
-(`relay/tools/install-spacesd.sh`). Agent and overflow modes need a desktop host with Docker running and the pinned
-desktop image; a desktop uses up to 1.5 GB of RAM.
+**Needs.** The relay with `DECK_SPACES` set. Agent mode works with a Linux or macOS agent host: it needs a desktop
+host with Docker running and the pinned desktop image, and a desktop uses up to 1.5 GB of RAM. Only the shared
+desktop is macOS-specific: it needs a macOS agent host with cua-spacesd (`relay/tools/install-spacesd.sh`), and
+overflow mode needs both. Without a macOS agent host, use agent mode with `DECK_SPACES_SHARED_FALLBACK=0`, so an
+agent without a desktop gets a tool error instead of falling back to a shared desktop that is not there.
 
 **Settings.** **Settings → This device → Agent spaces** (mode, **Default control**), **Agent desktops** (**Host agent
 desktops on this device**, limits, each agent's home host) and **Activity and safety** (activity log, screenshots,

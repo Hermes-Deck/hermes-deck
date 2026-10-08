@@ -446,7 +446,7 @@ button.eyebrow { width: calc(100% - 16px); border: 0; background: none; cursor: 
 button.eyebrow:hover { color: var(--marble-dim); }
 .eyebrow .chev { display: inline-block; width: 12px; margin-right: 4px; font-family: var(--mono); }
 
-/* ---------- desktop shell (A9–A11): Settings → Masaüstü switches ---------- */
+/* ---------- desktop shell (A9–A11): Settings → Desktop switches ---------- */
 .toggle { position: relative; display: grid; grid-template-columns: 36px minmax(0, 1fr); column-gap: 12px; align-items: start; margin: 0 2px 14px; cursor: pointer; }
 .form-actions + .toggle { margin-top: 20px; } /* C5: a switch right under a form's buttons (Telegram > read receipts) */
 .toggle input { position: absolute; left: 0; top: 0; width: 36px; height: 20px; margin: 0; opacity: 0; cursor: pointer; }
@@ -457,7 +457,7 @@ button.eyebrow:hover { color: var(--marble-dim); }
 .toggle input:focus-visible + .sw { outline: 2px solid var(--patina); outline-offset: 2px; }
 .toggle input:disabled { cursor: default; }
 .toggle input:disabled ~ * { cursor: default; opacity: 0.45; }
-.field:has(> select:disabled) > * { opacity: 0.45; } /* a select that depends on a switch above it (Pet görünümü) dims like a switch */
+.field:has(> select:disabled) > * { opacity: 0.45; } /* a select that depends on a switch above it (Pet look) dims like a switch */
 .field select:disabled { cursor: default; }
 .toggle .tbody { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .toggle .tlabel { font-size: 13.5px; color: var(--marble); }
@@ -479,7 +479,7 @@ button.eyebrow:hover { color: var(--marble-dim); }
 .row .sub.warn { color: var(--gilt); font-family: var(--mono); font-size: 11.5px; }
 .badge.ask { background: var(--gilt); }
 
-/* session controls: Araya gir · Durdur · Model */
+/* session controls: Steer · Stop · Model */
 .chat { grid-template-columns: minmax(0, 1fr); } /* no child (a long title, a control row) can widen the chat column */
 .chat-head .head-main { flex: 1 1 auto; min-width: 0; }
 .chat-head .head-main .title, .chat-head .head-main .subline { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -533,7 +533,7 @@ button.eyebrow:hover { color: var(--marble-dim); }
 }
 .hreq-text:focus { outline: 2px solid rgb(var(--patina-rgb) / 0.55); outline-offset: 0; border-color: transparent; }
 
-/* Settings → Doğrudan Hermes bağlantısı */
+/* Settings → Direct Hermes connection */
 .hb-status, .hb-test { margin: 8px 2px 0; font: 11.5px/1.5 var(--mono); color: var(--vein-text); }
 .hb-status:empty, .hb-test:empty { display: none; }
 .hb-status.ok, .hb-test.ok, .small.ok { color: var(--patina); }
@@ -623,7 +623,7 @@ button.eyebrow:hover { color: var(--marble-dim); }
 .ws-msg { margin: 0; color: var(--amphora); font-size: 12px; }
 .ws-note { margin: 0; font: 10.5px var(--mono); color: var(--vein-text); }
 
-/* Settings > Bu cihaz: a help line under a switch (outside its label): lined up with the label text like a
+/* Settings > This device: a help line under a switch (outside its label): lined up with the label text like a
    switch's own .fhelp (track 36px + gap 12px + the label's 2px margin), 2px under the label text as in .tbody */
 .toggle + .toggle-help { margin: -14px 2px 14px 50px; }
 
@@ -631,7 +631,7 @@ button.eyebrow:hover { color: var(--marble-dim); }
   .ws-status.live .dot { animation: none; }
 }
 
-/* ---------- Hermes rail: + Yeni oturum ---------- */
+/* ---------- Hermes rail: + New session ---------- */
 .row.new-session { grid-template-columns: 38px minmax(0, 1fr); color: var(--vein-text); font-size: 13px; padding-top: 6px; padding-bottom: 6px; }
 .row.new-session .plus { display: grid; place-items: center; width: 30px; height: 30px; margin-left: 4px; border: 1px dashed var(--vein); border-radius: 50%; font: 16px var(--mono); }
 .row.new-session:hover { color: var(--marble); }

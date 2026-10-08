@@ -10,6 +10,7 @@ const { EventEmitter } = require("events");
 const { safeName, writeAtomic } = require("./media");
 const history = require("./history"); // sub-agent views: "…Ago" times, history routes, timed live pushes
 const RX = require("../renderer/reactions"); // C9: the renderer's own toggle math, for in-memory reactions
+const { t: i18nText } = require("../renderer/i18n"); // the same texts TelegramService uses, in the UI language
 
 const DATA_URL = /^data:([\w.+-]+\/[\w.+-]+)(;base64)?,(.*)$/s;
 
@@ -61,7 +62,7 @@ class FixtureService extends EventEmitter {
     return this.me;
   }
 
-  /** A record from the file; "ago" (seconds before now) keeps day labels on "Bugün" whenever it runs. */
+  /** A record from the file; "ago" (seconds before now) keeps day labels on "Today" whenever it runs. */
   _msg(m, key) {
     const now = Math.floor(Date.now() / 1000);
     const date = m.ago !== undefined ? now - m.ago : m.date || now;
@@ -75,7 +76,7 @@ class FixtureService extends EventEmitter {
   }
 
   async send() {
-    throw new Error("Örnek modda gönderim kapalı.");
+    throw new Error(i18nText("U0223"));
   }
 
   /**
@@ -107,10 +108,10 @@ class FixtureService extends EventEmitter {
   async fetchMedia(key, id, variant, ref = null) {
     const entry = (this.data.media || {})[`${key}:${id}${ref ? `:${ref}` : ""}`] || {};
     const item = decode(entry[variant]);
-    if (!item) throw new Error(variant === "thumb" ? "Önizleme yok." : "Örnekte bu dosya yok.");
+    if (!item) throw new Error(i18nText(variant === "thumb" ? "U0224" : "U0225"));
     const msg = ((this.data.messages || {})[key] || []).find((m) => m.id === id) || {};
     const media = (ref ? richMedia(msg.rich && msg.rich.blocks, ref) : msg.media) || {};
-    const name = safeName(item.name || media.name || `${media.kind || "dosya"}-${id}`);
+    const name = safeName(item.name || media.name || `${media.kind || "file"}-${id}`);
     const file = path.join(this.mediaDir, `${key}-${id}${ref ? `-${ref}` : ""}-${variant}`, name);
     writeAtomic(file, item.buf);
     return { path: file, mime: item.mime, name, size: item.buf.length, kind: media.kind || null };
@@ -119,7 +120,7 @@ class FixtureService extends EventEmitter {
   /** where "rich": a rich message's button row; its answer sits under "<key>:<id>:rich:<row>:<col>". */
   async callback(key, id, row, col, where = "kb") {
     const a = (this.data.callbacks || {})[`${key}:${id}:${where === "rich" ? "rich:" : ""}${row}:${col}`];
-    return a || { message: "Örnek yanıt: düğmeye basıldı." };
+    return a || { message: i18nText("U0226") };
   }
 
   // --- reactions (C9), in memory only: "reactionChoices" per chat key (or "*"), "emoji" pictures by
@@ -130,9 +131,9 @@ class FixtureService extends EventEmitter {
   }
 
   async react(key, id, keys) {
-    if ((this.data.reactFail || []).includes(`${key}:${id}`)) throw new Error("Bu tepki bu sohbette kullanılamıyor.");
+    if ((this.data.reactFail || []).includes(`${key}:${id}`)) throw new Error(i18nText("U0227"));
     const msg = ((this.data.messages || {})[key] || []).find((m) => m.id === id);
-    if (!msg) throw new Error("Mesaj bulunamadı.");
+    if (!msg) throw new Error(i18nText("U0228"));
     const reactions = RX.applyMine(msg.reactions || null, keys, this.me && this.me.id);
     if (reactions) msg.reactions = reactions;
     else delete msg.reactions;
@@ -151,12 +152,12 @@ class FixtureService extends EventEmitter {
   // --- topic management, in memory only (same rules as TelegramService) -------------------------
   _canManage(del = false) {
     const g = this.state.group;
-    if (!g || !g.canManage || (del && !g.canDelete)) throw new Error("Bu grupta konuları yönetme yetkin yok.");
+    if (!g || !g.canManage || (del && !g.canDelete)) throw new Error(i18nText("U0229"));
   }
 
   _topic(id) {
     const t = this.state.topics.find((x) => x.id === id);
-    if (!t) throw new Error("Konu bulunamadı.");
+    if (!t) throw new Error(i18nText("U0230"));
     return t;
   }
 
@@ -173,7 +174,7 @@ class FixtureService extends EventEmitter {
     const key = `t${id}`;
     this.state.topics.push({ key, id, title, color, unread: 0, pinned: false, closed: false, last: null });
     this.data.messages = this.data.messages || {};
-    this.data.messages[key] = [{ id, ago: 0, out: true, fromId: this.me && this.me.id, from: this.me && this.me.name, text: "", ents: [], media: null, service: `${(this.me && this.me.name) || "Biri"} konuyu oluşturdu: ${title}` }];
+    this.data.messages[key] = [{ id, ago: 0, out: true, fromId: this.me && this.me.id, from: this.me && this.me.name, text: "", ents: [], media: null, service: i18nText("U0231", { v: (this.me && this.me.name) || i18nText("A0144"), title }) }];
     this._changed();
     return { key, id };
   }

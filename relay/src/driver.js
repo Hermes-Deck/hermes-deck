@@ -33,7 +33,7 @@ const HELLO_MS = 5000;
 const FRAME_TYPES = { ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png" };
 // Hermes shows the agent only the last stderr line of a failed driver probe, cut at 200 chars: keep it short.
 const NO_ROUTE =
-  "Bot ekranı: no device is available for computer_use (Masaüstü kontrolü off, or the computer is locked or idle) and the agent host is not allowed. Ask the user.";
+  "Bot screen: no device is available for computer_use (Desktop control off, or the computer is locked or idle) and the agent host is not allowed. Ask the user.";
 // Agent spaces phase 2: the agent's own desktop. A query waits this long for it, then answers "starting" (busy):
 // the plugin's busy loop asks again, and the desktop keeps starting meanwhile (desktops.js shares one start).
 const DESKTOP_WAIT_MS = 2000;
@@ -228,7 +228,7 @@ class Driver {
     this._onRoute = ({ old, why }) => {
       if (!old || old.capability !== CAP || (why !== "handoff" && why !== "lost")) return;
       const reason = why === "handoff" ? "computer_use moved to another device" : "the device is no longer available";
-      for (const c of [...this.conns]) if (c.route === old && c.kind && !c.done) this._end(c, EXIT_ENDED, `Bot ekranı: ${reason}; an action in flight may not have completed`);
+      for (const c of [...this.conns]) if (c.route === old && c.kind && !c.done) this._end(c, EXIT_ENDED, `Bot screen: ${reason}; an action in flight may not have completed`);
     };
     presence.on("route", this._onRoute);
   }
@@ -281,7 +281,7 @@ class Driver {
     this.timers = [];
     this.presence.off("route", this._onRoute);
     for (const c of [...this.conns]) {
-      if (c.kind && !c.done) this._end(c, EXIT_ENDED, "Bot ekranı: the relay is stopping");
+      if (c.kind && !c.done) this._end(c, EXIT_ENDED, "Bot screen: the relay is stopping");
       else c.s.destroy();
     }
     for (const link of this.links.values()) this._endLink(link, "the relay is stopping");
@@ -328,7 +328,7 @@ class Driver {
   _endOrphanSpaces() {
     for (const c of [...this.conns]) {
       if (c.kind !== "space" || c.done || c.spaceHost === "agent-host" || this.presence.connOf(c.spaceHost)) continue;
-      this._end(c, EXIT_ENDED, "Bot ekranı: the computer that hosts your desktop disconnected; an action in flight may not have completed");
+      this._end(c, EXIT_ENDED, "Bot screen: the computer that hosts your desktop disconnected; an action in flight may not have completed");
     }
   }
 
@@ -430,7 +430,7 @@ class Driver {
   }
 
   _endLink(link, why) {
-    for (const c of [...link.channels.values()]) this._end(c, EXIT_ENDED, `Bot ekranı: ${why}; an action in flight may not have completed`);
+    for (const c of [...link.channels.values()]) this._end(c, EXIT_ENDED, `Bot screen: ${why}; an action in flight may not have completed`);
     link.channels.clear();
     link.grant = null;
   }
@@ -478,9 +478,9 @@ class Driver {
     const name = r.host.name || id;
     const link = this.links.get(this.presence.connOf(id));
     if (!link || !link.ok || link.device !== id) {
-      return { ok: false, r, epoch: r.epoch, error: `Bot ekranı: ${name} has no driver channel to the relay right now (Hermes Deck closed, or no device token). Ask the user.` };
+      return { ok: false, r, epoch: r.epoch, error: `Bot screen: ${name} has no driver channel to the relay right now (Hermes Deck closed, or no device token). Ask the user.` };
     }
-    if (!link.driverOk) return { ok: false, r, epoch: r.epoch, error: `Bot ekranı: cua-driver is not ready on ${name}; the user can check it in Hermes Deck.` };
+    if (!link.driverOk) return { ok: false, r, epoch: r.epoch, error: `Bot screen: cua-driver is not ready on ${name}; the user can check it in Hermes Deck.` };
     return { ok: true, r, device: id, name, link, epoch: r.epoch };
   }
 
@@ -635,7 +635,7 @@ class Driver {
     c.key = wire.routeKey(c);
     if (this._agentMode() && !this._devicePinned(c.key, c.profile)) {
       if (INFO_VERBS.has(c.verb)) return this._spaceInfo(c);
-      if (c.verb === "call") return this._fail(c, "Bot ekranı: one-shot calls are not available on an agent's own desktop; use the MCP session", 126);
+      if (c.verb === "call") return this._fail(c, "Bot screen: one-shot calls are not available on an agent's own desktop; use the MCP session", 126);
       // serve, stop and anything else: refused before _helloAgent, so they never start (or wait 13 s for) a desktop
       if (c.verb !== "mcp") return this._fail(c, AGENT_MCP_ONLY, 126);
       return this._agentStep(c, this._helloAgent(c));
@@ -690,7 +690,7 @@ class Driver {
 
   /** A space route: deck-cua's stdio MCP, carried to the desktop's Streamable HTTP /mcp by the bridge. */
   _openSpace(c, d) {
-    if (c.verb !== "mcp") return this._fail(c, "Bot ekranı: only the MCP transport reaches an agent's own desktop", 126);
+    if (c.verb !== "mcp") return this._fail(c, "Bot screen: only the MCP transport reaches an agent's own desktop", 126);
     let fetch;
     try {
       fetch = this.spaceFetch(d.host, c.profile);
@@ -820,7 +820,7 @@ class Driver {
       return wire.send(c.s, { t: "route", ok: true, device: "host", epoch: rt.epoch });
     }
     if (!wire.DEVICE_VERBS.has(c.verb)) {
-      return this._fail(c, `Bot ekranı: '${c.verb.slice(0, 40)}' cannot run on a device (only ${[...wire.DEVICE_VERBS].join(", ")}); keep computer_use.permission_mode at standard.`, 126);
+      return this._fail(c, `Bot screen: '${c.verb.slice(0, 40)}' cannot run on a device (only ${[...wire.DEVICE_VERBS].join(", ")}); keep computer_use.permission_mode at standard.`, 126);
     }
     const link = rt.link;
     const ctx = this._ctx(link, c.profile, rt.name);
@@ -839,7 +839,7 @@ class Driver {
         c.out = [];
       }
     }
-    if (link.channels.size >= MAX_CHANNELS) return this._fail(c, `Bot ekranı: too many driver sessions are open on ${rt.name}`);
+    if (link.channels.size >= MAX_CHANNELS) return this._fail(c, `Bot screen: too many driver sessions are open on ${rt.name}`);
     c.kind = "device";
     c.link = link;
     c.ch = this._ch = this._ch >= 0xfffffffe ? 1 : this._ch + 1;
@@ -1017,7 +1017,7 @@ class Driver {
     const out = { ok: true, devices: [], wrappers: 0 };
     for (const link of this.links.values()) {
       if (!link.ok || device === "host" || (device && link.device !== device)) continue;
-      this._send(link, OP.STOP, 0, { reason: "Durdur (Hermes Deck)" });
+      this._send(link, OP.STOP, 0, { reason: "Stop (Hermes Deck)" });
       link.grant = null;
       out.devices.push(link.device);
     }
@@ -1025,7 +1025,7 @@ class Driver {
       if ((c.kind !== "host" && c.kind !== "device" && c.kind !== "space") || c.done) continue;
       const hit = c.kind === "space" ? device === null || device === "host" || c.spaceHost === device : device === null || (device === "host" ? c.kind === "host" : c.device === device);
       if (hit) {
-        this._end(c, EXIT_ENDED, "Bot ekranı: stopped from Hermes Deck");
+        this._end(c, EXIT_ENDED, "Bot screen: stopped from Hermes Deck");
         out.wrappers += 1;
       }
     }

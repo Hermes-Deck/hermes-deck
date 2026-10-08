@@ -3,9 +3,9 @@ var i18nNode = (key, vars) => (typeof module === "object" && module.exports ? re
 var i18nBind = (el, attr, key, vars) => (typeof module === "object" && module.exports ? require("./i18n") : window.DeckI18n).bind(el, attr, key, vars);
 var i18nText = typeof module === "object" && module.exports ? require("./i18n").t : window.DeckI18n.t;
 var i18nLocale = typeof module === "object" && module.exports ? require("./i18n").getLocale : window.DeckI18n.getLocale;
-// Bot ekranı tab (renderer): what an agent did on a desktop (its own screenshots with click markers, and an
-// action log), "Agent'a ver" (the consent sheet), "Kontrolü al / geri ver" and Durdur; plus the rows for
-// Settings → Bu cihaz. Loaded before app.js, which calls window.DeckBotScreen(ctx) once and mounts the
+// Bot screen tab (renderer): what an agent did on a desktop (its own screenshots with click markers, and an
+// action log), "Hand to agent" (the consent sheet), "Take control" / "Return control" and Stop; plus the rows for
+// Settings → This device. Loaded before app.js, which calls window.DeckBotScreen(ctx) once and mounts the
 // returned root; the root updates itself in place. Strings from the relay or from other apps' windows go
 // in through textContent only. Main side: main/cua/index.js (deck.botscreen).
 window.DeckBotScreen = function DeckBotScreen(ctx) {
@@ -218,7 +218,7 @@ window.DeckBotScreen = function DeckBotScreen(ctx) {
     );
   }
 
-  /** The agent "Kontrolü al" applies to: the grant's, else the selected (or newest) event's. */
+  /** The agent "Take control" applies to: the grant's, else the selected (or newest) event's. */
   function leaseProfile() {
     const st = B.st;
     if (st && st.grant) return st.grant.profile;
@@ -436,7 +436,7 @@ window.DeckBotScreen = function DeckBotScreen(ctx) {
     }
   }
 
-  // ---------------------------------------------------------------- consent sheet ("Agent'a ver")
+  // ---------------------------------------------------------------- consent sheet ("Hand to agent")
   const sheetBack = h("div", { class: "bs-sheet-back", hidden: true });
   document.body.appendChild(sheetBack);
   sheetBack.addEventListener("mousedown", (e) => {
@@ -679,8 +679,8 @@ window.DeckBotScreen = function DeckBotScreen(ctx) {
     sheetBack.hidden = false;
   }
 
-  // ---------------------------------------------------------------- Settings → Bu cihaz
-  /** Rows for the Settings tab's "Bu cihaz" section: the "desktop" switch, allowed agents, driver, device key. */
+  // ---------------------------------------------------------------- Settings → This device
+  /** Rows for the Settings tab's "This device" section: the "desktop" switch, allowed agents, driver, device key. */
   function settingsRows() {
     const st = B.st;
     if (!st) return [h("p", { class: "muted small" }, i18nNode("U0782"))];

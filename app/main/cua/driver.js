@@ -106,7 +106,7 @@ class Driver extends EventEmitter {
   }
 
   /**
-   * Synchronous teardown for Durdur and quit: kills channel processes and the daemon now, without waiting
+   * Synchronous teardown for Stop and quit: kills channel processes and the daemon now, without waiting
    * for anything (works with the relay and Hermes offline).
    */
   killAll() {
@@ -318,7 +318,7 @@ function callError({ code, stdout, stderr }) {
 /**
  * Kills a child. Windows: TerminateProcess at once; for the daemon (tree), taskkill /T first so its helper
  * processes go too. taskkill runs in the background (it can take a second) and the daemon is terminated
- * outright 1.5 s later if it is still there: Durdur never waits on it.
+ * outright 1.5 s later if it is still there: Stop never waits on it.
  */
 function killProcess(child, platform, tree = false) {
   if (!child || child.exited || Number.isInteger(child.exitCode) || child.signalCode) return;

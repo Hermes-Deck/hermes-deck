@@ -21,7 +21,7 @@ const DEFAULTS = {
   // desktop shell (main/desktop.js): notifications, chime, status pet, close-to-tray; petPos = the pet's
   // last screen position (DIP), kept here so it survives restarts. autostart (G2) mirrors the OS login
   // item: desktop.js re-reads the real state on every start (main/autostart.js). petSkin: the pet's look
-  // (character = Karakter, orb = Küre, agent = Ajan); petMotion: its animations (off = stills).
+  // (character = Character, orb = Orb, agent = Agent); petMotion: its animations (off = stills).
   desktop: { notifications: true, sound: true, pet: true, closeToTray: true, autostart: false, petPos: null, petSkin: "character", petMotion: true, petSize: 1, taskbarBadge: true },
   // direct connection to a Hermes host's stream.py (no secrets: SSH keys stay in the user's ~/.ssh)
   bridge: { mode: "off", target: "", python: "", stream: "~/.hermes/hermes-deck/stream.py", distribution: "" },
@@ -71,7 +71,7 @@ function normalizeDesktops(v) {
 }
 const DESKTOP_FLAGS = ["notifications", "sound", "pet", "closeToTray", "autostart", "petMotion", "taskbarBadge"];
 const PET_SKINS = require("../renderer/pets/catalog").IDS;
-const PET_SIZES = [0.75, 1, 1.25, 1.5]; // Küçük / Orta / Büyük / Çok büyük (pet-model.js scales by it)
+const PET_SIZES = [0.75, 1, 1.25, 1.5]; // Small / Medium / Large / Extra large (pet-model.js scales by it)
 const THEMES = ["basalt", "marble", "aegean", "system"];
 const CHAT_CHANNELS = ["telegram", "hermes"];
 const CHAT_MODES = ["telegram", "sessions", "bots"];

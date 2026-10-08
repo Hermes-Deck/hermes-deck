@@ -1,8 +1,8 @@
 "use strict";
 const { t: i18nText, getLocale: i18nLocale, getLanguage: i18nLanguage } = require("../../renderer/i18n");
 // Bot screen: the always-on-top bar shown for as long as an agent may act on this computer
-// ("<Agent> bu bilgisayarda: <App> · Durdur"). Same pattern as the status pet (main/pet.js): frameless,
-// transparent, never focused, click-through except its Durdur button. It is kept out of screen captures
+// ("<Agent> on this computer: <App> · Stop"). Same pattern as the status pet (main/pet.js): frameless,
+// transparent, never focused, click-through except its Stop button. It is kept out of screen captures
 // where the OS allows it (Windows), so the agent's own screenshots never show it. Its page:
 // renderer/botbar.html (+ botbar.js, botbar.css), its preload: bar-preload.js.
 const { BrowserWindow, ipcMain, screen } = require("electron");
@@ -29,7 +29,7 @@ ipcMain.on("botbar:interactive", (e, on) => fromBar(e) && current._interactive(!
 ipcMain.on("botbar:rendered", (e) => fromBar(e) && current.onRendered && current.onRendered());
 
 class ActivityBar {
-  /** @param {{onStop?: () => void}} [o] onStop: the bar's Durdur button */
+  /** @param {{onStop?: () => void}} [o] onStop: the bar's Stop button */
   constructor({ onStop = () => {} } = {}) {
     this.onStop = onStop;
     this.win = null;
@@ -99,7 +99,7 @@ class ActivityBar {
       win.setAlwaysOnTop(true, "screen-saver"); // above full-screen windows too
       win.setContentProtection(true); // Windows: left out of every screen capture, the agent's included
       if (process.platform === "darwin") win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-      win.setIgnoreMouseEvents(true, { forward: true }); // clicks pass through, except over Durdur
+      win.setIgnoreMouseEvents(true, { forward: true }); // clicks pass through, except over Stop
       win.once("ready-to-show", () => win.showInactive());
       this._hookScreen();
     }
@@ -113,7 +113,7 @@ class ActivityBar {
     for (const ev of ["display-removed", "display-added", "display-metrics-changed"]) screen.on(ev, again);
   }
 
-  /** The pointer is over the Durdur button: take the click there, pass everything else through. */
+  /** The pointer is over the Stop button: take the click there, pass everything else through. */
   _interactive(on) {
     if (!this.visible || this.shot || on === this.interactive) return;
     this.interactive = on;

@@ -4,7 +4,7 @@ It combines two parts in one plugin:
 
   events  (events.py, formerly the `deck-events` plugin)
           an append-only NDJSON tap for the relay: ~/.hermes-deck/events/<profile>.ndjson, gateway/cron
-          snapshots in ~/.hermes-deck/state/, and, only when a profile opts into Bot ekranı, the
+          snapshots in ~/.hermes-deck/state/, and, only when a profile opts into Bot screen, the
           computer_use fence and its frames in ~/.hermes-deck/cu/.
   bridge  (observer.py + stream.py)
            live session snapshots in <HERMES_HOME>/hermes-deck/processes/ and a private Unix control socket,

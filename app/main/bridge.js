@@ -255,7 +255,7 @@ function validSessionList(params) {
   return true;
 }
 
-/** session.create: an empty session ("+ Yeni oturum"), or a hidden "Bot Chat" that follows the profile's config. */
+/** session.create: an empty session ("+ New session"), or a hidden "Bot Chat" that follows the profile's config. */
 function validCreate(params) {
   if (!onlyKeys(params, ["idempotency_key", "profile", "title", "hidden", "follow_profile_config"])) return false;
   if ("idempotency_key" in params && !(typeof params.idempotency_key === "string" && /^[A-Za-z0-9-]{8,128}$/.test(params.idempotency_key))) return false;

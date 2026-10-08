@@ -613,6 +613,21 @@ for (const [lang, label] of [["en", "Shared first, own desktop when busy"], ["tr
   assert.deepEqual(calls.at(-1), ["mode", "overflow"]);
 });
 
+test("Agent spaces: a mode the relay refuses does not stay selected", async () => {
+  const deck = spacesDeck({ mode: "shared", spaces: [], hosts: [], homes: {} }, []);
+  deck.spaces.mode = async () => ({ ok: false, error: "bad mode" });
+  let failed = null;
+  const { sv, root } = mount({ deck, saveCall: async (call) => { try { await call(); } catch (e) { failed = e; } } });
+  sv.open("device");
+  await flushAll();
+  const mode = root().querySelector("#s-space-mode");
+  mode.value = "overflow";
+  mode.dispatch("change");
+  await flushAll();
+  assert.match(String(failed && failed.message), /bad mode/);
+  assert.equal(mode.value, "shared", "back to the relay's mode");
+});
+
 test("overflow: Settings shows no-host hint", async () => {
   const { sv, root } = mount({ deck: spacesDeck({ mode: "overflow", spaces: [], hosts: [], homes: {} }) });
   sv.open("device");
@@ -620,7 +635,7 @@ test("overflow: Settings shows no-host hint", async () => {
   assert.match(root().querySelector('.sv-section[data-section="device"]').text, /No computer hosts agent desktops yet/);
 });
 
-test("Agent spaces: own desktop per agent is selectable; one home-host row per agent (never host), offline hosts dimmed; a change goes to the relay", async () => {
+test("Agent spaces: own desktop per agent is selectable; one home-host row per agent (never host), a not-ready host dimmed, a vanished home offline; a change goes to the relay", async () => {
   const calls = [];
   const list = {
     mode: "agent",
@@ -648,8 +663,8 @@ test("Agent spaces: own desktop per agent is selectable; one home-host row per a
   assert.equal(a.value, "a1b2c3d4");
   assert.equal(root().querySelector("#s-space-home-pioneer").value, "auto");
   assert.deepEqual(a.children.map((o) => o.attrs.value), ["auto", "agent-host", "a1b2c3d4", "b2c3d4e5"]);
-  assert.deepEqual(a.children.map((o) => o.text), ["Automatic", "Agent host", "pc", "laptop (offline)"]);
-  assert.ok(a.children[3].classList.contains("off"), "an offline device is dimmed");
+  assert.deepEqual(a.children.map((o) => o.text), ["Automatic", "Agent host", "pc", "laptop (not ready)"]);
+  assert.ok(a.children[3].classList.contains("off"), "a connected device that cannot host yet is dimmed");
   const s = root().querySelector("#s-space-home-scout");
   assert.equal(s.value, "c3d4e5f6", "a home host that is gone stays shown");
   assert.equal(s.children.at(-1).text, "c3d4e5f6 (offline)");

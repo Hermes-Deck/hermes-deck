@@ -146,7 +146,7 @@ function buttonRows(m) {
 //     "table" | "details" | "think" | "media" | "gallery" | "embed" | "links" | "map" | "buttons" | "gap"};
 //   - media blocks carry a ref ("p<i>"/"d<i>") that tg:media resolves against the stored message;
 //   - button rows are numbered in document order; tg:callback finds the same row by walking again.
-// Whatever cannot be drawn becomes a "gap" block, which the renderer turns into a "Telegram'da aç" note.
+// Whatever cannot be drawn becomes a "gap" block, which the renderer turns into a "Open in Telegram" note.
 const RICH_MAX_BLOCKS = 600; // Telegram allows 500, nested blocks and list items included
 const RICH_MAX_DEPTH = 16; // Telegram allows 16 levels of nesting
 const RICH_MAX_TEXT = 40000; // characters across the whole message (Telegram: 32768 bytes of UTF-8)

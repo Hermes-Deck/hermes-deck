@@ -77,8 +77,8 @@ function blocksText(content) {
       if (typeof b === "string") return b;
       if (!b) return "";
       if (b.type === "text") return b.text || "";
-      if (b.type === "image") return "[görsel]";
-      if (b.type === "document") return "[belge]";
+      if (b.type === "image") return "[image]";
+      if (b.type === "document") return "[document]";
       return "";
     })
     .filter(Boolean)

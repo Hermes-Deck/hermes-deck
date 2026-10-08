@@ -2,7 +2,7 @@
 const { t: i18nText, getLocale: i18nLocale } = require("../renderer/i18n");
 // Workspace tab, main process: the "browser" hosting capability. Connects this device's agent browsers
 // (agent-browser.js) to the relay's CDP tunnel (cdp-tunnel.js) and to the renderer (deck.workspace.*).
-// Off unless the user switched "Ajan tarayıcısı bu cihazda çalışabilir" on (Settings > Bu cihaz, stored
+// Off unless the user switched "Agent browser allowed on this device" on (Settings > This device, stored
 // by presence.js): then no tunnel opens and no agent browser starts. A screenshot run never hosts for
 // the relay; with --workspace-demo=<url> it shows a throwaway browser from a temp profile instead.
 //
@@ -463,7 +463,7 @@ function initWorkspace({ send, presence, settings = null, notify = null, shot = 
 // --workspace-demo=<url> [--workspace-agent=<slug>] [--workspace-scene=follow|closed|wall|host]
 //   (none)  the first tab shows <url>
 //   follow  an "agent" opens <url> in a new tab of a new browser context: the view follows it
-//   closed  the same, then the agent closes that tab: the last frame stays as "Son görülen"
+//   closed  the same, then the agent closes that tab: the last frame stays as "Last seen"
 //   wall    the agent opens a local stand-in robot check (/sorry/): the verification banner shows
 //   host    the host picker is open, with the agent host's browser on offer
 //   host-off  the same, with the agent host's browser switched off in the relay's .env

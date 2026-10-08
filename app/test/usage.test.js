@@ -131,13 +131,14 @@ test("usage UI: unavailable store makes stale totals explicit and names the fail
 
 test("usage UI: totals lead with the token count; calls and cost are secondary", () => {
   const U = load("en");
-  const rows = U.summary(h, [{ in: 1500, cr: 0, cw: 0, out: 500, usd: 1.5, n: 1, estimated: true }, { n: 2 }], n => `${n / 1000}k`, { profiles: { default: { ok: true, updatedAt: Date.now() / 1000 - 120 } } });
+  const now = Date.now(); // one clock for the data and the view: a millisecond between two reads made 120 s stale
+  const rows = U.summary(h, [{ in: 1500, cr: 0, cw: 0, out: 500, usd: 1.5, n: 1, estimated: true }, { n: 2 }], n => `${n / 1000}k`, { profiles: { default: { ok: true, updatedAt: now / 1000 - 120 } } }, { now });
   const total = rows[0];
   assert.equal(cls(total, "usage-big")[0].children[0], "2k");
   assert.equal(cls(total, "usage-unit")[0].children[0], "tokens");
   assert.equal(text(cls(total, "usage-sub")[0]).replace(/\s+/g, " ").trim(), "3 calls · ≈$1.50");
   assert.equal(rows.length, 1, "fresh data (2 min) shows no 'updated' line");
-  const stale = U.summary(h, [{ in: 1 }], String, { profiles: { default: { ok: true, updatedAt: Date.now() / 1000 - 600 } } });
+  const stale = U.summary(h, [{ in: 1 }], String, { profiles: { default: { ok: true, updatedAt: now / 1000 - 600 } } }, { now });
   assert.ok(text(stale.at(-1)).includes("updated 10 min ago"), "older than 2 min: a tiny timestamp");
   assert.equal(U.plural("usage.calls", 1), "1 call");
   assert.equal(load("tr").plural("usage.calls", 3), "3 çağrı");

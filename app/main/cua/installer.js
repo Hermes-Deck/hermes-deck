@@ -1,7 +1,7 @@
 "use strict";
 const { t: i18nText, getLocale: i18nLocale } = require("../../renderer/i18n");
 // Installs the pinned cua-driver build (pins.js) and finds the installed one. Nothing is downloaded unless the
-// user confirms in Settings → Bu cihaz; the archive's size and SHA-256 must match the pin before it is
+// user confirms in Settings → This device; the archive's size and SHA-256 must match the pin before it is
 // unpacked, and the publisher's code signature is checked before anything from it runs.
 //   Windows: %LOCALAPPDATA%\hermes-deck\cua-driver\<version>\ (no admin rights, no OS prompts; not the
 //            roaming profile). The zip's single top folder is flattened, so cua-driver.exe sits right in

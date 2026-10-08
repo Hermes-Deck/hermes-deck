@@ -1,5 +1,5 @@
 "use strict";
-// Küre skin: a glowing orb with two eyes, pure CSS (pets/skins/orb.css). It breathes and blinks; on hover
+// Orb skin: a glowing orb with two eyes, pure CSS (pets/skins/orb.css). It breathes and blinks; on hover
 // its eyes follow the pointer. States: a patina swirl while working, amphora ripples and a bounce for a new
 // reply, a gilt pulse while an answer waits, dim with closed eyes when the relay is away. The colour is a
 // registered custom property, so one state flows into the next instead of switching.

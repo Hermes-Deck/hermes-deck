@@ -1,5 +1,5 @@
 "use strict";
-// Ajan skin: the relevant agent's medallion (its Telegram avatar, else its initials on the deck's coin) with
+// Agent skin: the relevant agent's medallion (its Telegram avatar, else its initials on the deck's coin) with
 // a name tag. The agent is the one an event is about while the event lasts, otherwise the one main reports
 // (the latest that worked or wrote), otherwise Hermes. The ring tells the state: a patina arc turning while
 // working, amphora ripples for a new reply, a gilt pulse while an answer waits, grey and dashed when the
