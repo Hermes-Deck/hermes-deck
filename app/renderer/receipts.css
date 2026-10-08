@@ -21,6 +21,5 @@
 .receipt-duration { font-variant-numeric: tabular-nums; color: var(--t3); }
 .receipt-call pre { margin: 2px 8px 10px 30px; padding: 8px 10px; font: 11.5px/1.65 var(--mono); color: var(--t2); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; background: var(--l1); border-radius: 6px; }
 .receipt summary:focus-visible, .receipt-inspect:focus-visible, .receipt-call pre:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
-.app .hm-tools { display: none; }
 @media (hover: none) { .receipt-inspect { opacity: 1; } }
 @media (max-width: 650px) { .receipt-call > summary { grid-template-columns: 12px 70px minmax(0, 1fr) auto; gap: 5px; } .receipt-inspect kbd { display: none; } .receipt { padding-right: 62px; } .receipt-calls { margin-right: -62px; } }

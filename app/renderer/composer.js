@@ -7,16 +7,56 @@
     if (session.channel === "telegram" || session.kind === "telegram") return chat.bot ? { key: "conv.telegram", vars: { bot: chat.bot } } : { key: "conv.telegramGroup", vars: {} };
     return { key: "conv.direct", vars: { profile: session.profile || "default" } };
   }
+  const MAX_TRACK_SESSIONS = 16, MAX_TRACK_KEYS = 1000, MAX_SEEN = MAX_TRACK_SESSIONS * MAX_TRACK_KEYS, ALIGN = 8;
+  /**
+   * Stable block identity by sequence alignment. Content keys (user text hash, agent role, message id) of the
+   * previous render are aligned with the new render's tail: aligned blocks keep their ids, blocks after the aligned
+   * tail are appended (fresh), blocks before it are older history (never fresh). An ambiguous or failed alignment,
+   * a first load or a session switch yields no fresh blocks: a missed entrance is preferred over a replayed one.
+   */
   function createEntranceTracker() {
-    const seen = new Set();
-    let current = null;
-    return { scan(session, keys, atEnd = true) {
+    const sessions = new Map();
+    let current = null, seq = 0;
+    function baseIds(keys) {
+      const count = new Map();
+      return keys.map(key => { const n = (count.get(key) || 0) + 1; count.set(key, n); return n === 1 ? key : `${key}#${n}`; });
+    }
+    function assign(session, keys, atEnd = true) {
       const boot = session !== current; current = session;
-      const fresh = boot || !atEnd ? [] : keys.filter(key => !seen.has(`${session}:${key}`));
-      for (const key of keys) seen.add(`${session}:${key}`);
-      while (seen.size > 4000) seen.delete(seen.values().next().value);
-      return fresh;
-    } };
+      const prev = sessions.get(session);
+      sessions.delete(session);
+      let ids, fresh = [];
+      if (!prev || !prev.keys.length) ids = baseIds(keys);
+      else {
+        const P = prev.keys, N = keys;
+        let at = -1;
+        for (let i = N.length; i > 0 && at < 0; i--) {
+          const m = Math.min(P.length, i, ALIGN);
+          let ok = m > 0;
+          for (let k = 1; ok && k <= m; k++) ok = N[i - k] === P[P.length - k];
+          if (ok) at = i;
+        }
+        if (at < 0) ids = baseIds(keys);
+        else {
+          const shift = at - P.length, used = new Set();
+          ids = N.map((key, j) => {
+            const p = j - shift;
+            const id = j < at && p >= 0 && P[p] === key ? prev.ids[p] : `${key}#n${++seq}`;
+            used.add(id);
+            return id;
+          });
+          if (!boot && atEnd) fresh = ids.slice(at);
+        }
+      }
+      sessions.set(session, { keys: keys.slice(-MAX_TRACK_KEYS), ids: ids.slice(-MAX_TRACK_KEYS) });
+      while (sessions.size > MAX_TRACK_SESSIONS) sessions.delete(sessions.keys().next().value);
+      return { ids, fresh };
+    }
+    return {
+      assign,
+      scan: (session, keys, atEnd = true) => assign(session, keys, atEnd).fresh,
+      size: () => [...sessions.values()].reduce((n, x) => n + x.ids.length, 0),
+    };
   }
   function relocate(inner, tray, queue) {
     tray.replaceChildren(...inner.querySelectorAll(".hreq"));
@@ -121,19 +161,12 @@
       pending = false;
       observer.disconnect();
       const records = [...inner.querySelectorAll(".msg:not(.outbox):not(.sysmsg)")];
-      const duplicate = new Map();
-      for (const el of records.filter(el => el.classList.contains("out")).reverse()) {
-        const hash = el.dataset.mid || keyOf((el.querySelector(".text")?.textContent || el.querySelector(".mstrip")?.textContent || "").trim());
-        const count = (duplicate.get(hash) || 0) + 1; duplicate.set(hash, count);
-        el.dataset.convKey = `user-${hash}-${count}`;
-      }
-      let user = "initial", ordinal = 0;
-      for (const el of records) {
-        if (el.classList.contains("out")) { user = el.dataset.convKey; ordinal = 0; }
-        else el.dataset.convKey = el.dataset.mid ? `msg-${el.dataset.mid}` : `${user}-agent-${ordinal++}`;
-      }
-      const fresh = new Set(tracker.scan(session.id, records.map(el => el.dataset.convKey), doc.getElementById("msgs").scrollTop > -60));
-      for (const el of records) if (fresh.has(el.dataset.convKey)) el.classList.add("conv-fresh");
+      // Agent prose is keyed by role only: streaming text and its stored copy are the same block.
+      const keys = records.map(el => el.dataset.mid ? `m${el.dataset.mid}` : el.classList.contains("out")
+        ? `u${keyOf((el.querySelector(".text")?.textContent || el.querySelector(".mstrip")?.textContent || "").trim())}` : "a");
+      const { ids, fresh } = tracker.assign(session.id, keys, doc.getElementById("msgs").scrollTop > -60);
+      const isFresh = new Set(fresh);
+      records.forEach((el, i) => { el.dataset.convKey = ids[i]; if (isFresh.has(ids[i])) el.classList.add("conv-fresh"); });
       if (fullRender || inner.querySelector(".hreq, .outbox")) {
         relocate(inner, tray, queue);
         tray.hidden = !tray.children.length; queue.hidden = !queue.children.length;
@@ -144,9 +177,17 @@
         const approval = !!tray.querySelector('[data-i18n-aria-label="U0603"]');
         inner.appendChild(h("p", { class: "conv-wait", dataset: { timeline: "approval" } }, t(approval ? "conv.waitApproval" : "conv.waitQuestion")));
       }
+      // A measured duration belongs to one turn: the last thinking block after that turn's user message.
+      let turnKey = "initial";
+      const lastThink = new Map();
       for (const el of records) {
-        const seconds = thoughtLabels.get(`${session.id}:${el.dataset.convKey}`);
-        if (seconds != null && el.querySelector(".tb-label")) el.querySelector(".tb-label").textContent = t("conv.thought", { seconds });
+        if (el.classList.contains("out")) turnKey = el.dataset.convKey;
+        else if (el.querySelector(".tb-label")) lastThink.set(turnKey, el);
+      }
+      for (const [turn, el] of lastThink) {
+        const seconds = thoughtLabels.get(`${session.id}:${turn}`);
+        const text = seconds != null ? t("conv.thought", { seconds }) : null;
+        if (text && el.querySelector(".tb-label").textContent !== text) el.querySelector(".tb-label").textContent = text;
       }
       if (focused?.el && !focused.el.isConnected && (doc.activeElement === doc.body || doc.activeElement === null)) {
         // focus() fires focusin synchronously and replaces `focused`: keep the caret before moving focus.
@@ -163,7 +204,8 @@
       // Receipt insertion is a module-owned mutation; it must not start a repaint feedback loop.
       const meaningful = records.filter(r => [...r.addedNodes, ...r.removedNodes].some(n => n.nodeType !== 1 || !n.matches?.(".receipt, .conv-wait")));
       if (!meaningful.length) return;
-      if (meaningful.some(r => r.target === inner)) fullRender = true;
+      // Only a rebuild (removed transcript nodes) may clear the tray; an append keeps moved requests.
+      if (meaningful.some(r => r.target === inner && [...r.removedNodes].some(n => n.nodeType === 1 && !n.matches?.(".receipt, .conv-wait")))) fullRender = true;
       schedule();
     });
     doc.addEventListener("focusin", e => { const el = e.target; focused = tray.contains(el) ? { el, fk: el.dataset.fk, start: el.selectionStart, end: el.selectionEnd } : null; });
@@ -178,9 +220,14 @@
       const d = e.detail;
       if (d.sid !== sidOf()) return;
       if (d.type === "message.complete") {
-        const last = [...inner.querySelectorAll(".msg:not(.out):not(.sysmsg)")].at(-1);
+        // Keyed by the turn's user block (stable identity); the reply may be rendered only after this event.
+        const users = [...inner.querySelectorAll(".msg.out:not(.outbox):not(.sysmsg)")];
+        const turn = users.at(-1)?.dataset.convKey || "initial";
         const seconds = root.DeckLiveActivity.thoughtSeconds(d.sid);
-        if (last?.dataset.convKey && seconds != null) thoughtLabels.set(`${session.id}:${last.dataset.convKey}`, seconds);
+        if (seconds != null) {
+          thoughtLabels.set(`${session.id}:${turn}`, seconds);
+          while (thoughtLabels.size > MAX_TRACKED * 4) thoughtLabels.delete(thoughtLabels.keys().next().value);
+        }
       }
       if (d.type === "local.sent" || d.type === "message.start") stopped.delete(d.sid);
       if (d.type === "local.sent" && !view) view = { sid: d.sid, phase: "thinking", since: d.at, tool: "", arg: "" };
@@ -213,7 +260,7 @@
     decorate();
     return { decorate, refresh: schedule };
   }
-  const api = { via, createEntranceTracker, relocate, mount, nodeLive, steerable, stoppable, stopOutcome, MAX_TRACKED };
+  const api = { via, createEntranceTracker, relocate, mount, nodeLive, steerable, stoppable, stopOutcome, MAX_TRACKED, MAX_SEEN };
   if (typeof module === "object" && module.exports) module.exports = api;
   else { root.DeckComposerLogic = Object.freeze(api); root.DeckComposer = mount(root.DeckShell, root.deck); }
 })(typeof window === "object" ? window : globalThis);

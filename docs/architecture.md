@@ -91,16 +91,20 @@ The main process (`app/main/`) owns every connection and every secret. The rende
 
 | Renderer file | View |
 |---|---|
-| `app.js` | Rail, chat column, the right panel's tabs (Activity, Fleet, Token, Workspace, Bot screen), and the direct Hermes views. |
+| `shell.js` | The Blend frame and its `window.DeckShell` API: sidebar (modes, filters), top bar, main area (chat or inbox), the right slot (Inspector or Work pane, one at a time, with tabs), named slots, events, shared services and the frame shortcuts. Later modules plug in through it. |
+| `app.js` | Sidebar rail, chat column, the Inspector's Session, Activity and Usage tabs, the direct Hermes views, and the services other modules use (`h`, `chat`, `openChat`, `triageData`, …). |
 | `settings-view.js`, `chat-modes.js`, `i18n.js` | The Settings view (General, Hermes, Relay, Telegram, Desktop, This device), the chat-mode editor, and the English and Turkish UI strings. |
 | `sessions-browser.js`, `bots.js`, `activity-view.js`, `live-activity.js` | All sessions; the Bots mode and Bot Chat; the Activity tree; the live "working" row in a Hermes chat. |
 | `outbox.js`, `busy-send.js`, `takeover.js`, `drafts.js`, `attach.js`, `voice.js`, `voice-bubble.js`, `hermes-files.js`, `media-preview.js` | Composer: queued messages, queue-or-steer, explicit take over, per-chat drafts, attachments, dictation, voice notes, files offered by the agent, image previews. |
 | `msgview.js`, `reactions.js`, `markdown.js`, `topics.js` | Message bubbles, media, inline buttons, context menu, reply bar; reaction chips and the quick picker; agent markdown as DOM nodes; forum topic management. |
 | `agents.js` | Sub-agent views: session detail, everything running now, full tool calls, the sub-agent tree with retries, role labels, folded prompt context. |
-| `model-picker.js` | The composer's model and reasoning chips left of Send, with their popovers (search, provider groups, custom model id; reasoning level and Show thinking). Session-scoped. |
-| `tokens-view.js`, `usage-view.js` | The Token tab and the quota/usage rows of the Fleet tab. |
-| `workspace.js` | The Workspace tab and the agent-browser rows of Settings → This device. |
-| `botscreen.js`, `space-panel.js` | The Bot screen tab (the agent's frames with click markers, the action log), the Hand to agent consent sheet, the Desktop control rows of Settings → This device, and the agent-space panel. |
+| `model-picker.js` | The composer's model · effort token left of Send and its popover (search, provider groups, custom model id; reasoning level and Show thinking). Session-scoped. |
+| `composer.js`, `receipts.js`, `timeline.js`, `think-block.js` | The composer status row, tray and "via" line; per-turn tool-call receipts; the timeline scrubber; reasoning folds. |
+| `work-pane.js` | The Work pane's Run, Plan, Diff and Agents tabs and the live Browser/Screen surface chips. |
+| `inbox.js`, `fleet-capsule.js` | The inbox (Needs you) and the top-bar fleet capsule and panel. They share one read model fed by bridge and relay pushes; answers use the existing `request.answer` path. |
+| `tokens-view.js`, `usage-view.js` | The Inspector's Usage tab: quotas, today's usage, token ranges and cost breakdowns. |
+| `workspace.js` | The Work pane's Browser tab and the agent-browser rows of Settings → This device. |
+| `botscreen.js`, `space-panel.js` | The Work pane's Screen tab (the agent's frames with click markers, the action log), the Hand to agent consent sheet, the Desktop control rows of Settings → This device, and the agent-space panel. |
 | `botbar.html`, `botbar.js` | The always-on-top bar shown while an agent may act on this computer. |
 | `pet.html`, `pet.js` | The status pet window. |
 
@@ -182,7 +186,7 @@ Both directions speak newline-delimited JSON-RPC 2.0 on stdio. The host sends `h
 
 ### Work pane data: plans, tool calls, sub-agents
 
-The work pane's Plan, Run and Agents tabs read the same data on both paths.
+The work pane's Plan, Run and Agents tabs read the same data on both paths. The plan path: the plugin's `plan` event → the relay's session model (and `deck.plan` on the direct stream) → the app (`bridge.plan`, else the relay's `sessionPlan`); with no live plan, the relay or plugin rebuilds it from `state.db`.
 
 **Plans.** When a `todo_list`, `todo` or `omh_todo` call succeeds, `events.py` parses the full result. It never raises and never blocks the call. It then appends one `plan` line: `{ev:"plan", sid, source:"todo"|"omh", rev, items:[{id, text, state, depth, phase?, blocked?}], total?}`.
 - Item limits: at most 64 items, text cut at 300 characters and redacted, and `depth` capped at 3.
@@ -218,7 +222,7 @@ Hermes on the agent host points a profile's browser tool at `browser.cdp_url: ht
 1. Hermes asks for `/json/version` there. The relay picks the agent's host with presence (capability `browser`).
 2. The relay sends the request as a binary frame `[0xCD][op][channel u32][payload]` over that deck's own `/events` connection. Ops: `OPEN`, `OPENED`, `DATA`, `CLOSE`, `HTTP`, `HTTP_RES`.
 3. The deck's `CdpTunnel` starts the agent's browser if needed, answers discovery, and carries each CDP socket to `127.0.0.1:<port>` of that browser. The relay rewrites WebSocket URLs in discovery answers to point at itself, so Hermes never sees the browser's port.
-4. The Workspace tab watches the same browser through a CDP screencast (JPEG frames) and sends the user's input only while the user holds control.
+4. The Browser tab (Work pane) watches the same browser through a CDP screencast (JPEG frames) and sends the user's input only while the user holds control.
 
 Each agent gets its own headless Chrome or Edge, with its own profile in `agent-browsers/<profile>` in the app's data folder and `--remote-debugging-port=0`. A browser nobody used or watched for 15 minutes is closed, and all of them close when the Deck quits.
 
@@ -253,7 +257,7 @@ On the device (`app/main/cua/`), everything is off until the user turns on **Set
 - The driver is a pinned cua-driver (0.33.3; on Windows in `%LOCALAPPDATA%\hermes-deck\cua-driver\<version>\`, on macOS `~/Applications/CuaDriver.app`). The Deck installs it only after the user confirms, and checks its size, SHA-256 and publisher signature first. It runs as the Deck's own daemon in bounded mode, with a manifest naming only the handed app; each relay channel is one driver process pointed at that daemon (layer 3 of the fence).
 - **Hand to agent** lists windows (capture thumbnails matched with the driver's `list_windows`), refuses the Deck itself and password managers, and needs the user's confirmation. A grant lasts at most 2 h and ends after 30 min idle, on lock or sleep, and on quit.
 - While a grant is active, an always-on-top bar, a red tray icon and notifications show it. **Stop** (the bar, the tray, the tab, Ctrl+Alt+Shift+S or ⌃⌥⌘S) works locally first: channels closed, driver processes killed, the switch paused, `STOPPED`, then `POST /desktop/stop`.
-- The Bot screen tab shows the frames the agent saw, with click markers, and an action log built from the relay's `cu` events. Frames come through the main process with the relay token.
+- The Screen tab (Work pane) shows the frames the agent saw, with click markers, and an action log built from the relay's `cu` events. Frames come through the main process with the relay token.
 
 With `DECK_DESKTOP_HOST=1` and no device available, `computer_use` runs on the agent host's own screen; otherwise the agent gets the "no device" answer. Frames, opcodes, fences, exit codes and consent defaults are in [`bot-screen-protocol.md`](bot-screen-protocol.md).
 
@@ -276,7 +280,7 @@ The device id is random and kept in `device.json` in the app's data folder, with
 - **Fallbacks** come only from the relay's `.env`: `DECK_FALLBACK_BROWSER` / `DECK_FALLBACK_BROWSER_CDP` for browsers, `DECK_DESKTOP_HOST` for the desktop. All are off by default. For the browser, the agent host is preferred over an active deck unless `DECK_BROWSER_DEFAULT=device`; the desktop capability is always device-first.
 - `presence.handoff()` can move a route on purpose, but nothing in this version calls it.
 
-The relay pushes `{t:"devices", devices, active, fallback, routes}` to every deck when this changes; the Workspace tab uses it to say where an agent's browser runs.
+The relay pushes `{t:"devices", devices, active, fallback, routes}` to every deck when this changes; the Browser tab uses it to say where an agent's browser runs.
 
 ## Agent spaces
 
@@ -286,7 +290,7 @@ Agents that use `computer_use` work on their own desktop, a space, instead of th
 - `relay/src/space-lock.js` and `relay/src/spaces.js` gate each `computer_use` route query. A busy desktop makes the plugin wait in a FIFO queue.
 - cua-spacesd (Cua, loopback only, its token kept on the agent host) streams that desktop.
 
-**Watching from the Deck.** The relay proxies the cua-spacesd viewer to authenticated Decks, passing only the calls the viewer needs. The Deck loads it from a loopback proxy into an isolated view over the Bot screen tab, with three control levels (Watch, Together, Full control).
+**Watching from the Deck.** The relay proxies the cua-spacesd viewer to authenticated Decks, passing only the calls the viewer needs. The Deck loads it from a loopback proxy into an isolated view over the Screen tab, with three control levels (Watch, Together, Full control).
 
 **Work on this device.** It pins an agent's desktop route to a Deck device. There cua-driver's own agent cursor shows where the agent acts, beside the user's pointer.
 
@@ -294,7 +298,7 @@ Agents that use `computer_use` work on their own desktop, a space, instead of th
 Hermes profile ──computer_use──> deck-cua ──socket──> relay ──(host route)──> cua-driver ──> agent host desktop
                                                         │  ├─ lock + queue (shared mode)
                                                         │  └─ viewer proxy (token added) <── cua-spacesd (loopback)
-Deck (Bot screen tab) <── loopback proxy <── authenticated HTTP/WS ──┘
+Deck (Screen tab) <── loopback proxy <── authenticated HTTP/WS ──────┘
 Deck "This device"    <──────── device channel (existing) ──── bounded cua-driver on this device + its agent cursor
 ```
 

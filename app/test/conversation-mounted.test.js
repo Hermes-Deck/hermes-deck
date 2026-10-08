@@ -146,3 +146,36 @@ test("receipt selection opens Run on Inspect and follows Run selections without 
   assert.ok(env.inner.querySelector(".receipt-call[data-call=\"c2\"]").classList.contains("selected"));
   assert.equal(env.inner.querySelector(".receipt-fold").open, true, "a Run selection opens the folded receipt");
 });
+
+test("queued messages move into the composer with visible Send now and Cancel and working handlers", () => {
+  const env = boot();
+  const OB = require("../renderer/outbox");
+  const store = new Map();
+  const I18N = env.win.DeckI18n;
+  const ob = OB.create({ store: { get: k => store.get(k), set: (k, v) => store.set(k, v) }, h: env.h, i18nText: I18N.t, i18nNode: (k, v) => I18N.t(k, v) });
+  ob.add("s", "first", [{ token: "tok-1", name: "a.png", size: 3, kind: "image", image: true }]);
+  ob.add("s", "second");
+  const calls = [];
+  const on = { sendNow: id => calls.push(["now", id]), cancel: id => { calls.push(["cancel", id]); ob.remove("s", id); render(); }, edit: id => calls.push(["edit", id]), redirect: id => calls.push(["redirect", id]), redraw: () => render() };
+  const btn = (el, prefix) => el.querySelectorAll("button").find(b => (b.dataset.fk || "").startsWith(prefix));
+  function render() { env.inner.replaceChildren(env.user("hello"), env.agent("reply"), ...ob.bubbles("s", on)); env.flush(); }
+  render();
+  const queue = env.doc.querySelector(".conv-queue");
+  assert.equal(queue.hidden, false);
+  assert.equal(queue.querySelectorAll(".msg.outbox").length, 2);
+  assert.equal(env.inner.querySelectorAll(".outbox").length, 0, "the transcript keeps no queued copy");
+  const first = queue.querySelectorAll(".msg.outbox")[0];
+  const visible = first.querySelectorAll(".outbox-meta .linkbtn").map(b => b.textContent);
+  assert.deepEqual(visible, ["Send now", "Cancel"]);
+  assert.ok(first.querySelector(".outbox-file"), "attachment token chip kept");
+  btn(first, "outbox-sendnow:").click();
+  btn(first, "outbox-more:").click();
+  const menu = queue.querySelectorAll(".msg.outbox")[0].querySelectorAll(".amenu-item").map(b => b.textContent);
+  assert.deepEqual(menu, ["Edit"], "files: no Interrupt and send; Cancel is not duplicated in the menu");
+  btn(queue.querySelectorAll(".msg.outbox")[0], "outbox-cancel:").click();
+  assert.deepEqual(calls.map(c => c[0]), ["now", "cancel"]);
+  assert.equal(queue.querySelectorAll(".msg.outbox").length, 1, "FIFO: the second message remains");
+  assert.equal(queue.querySelector(".text").textContent, "second");
+  assert.equal(JSON.parse(store.get("deck.outbox.s")).length, 1, "persisted");
+  assert.equal(env.input.value, "Retained draft", "the draft is untouched");
+});

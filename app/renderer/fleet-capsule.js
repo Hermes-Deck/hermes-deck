@@ -47,7 +47,7 @@
     const button = h("button", { type: "button", class: "tf-cap", title: t("triage.fleetTip"), "aria-label": t("triage.fleetTip"), "aria-expanded": "false", "aria-controls": "triage-fleet", onclick: () => toggle() });
     const panel = h("section", { id: "triage-fleet", class: "tf-panel", role: "dialog", "aria-modal": "false", "aria-label": t("triage.fleet"), hidden: true });
     doc.body.append(panel);
-    const forms = new Map(), elapsedNodes = new Map();
+    const forms = new Map(), elapsedNodes = new Map(), expandedKids = new Set();
     let open = false, timer = null, returnFocus = null, notice = null;
     const number = n => Number(n).toLocaleString(root.DeckI18n?.getLocale() || "en", { notation: "compact", maximumFractionDigits: 1 });
     const duration = s => s === null ? "–" : s < 60 ? t("triage.elapsedSeconds", { s }) : t("triage.elapsed", { m: Math.floor(s / 60), s: String(s % 60).padStart(2, "0") });
@@ -97,12 +97,18 @@
           const row = store.items().find(x => x.request === r);
           if (row) details.push(I().requestBody({ h, store, t, forms, redraw }, row));
         }
-        if (a.children.length) details.push(h("div", { class: "tf-children" }, a.children.map(child => h("button", {
+        const liveKids = a.children.filter(live), doneKids = a.children.filter(c => !live(c));
+        const showDone = expandedKids.has(a.profile);
+        const shownKids = showDone ? [...liveKids, ...doneKids.slice(0, 20)] : liveKids;
+        const moreKids = doneKids.length ? h("button", { type: "button", class: "tf-more", dataset: { fk: `fleet-more:${a.profile}` },
+          onclick: () => { if (showDone) expandedKids.delete(a.profile); else expandedKids.add(a.profile); redraw(); } },
+          showDone ? t("triage.hideFinished") : t("triage.finishedSubs", { n: doneKids.length })) : null;
+        if (shownKids.length || moreKids) details.push(h("div", { class: "tf-children" }, ...shownKids.map(child => h("button", {
           type: "button", class: "tf-child", title: t("triage.subagent"), dataset: { fk: `fleet-child:${I().sessionKey(child)}` },
           onclick: () => {
             const selection = { sid: child.parent, profile: child.profile || a.profile, childSid: child.sid, subagentId: child.subagentId || null };
             shell.openRight("work", "agents"); ctx.selectAgent(selection); close(false);
-          } }, h("span", null, child.goal || child.title || child.name || child.sid), live(child) ? elapsedNode(child) : h("small", null, child.state)))));
+          } }, h("span", null, child.goal || child.title || child.name || child.sid), live(child) ? elapsedNode(child) : h("small", null, child.state))), moreKids));
         kids.push(h("article", { class: `tf-agent ${a.state}` }, tile(a),
           h("button", { type: "button", class: "tf-agent-main", dataset: { fk: `fleet-agent:${a.profile}` }, onclick: () => openChat(a) },
             h("b", null, a.name), h("span", { class: "tf-task" }, a.task || t("triage.noTask"))),

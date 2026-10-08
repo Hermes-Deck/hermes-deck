@@ -6,7 +6,7 @@ Nothing listens on the device: the Deck dials out to the relay. The feature is o
 
 ## Changes from v1
 
-- **Device channel.** There is no separate `/driver` WebSocket. Driver frames ride the Deck's existing relay connection as binary frames, next to the Workspace tab's CDP tunnel, so each Deck keeps one outbound connection. The device token moved into the driver `HELLO`, and DATA/ERR carry raw bytes instead of base64.
+- **Device channel.** There is no separate `/driver` WebSocket. Driver frames ride the Deck's existing relay connection as binary frames, next to the Browser tab's CDP tunnel, so each Deck keeps one outbound connection. The device token moved into the driver `HELLO`, and DATA/ERR carry raw bytes instead of base64.
 - **Device ids** are the presence ids from `relay/src/presence.js` (hex). The Deck reports `driverOk.desktop: true` in its heartbeat only while the relay accepts its driver hello.
 - **Routing key.** The profile-scoped gateway session key comes first (see Routing). The wrapper's hello gained `skey`.
 - **Plugin query.** The hermes-deck plugin (its events part) asks the relay for the route and the grant over the local driver socket.

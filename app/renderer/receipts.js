@@ -7,9 +7,15 @@
     try { return String(typeof v === "string" ? v : JSON.stringify(v)).slice(0, 301); }
     catch { return ""; }
   }
-  const failed = call => call.status !== "ok" && call.status !== "running";
+  // "unknown": the link dropped before the call's end was seen; that is not a tool failure.
+  const failed = call => !["ok", "running", "unknown"].includes(call.status);
+  const nodeLive = n => !!n && n.terminalAt == null && (n.active === true || ["thinking", "working", "searching"].includes(n.state));
+  /**
+   * `seconds` is null for a group that was not observed from start to end (imported transport history): the Deck
+   * does not know when that turn began or ended, so it shows a call count, never a fabricated "Worked Ns".
+   */
   function stats(turn, now = Date.now()) {
-    return { seconds: Math.max(0, Math.round(((turn.end ?? now) - turn.since) / 1000)), tools: turn.calls.length,
+    return { seconds: turn.measured === false ? null : Math.max(0, Math.round(((turn.end ?? now) - turn.since) / 1000)), tools: turn.calls.length,
       failed: turn.calls.filter(failed).length, running: turn.end == null };
   }
   function createStore() {
@@ -18,18 +24,31 @@
     function turns(sid) {
       if (!sessions.has(sid)) {
         sessions.set(sid, []);
-        if (sessions.size > MAX_SESSIONS) sessions.delete(sessions.keys().next().value);
+        while (sessions.size > MAX_SESSIONS) sessions.delete(sessions.keys().next().value);
       }
       return sessions.get(sid);
     }
+    const active = sid => { const last = turns(sid).filter(turn => !turn.imported).at(-1); return last && last.end == null ? last : null; };
     function start(sid, at) {
       const list = turns(sid);
-      const last = list.at(-1);
-      if (last && last.end == null) return last;
-      const turn = { id: `receipt-${++seq}`, since: at, end: null, open: true, calls: [], anchor: null };
+      const live = active(sid);
+      if (live) return live;
+      const turn = { id: `receipt-${++seq}`, since: at, end: null, open: true, calls: [], anchor: null, measured: true, turnId: null };
       list.push(turn);
-      if (list.length > MAX_TURNS) list.shift();
+      while (list.length > MAX_TURNS) list.shift();
       return turn;
+    }
+    /** Keep at most MAX_CALLS per session: the oldest calls go first; a turn they empty goes too (not the live one). */
+    function bound(sid) {
+      const list = turns(sid);
+      let total = list.reduce((n, turn) => n + turn.calls.length, 0);
+      while (total > MAX_CALLS && list.length) {
+        const turn = list[0];
+        const drop = Math.min(turn.calls.length, total - MAX_CALLS);
+        turn.calls.splice(0, drop); total -= drop;
+        if (!turn.calls.length && turn !== active(sid)) list.shift();
+        else if (!drop) break;
+      }
     }
     function find(sid, id) {
       for (const turn of turns(sid)) {
@@ -39,10 +58,11 @@
       return null;
     }
     function finish(sid, at) {
-      const turn = turns(sid).at(-1);
-      if (!turn || turn.end != null) return;
+      const turn = active(sid);
+      if (!turn) return;
       turn.end = at; turn.open = false;
-      for (const call of turn.calls) if (call.status === "running") { call.status = "blocked"; call.ms = Math.max(0, at - call.ts * 1000); }
+      // A call without its end event was cut short by the turn's end; its own duration is unknown.
+      for (const call of turn.calls) if (call.status === "running") call.status = "interrupted";
     }
     function event(sid, type, p = {}, at = Date.now()) {
       if (!sid) return;
@@ -54,47 +74,114 @@
       if (type === "tool.start") {
         if (found) return;
         const turn = start(sid, at);
-        if (turn.calls.length >= MAX_CALLS) return;
         turn.calls.push({ call: id || `local-${++seq}`, tool: preview(p.name || p.tool), args: preview(p.arguments ?? p.args ?? p.parameters), ts: at / 1000, status: "running", ms: null, err: null, result: null });
+        bound(sid);
       } else {
-        const hit = found || { call: turns(sid).at(-1)?.calls.findLast(c => c.status === "running") };
+        const hit = found || { call: active(sid)?.calls.findLast(c => c.status === "running") };
         if (!hit.call) return;
+        const reported = p.duration_ms ?? p.ms;
         Object.assign(hit.call, { status: p.status || (p.error || p.is_error ? "error" : "ok"),
-          ms: Number.isFinite(p.duration_ms ?? p.ms) ? Math.max(0, p.duration_ms ?? p.ms) : Math.max(0, at - hit.call.ts * 1000),
+          ms: Number.isFinite(reported) ? Math.max(0, reported) : Math.max(0, at - hit.call.ts * 1000),
           err: preview(p.error ?? p.err) || null, result: preview(p.result ?? p.output) || null });
       }
     }
+    /**
+     * A transport list (deck.tools push, relay `recent`): known calls are updated in place; new calls that started
+     * inside the live turn join it; older ones form one closed, unmeasured history group placed before the live turn.
+     */
     function replace(sid, rows, at = Date.now()) {
       const incoming = (Array.isArray(rows) ? rows : []).slice(-MAX_CALLS);
+      const list = turns(sid);
       let imported = null;
       for (const row of incoming) {
         if (!row || !row.call) continue;
         const hit = find(sid, String(row.call));
-        const ts = Number.isFinite(Number(row.ts)) ? Number(row.ts) : at / 1000;
+        const ts = Number.isFinite(Number(row.ts)) && row.ts != null ? Number(row.ts) : at / 1000;
         const call = { call: String(row.call), tool: preview(row.tool), args: preview(row.args), ts,
-          status: row.status || "ok", ms: Number.isFinite(row.ms) ? Math.max(0, row.ms) : null,
+          status: typeof row.status === "string" && row.status ? row.status.slice(0, 32) : "ok", ms: Number.isFinite(row.ms) ? Math.max(0, row.ms) : null,
           result: preview(row.result) || null, err: preview(row.err) || null };
         if (hit) {
           if (row.args == null) call.args = hit.call.args;
           if (row.ts == null) call.ts = hit.call.ts;
+          // A finished call never reopens; one the Deck lost track of ("unknown") may still be running.
+          if (!["running", "unknown"].includes(hit.call.status) && call.status === "running") call.status = hit.call.status;
           Object.assign(hit.call, call);
-        } else {
-          const active = turns(sid).at(-1);
-          const turn = active && active.end == null && ts * 1000 >= active.since ? active :
-            imported || (imported = start(sid, ts * 1000));
-          if (turn.calls.length < MAX_CALLS) turn.calls.push(call);
+          continue;
         }
+        const live = active(sid);
+        // A running call belongs to the live turn even when that turn was first seen after the call began.
+        if (live && (ts * 1000 >= live.since || (!live.measured && call.status === "running"))) { live.calls.push(call); continue; }
+        if (!imported) {
+          imported = { id: `receipt-${++seq}`, since: ts * 1000, end: null, open: false, calls: [], anchor: null, measured: false, imported: true };
+          let i = list.length;
+          while (i > 0 && list[i - 1].since > imported.since) i--;
+          list.splice(i, 0, imported);
+        }
+        imported.calls.push(call);
       }
-      if (imported && !imported.calls.some(c => c.status === "running")) {
-        imported.end = Math.max(imported.since, ...imported.calls.map(c => c.ts * 1000 + (c.ms || 0)));
-        imported.open = false;
+      // History groups close once none of their calls runs (the Deck saw no turn end for them).
+      for (const turn of list) {
+        if (turn.measured || turn.end != null || turn.calls.some(c => c.status === "running")) continue;
+        turn.end = Math.max(turn.since, ...turn.calls.map(c => c.ts * 1000)); turn.open = false;
       }
+      if (imported && imported.calls.some(c => c.status === "running")) imported.open = true;
+      while (list.length > MAX_TURNS) list.shift();
+      bound(sid);
     }
-    return { turns, start, finish, event, find, replace };
+    /**
+     * A bridge snapshot node for `sid`. A live node with no live receipt turn starts an unmeasured turn (driven
+     * elsewhere: its real start is unknown) that absorbs that session's running calls; a node that is no longer live,
+     * or a newer turn id, folds the live turn once. A turn the link lost reopens when its turn id is still live.
+     */
+    function observe(sid, node, at = Date.now()) {
+      if (!sid || !node) return false;
+      const live = active(sid), turnId = node.turnId || "";
+      if (nodeLive(node)) {
+        if (live) {
+          // A turn this Deck drives ends on its own events; the snapshot only confirms it runs.
+          if (live.measured || live.turnId === turnId) { live.turnId = turnId; live.sawLive = true; return false; }
+          finish(sid, at);
+        } else {
+          const lost = turns(sid).filter(turn => !turn.imported).at(-1);
+          if (lost?.lost && lost.turnId === turnId) {
+            lost.end = null; lost.lost = false; lost.open = true;
+            for (const call of lost.calls) if (call.status === "unknown") call.status = "running";
+            return true;
+          }
+        }
+        if (!sessions.has(sid) && !turnId) return false;
+        const turn = start(sid, at);
+        Object.assign(turn, { measured: false, turnId, sawLive: true });
+        for (const old of turns(sid)) {
+          if (!old.imported) continue;
+          const running = old.calls.filter(call => call.status === "running");
+          if (!running.length) continue;
+          old.calls = old.calls.filter(call => call.status !== "running");
+          turn.calls.push(...running);
+        }
+        turns(sid).splice(0, Infinity, ...turns(sid).filter(t => t.calls.length || t === turn));
+        return true;
+      }
+      // A snapshot that lags behind the Deck's own send is still idle: fold a Deck turn only after it was seen live.
+      if (live && (!live.measured || live.sawLive) && !["approval", "question"].includes(node.state)) { finish(sid, at); return true; }
+      return false;
+    }
+    /** The link dropped: fold every live turn in every session; the end of its running calls is unknown. */
+    function disconnect(at = Date.now()) {
+      let changed = false;
+      for (const sid of sessions.keys()) {
+        const live = active(sid);
+        if (!live) continue;
+        live.end = at; live.open = false; live.lost = true; changed = true;
+        for (const call of live.calls) if (call.status === "running") call.status = "unknown";
+      }
+      return changed;
+    }
+    return { turns, start, finish, event, find, replace, active, observe, disconnect, sessions: () => sessions.size, ids: () => [...sessions.keys()] };
   }
   function receipt({ h, t, sid, turn, select, selected = null }) {
     const totals = stats(turn);
-    const label = t(totals.running ? "conv.working" : "conv.receipt", totals);
+    const label = t(totals.running ? "conv.working" : totals.seconds == null ? "conv.receiptCount" : "conv.receipt", totals);
     const fold = h("details", { class: "receipt-fold", open: turn.open ? true : null, ontoggle: () => { if (turn.end != null) turn.open = fold.open; } },
       h("summary", { class: "receipt-summary" }, label, totals.failed ? h("span", { class: "receipt-fail" }, t("conv.failed", totals)) : null),
       h("div", { class: "receipt-calls" }, turn.calls.map(call => {
@@ -135,36 +222,68 @@
     let session = shell.last("session") || {}, scheduled = false;
     const sidOf = () => session.sid || (session.kind === "hermes" ? session.id : null);
     const changed = () => { for (const fn of subscribers) { try { fn(); } catch (e) { console.warn("Receipt listener failed", e); } } refresh(); };
+    /**
+     * Where each receipt goes. A live turn follows the latest user message; an ended turn keeps the anchor it had.
+     * Imported history (no observed turn) is split by user-message timestamps (`data-ts`, seconds) and is not shown
+     * inline when the transcript has none: the Run tab still lists those calls.
+     */
+    function placements(sid, users) {
+      const out = [];
+      const stamps = users.map(el => Number(el.dataset.ts));
+      const userAt = ts => { let hit = null; users.forEach((el, i) => { if (Number.isFinite(stamps[i]) && stamps[i] <= ts + 1) hit = el; }); return hit; };
+      for (const turn of store.turns(sid)) {
+        if (!turn.calls.length) continue;
+        if (!turn.imported) {
+          // Fixed at first placement (calls arrive after the user's message is on screen), so a later steer or
+          // queued message never pulls an earlier turn's receipt; a turn seen only via snapshots uses timestamps.
+          if (!turn.anchor) {
+            const el = turn.measured ? users.at(-1) : userAt(turn.since / 1000) || users.at(-1);
+            if (el) turn.anchor = el.dataset.convKey;
+          }
+          const anchor = users.find(el => el.dataset.convKey === turn.anchor);
+          if (anchor || !users.length) out.push({ key: turn.id, turn, anchor, calls: turn.calls });
+          continue;
+        }
+        const groups = new Map();
+        for (const call of turn.calls) {
+          const el = userAt(call.ts);
+          if (!el) continue;
+          if (!groups.has(el)) groups.set(el, []);
+          groups.get(el).push(call);
+        }
+        for (const [el, calls] of groups) out.push({ key: `${turn.id}@${el.dataset.convKey}`, turn: { ...turn, calls, id: `${turn.id}@${el.dataset.convKey}` }, anchor: el, calls });
+      }
+      return out;
+    }
+    const after = el => { let next = el.nextElementSibling; while (next?.matches(".receipt")) next = next.nextElementSibling; return next; };
     function paint() {
       scheduled = false;
       const sid = sidOf();
-      for (const el of inner.querySelectorAll(".receipt")) if (el.dataset.sid !== sid) el.remove();
-      if (!sid) return;
       const users = [...inner.querySelectorAll(".msg.out:not(.outbox):not(.sysmsg)")];
-      for (const turn of store.turns(sid)) {
-        if (!turn.calls.length) continue;
-        if (!turn.anchor && users.length) turn.anchor = users.at(-1).dataset.convKey;
-        const anchor = users.find(el => el.dataset.convKey === turn.anchor);
-        if (turn.anchor && !anchor) continue;
+      const wanted = sid ? placements(sid, users) : [];
+      const keep = new Set();
+      for (const { key, turn, anchor } of wanted) {
         const selected = controller.selection();
-        const sig = JSON.stringify([turn.calls, turn.end, turn.open, selected, t("conv.inspect")]);
-        let cached = nodes.get(turn.id);
+        const sig = JSON.stringify([turn.calls, turn.end, turn.open, turn.measured, selected, t("conv.inspect")]);
+        let cached = nodes.get(key);
         if (!cached || cached.sig !== sig) {
           const el = receipt({ h, t, sid, turn, selected, select: (s, c, inspect) => { controller.select(s, c, inspect); refresh(); } });
           if (cached?.el.isConnected) cached.el.replaceWith(el);
-          nodes.set(turn.id, cached = { sig, el });
-          if (nodes.size > MAX_TURNS * 2) nodes.delete(nodes.keys().next().value);
+          nodes.delete(key);
+          nodes.set(key, cached = { sig, el });
+          while (nodes.size > MAX_TURNS * 2) nodes.delete(nodes.keys().next().value);
         }
-        if (!cached.el.isConnected) {
-          // Put the receipt before this turn's final prose, never in another user's turn.
-          let target = anchor?.nextElementSibling || null, last = null;
-          while (target && !(target.matches(".msg.out:not(.outbox)"))) {
-            if (target.matches(".msg:not(.out):not(.sysmsg)")) last = target;
-            target = target.nextElementSibling;
-          }
-          inner.insertBefore(cached.el, last || inner.querySelector(".livebar, .outbox, .conv-wait") || null);
+        keep.add(cached.el);
+        // Before this turn's final prose, never in another user's turn.
+        let target = anchor ? anchor.nextElementSibling : inner.firstElementChild || null, last = null;
+        while (target && !target.matches(".msg.out:not(.outbox)")) {
+          if (target.matches(".msg:not(.out):not(.sysmsg)")) last = target;
+          target = target.nextElementSibling;
         }
+        const ref = last || target || inner.querySelector(".livebar, .outbox, .conv-wait") || null;
+        if (cached.el.parentNode !== inner || after(cached.el) !== ref) inner.insertBefore(cached.el, ref);
       }
+      for (const el of inner.querySelectorAll(".receipt")) if (!keep.has(el)) el.remove();
       doc.dispatchEvent(new root.CustomEvent("deck-receipts-render"));
     }
     function refresh() { if (!scheduled) { scheduled = true; root.requestAnimationFrame(paint); } }
@@ -185,8 +304,16 @@
     });
     // Direct tool pushes also cover turns started in another client. Raw turn events flow through LA once.
     deck.bridge?.onEvent(m => {
-      if (m.t === "event" && m.type === "deck.tools") { store.replace(m.sid, m.payload?.tools); changed(); }
-      if (m.t === "status" && m.status !== "open") { for (const turn of store.turns(sidOf())) if (turn.end == null) store.finish(sidOf(), Date.now()); changed(); }
+      if (m.t === "event" && m.type === "deck.tools" && typeof m.sid === "string") { store.replace(m.sid, m.payload?.tools); changed(); }
+      if (m.t === "snapshot" && Array.isArray(m.snapshot?.nodes)) {
+        let any = false;
+        const seen = new Set();
+        for (const n of m.snapshot.nodes) if (n && typeof n.sid === "string") { seen.add(n.sid); any = store.observe(n.sid, n) || any; }
+        // A session that left the snapshot is no longer running there.
+        for (const sid of store.ids()) if (!seen.has(sid) && store.active(sid) && !store.active(sid).measured) { store.finish(sid, Date.now()); any = true; }
+        if (any) changed();
+      }
+      if (m.t === "status" && m.status !== "open" && store.disconnect()) changed();
     });
     deck.onRelay?.(m => {
       for (const e of m.evs || []) {
@@ -196,15 +323,19 @@
         if (e.ev === "turn_end" || e.ev === "stopped") ingest(e.sid, "message.complete", e, e.ts * 1000);
       }
     });
+    /**
+     * Previews for the opened session: the direct connection's latest deck.tools list, else the relay's `recent`.
+     * Each source failing on its own keeps the other; results are stored under the session they were asked for.
+     */
     async function load() {
-      const sid = sidOf();
+      const sid = sidOf(), profile = session.profile;
       if (!sid) return;
-      try {
-        const calls = await deck.bridge?.toolCalls(sid, { profile: session.profile });
-        if (calls?.length) { store.replace(sid, calls); changed(); return; }
-        const detail = await deck.session?.(sid);
-        if (detail?.recent?.length) { store.replace(sid, detail.recent); changed(); }
-      } catch (e) { console.warn("Receipt previews unavailable", e); }
+      for (const read of [() => deck.bridge?.toolCalls?.(sid, { profile }), async () => (await deck.session?.(sid))?.recent]) {
+        try {
+          const calls = await read();
+          if (Array.isArray(calls) && calls.length) { store.replace(sid, calls); changed(); return; }
+        } catch (e) { console.warn("Receipt previews unavailable", e); }
+      }
     }
     shell.on("session", s => { session = s; refresh(); load(); });
     const publicApi = { refresh, turns: store.turns, calls: sid => store.turns(sid).flatMap(turn => turn.calls), selection: controller.selection,
@@ -212,7 +343,7 @@
     refresh(); load();
     return publicApi;
   }
-  const api = { createStore, stats, preview, failed, receipt, createController, mount, MAX_TURNS, MAX_CALLS };
+  const api = { createStore, stats, preview, failed, receipt, createController, mount, MAX_TURNS, MAX_CALLS, MAX_SESSIONS };
   if (typeof module === "object" && module.exports) module.exports = api;
   else {
     root.DeckReceiptLogic = Object.freeze(api);

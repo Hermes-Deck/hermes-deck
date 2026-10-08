@@ -15,6 +15,35 @@ Terms used below:
 Settings opens from the gear in the top bar or with **Ctrl+,** (**Cmd+,** on macOS). Its sections are **General**,
 **Hermes**, **Relay**, **Telegram**, **Desktop** and **This device**.
 
+## Layout and shortcuts
+
+The window has a **sidebar** (resizable; hide it with the button in its header or **Ctrl/Cmd+B**), a **top bar**,
+and a main area that shows the chat or the [inbox](#inbox-and-fleet). The right slot shows either the **Inspector**
+or the **Work pane**, one at a time; each keeps its own width.
+
+- **Sidebar.** The mode switch (**Telegram | Sessions | Bots**, enabled modes only), then in Sessions mode the
+  filters **Needs you** (opens the inbox), **All**, **Running**, **Waiting**, **Today** and **Pinned**, the **Agents**
+  list (a click narrows the list to that profile), source chips, **All sessions** and the sessions by profile. The
+  footer shows the connections, the fleet summary and the busiest quota window.
+- **Top bar.** Breadcrumb (agent / title, with the parent for a sub-agent) and a channel chip (**Hermes**,
+  **Telegram**, **<Source> · read-only**, **Bot Chat**, **Sub-agent**), the fleet capsule, search, and the Work pane,
+  Inspector and Settings buttons.
+- **Inspector.** **Session** (the chat's facts with **Steer**, **Stop** and **Model**), **Activity** and **Usage**.
+- **Work pane.** **Run**, **Plan**, **Diff**, **Agents**, **Browser** and **Screen** (see [Work pane](#work-pane)).
+
+| Shortcut (Cmd on macOS) | Action |
+|---|---|
+| **Ctrl+K** | Search: the All sessions browser (Hermes modes) |
+| **Ctrl+Shift+K** | Model picker |
+| **Ctrl+E** | Cycle the reasoning effort |
+| **Ctrl+\\** | Work pane |
+| **Ctrl+Alt+I** | Inspector |
+| **Ctrl+J** | Fleet panel |
+| **Ctrl+B** | Hide or show the sidebar |
+| **Ctrl+Shift+H** | Next chat mode |
+| **Ctrl+,** | Settings |
+| **Ctrl+Shift+M** | Dictation |
+
 ## Overview
 
 | Feature | Plugin | Relay | Telegram | Device permission |
@@ -23,13 +52,15 @@ Settings opens from the gear in the top bar or with **Ctrl+,** (**Cmd+,** on mac
 | [Bots and Bot Chat](#bots-and-bot-chat) | yes | routines only | no | no |
 | [Telegram mode](#telegram-mode) | no | for live activity | yes | no |
 | [Live activity and controls](#live-activity-and-controls) | yes | for the fleet-wide view | no | no |
+| [Work pane](#work-pane) | yes | for stored plans and relay tool calls | no | no |
+| [Inbox and fleet](#inbox-and-fleet) | yes (approvals, questions) | for the fleet, costs and finished sessions | no | no |
 | [Attachments, voice and drafts](#attachments-voice-notes-dictation-and-drafts) | yes (Hermes chats) | no | for Telegram chats | microphone for dictation |
 | [Model and reasoning pickers](#model-and-reasoning-pickers) | yes (Hermes chats) | no | for Telegram chats | no |
 | [Usage, quotas and Fleet](#usage-quotas-and-fleet) | yes | yes | no | no |
 | [Notifications and badge](#notifications-and-badge) | depends on the source | depends on the source | depends on the source | OS notifications |
 | [Status pet, themes and languages](#status-pet-themes-wallpapers-and-languages) | no | no | no | no |
-| [Agent browsers (Workspace)](#agent-browsers-workspace-tab) | no | yes | no | **Agent browser allowed on this device** (only when your computer hosts) |
-| [Desktop control (Bot screen)](#desktop-control-bot-screen-tab) | yes | yes | no | **Desktop control** + device key + window grant |
+| [Agent browsers (Browser tab)](#agent-browsers-browser-tab) | no | yes | no | **Agent browser allowed on this device** (only when your computer hosts) |
+| [Desktop control (Screen tab)](#desktop-control-screen-tab) | yes | yes | no | **Desktop control** + device key + window grant |
 | [Agent spaces](#agent-spaces) | yes | yes | no | for **Work on this device** |
 | [Updates](#updates) | no | no | no | no |
 
@@ -79,7 +110,7 @@ profile.
 
 **What it is.** One row per Hermes profile with its face, name, state and a badge when it waits for you. A click opens
 the profile's single **Bot Chat**, a hidden session with that exact title; the bot's other sessions stay one fold
-away. A bot's card in the right panel lists its **Routines** (the profile's cron jobs, read-only).
+away. A bot's card in the Inspector lists its **Routines** (the profile's cron jobs, read-only).
 
 **How it works.** Everything comes over the direct connection: `profiles.list` (names, faces, the Bot Chat
 reference), `profiles.get_asset` (avatar), `session.list` (exact-title lookup) and `session.create` + `session.title`
@@ -124,8 +155,12 @@ Telegram. Known executable and script types are saved but never opened directly.
   now** on the pending bubble) or steers it into the running turn. Pick the default in **Settings → General → When
   the agent is busy, Enter…** (**Queues** / **Steers**); Ctrl/Cmd+Enter does the other one once. **Interrupt and
   send** drops the current task and follows your message; **Stop** stops the running turn.
-- Approvals and questions from the agent appear in the chat and are answered there.
-- The right panel's **Activity** tab shows one tree of sessions and their sub-agents (status, title, model and
+- Agent prose is set in a reading serif; reasoning folds say how long the agent thought. Each turn ends with
+  receipts of its tool calls; a receipt opens the call in Work › **Run**. A scrubber on the chat's left edge jumps
+  between turns.
+- Approvals and questions from the agent appear in the composer tray and are answered there (or in the
+  [inbox](#inbox-and-fleet)).
+- The Inspector's **Activity** tab shows one tree of sessions and their sub-agents (status, title, model and
   reasoning level, elapsed time, cost so far), with per-row controls and drill-down into a session, its tool calls
   and its sub-agent tree.
 
@@ -153,7 +188,7 @@ the message is queued.
 - **Window capture.** **Attach window capture** adds an image and the text of your frontmost window to the tray
   (Windows and macOS; also **Ctrl+Alt+P** / **⌃⌥P**). Deck hides briefly while capturing; nothing is sent
   automatically. Deck's own window and password managers are refused. On macOS this uses the verified cua-driver
-  (see [Desktop control](#desktop-control-bot-screen-tab)).
+  (see [Desktop control](#desktop-control-screen-tab)).
 - **Files from the agent.** When an agent offers a file in a Hermes chat, it appears as a chip with **Download**;
   after download, **Open** and **Show in folder**. Files go to **Settings → General → Downloads → Download folder**
   (default `Downloads/Hermes Deck`), or ask each time with **Ask where to save each time**. Limit 200 MB per file.
@@ -169,20 +204,21 @@ the message is queued.
 
 ## Model and reasoning pickers
 
-Two chips left of **Send** change the **Model** (search, provider groups, **Custom model id**) and the reasoning
-effort for the current session only. In Hermes chats they use session-scoped `config.set` over the direct
+One **model · effort** token left of **Send** (**Ctrl/Cmd+Shift+K**) opens a popover to change the **Model** (search,
+provider groups, **Custom model id**) and the reasoning effort for the current session only; **Ctrl/Cmd+E** cycles
+the effort. In Hermes chats they use session-scoped `config.set` over the direct
 connection (never the global config); in Telegram chats they send the bot's native chat commands. A change applies
 from your next message.
 
 ## Usage, quotas and Fleet
 
-**What it is.**
+**What it is.** The Inspector's **Usage** tab (it replaces the old Fleet and Token tabs):
 
-- The **Token** tab: tokens, cost, calls and cache hit over **24h**, **7d**, **14d**, **30d** or **All**, with a chart
-  of fresh versus cached tokens and breakdowns by **Agents** and **Models**.
-- The **Fleet** tab: **Quotas** (Claude and Codex subscription windows: session and weekly limits with reset times,
+- **Quotas** (Claude and Codex subscription windows: session and weekly limits with reset times, brass above 60%,
   and a **Refresh** button), today's usage across all agents, and **Gateways** (each profile's gateway and platform
   health, plus cron job summaries).
+- Tokens, cost, calls and cache hit over **24h**, **7d** (default), **14d**, **30d** or **All**, with a chart of fresh
+  versus cached tokens, breakdowns by **Agents** and **Models**, and **Refresh**.
 
 **How it works.** The relay reads Hermes' own `state.db` of every profile through short-lived private read-only
 copies, every 60 seconds, so totals count every session no matter which Hermes interface ran it. Gateway health and
@@ -217,8 +253,8 @@ direct connection.
   or offline, with a speech bubble for new replies and questions. **Settings → Desktop → Status pet**: **Pet look**
   (Character, Owl, Philosopher, Leo, Hasret, Hayat, Orb, Agent), **Pet size** (Small to Extra large) and **Pet
   animations** (stills when off or when the system asks for reduced motion).
-- **Themes.** **Settings → Desktop → Appearance → Theme**: **Basalt (dark)**, **Marble (light)**, **Aegean (navy)** or
-  **Match the system**.
+- **Themes.** **Settings → Desktop → Appearance → Theme**: **OLED (black)** (default), **Marble (light)**, **Aegean
+  (navy)** or **Match the system**.
 - **Chat backgrounds.** One background picture per chat mode, built in or your own (**Choose image…**), with
   **Background dimming**. Your picture is copied into Deck's profile.
 - **Window.** **Keep running in tray on close** and **Start at login** (macOS: installed app only).
@@ -226,9 +262,51 @@ direct connection.
 
 All of these are local to the app; nothing is sent anywhere.
 
-## Agent browsers (Workspace tab)
+## Work pane
 
-**What it is.** The **Workspace** tab shows the browser a Hermes agent is using, live, next to the chat. You can watch
+**What it is.** The right slot's work view for the chat on screen (**Ctrl/Cmd+\\**):
+
+- **Run**: the session's recent tool calls with status, timing bars and the selected call's output.
+- **Plan**: the agent's own task list, live as it changes, with done/active/pending states, phases and blocked
+  reasons. "This agent did not publish a plan" when there is none.
+- **Diff**: the files the agent wrote or patched, with the +/- counts the tool calls show. It is not a full diff.
+- **Agents**: the session's live sub-agents (goal, model, effort, state, elapsed time, tokens, cost, live output and
+  recent tool calls) and recently failed delegations. **Steer** sends a message to one sub-agent and **Stop** ends it.
+- **Browser** and **Screen**: the [agent browser](#agent-browsers-browser-tab) and
+  [desktop control](#desktop-control-screen-tab) views.
+
+**How it works.** Plans come from Hermes' `todo_list` tool (or OMH's `omh_todo`): the plugin emits a `plan` event
+after each successful call, the relay keeps the latest plan per session, and the direct connection streams it as
+`deck.plan`. A stored session's plan is rebuilt read-only from the newest task-list result in `state.db`. Tool calls
+come from `deck.tools` (direct) or the relay's session detail. Sub-agents are read with `subagent.list` / `subagent.tail`
+while the tab is open; Steer and Stop follow a click and are never replayed.
+
+**Needs.** Plugin. Agents, Steer and Stop need the direct connection; a stored plan without the direct connection
+needs the relay.
+
+## Inbox and fleet
+
+**What it is.**
+
+- **Inbox** (sidebar › **Needs you**): approvals and questions waiting on the direct connection, failed sessions, and
+  top-level sessions that finished in the last 24 hours. **J/K** or the arrow keys move; the selected row opens inline.
+  Approvals offer only the choices Hermes advertises (**Deny**, **Allow for this session**, **Approve**; **A** approves
+  once); questions take their choices or a typed answer; **Enter** opens the chat. **X** dismisses a failed or finished
+  row on this computer only, with **Undo**. "All clear" when nothing waits.
+- **Fleet capsule** in the top bar: running agents (teal sweep), agents that wait for you (brass ring), "N running",
+  "N need you" and today's cost. A click or **Ctrl/Cmd+J** opens the fleet panel: agents sorted waiting → running →
+  idle → offline with task, elapsed time and model · effort, inline approvals and answers, sub-agent lines (open
+  Work › Agents), today's cost, tokens, calls and cache hit, and quota bars.
+
+**How it works.** Approvals and questions come from the direct connection and are answered through the same
+`request.answer` path as in the chat, once per click, never resent. Sessions, agents, costs and quotas come from the
+relay snapshot. Nothing is inferred from tool arguments; a relay-only session has no inline approval.
+
+**Needs.** Direct connection for approvals and questions; relay for the fleet, costs, quotas and finished sessions.
+
+## Agent browsers (Browser tab)
+
+**What it is.** The Work pane's **Browser** tab (formerly Workspace) shows the browser a Hermes agent is using, live, next to the chat. You can watch
 the agent's latest steps, **Take control** to click and type yourself (the agent can still read the page but not
 click, type or navigate), then **Hand to agent** to give it back. A host picker chooses where the browser runs:
 **Automatic**, **This computer**, or the agent host by name.
@@ -256,10 +334,10 @@ Transfers need a device key in **This device** on both devices. Setup: [relay gu
 an agent that has shell access on the host. A browser nobody used or watched for 15 minutes is closed. Pages and
 screenshots reach the agent's model provider like any browser use.
 
-## Desktop control (Bot screen tab)
+## Desktop control (Screen tab)
 
 **What it is.** A Hermes agent using `computer_use` can work in **one window you hand over** on your Windows or macOS
-computer. The **Bot screen** tab shows the frames the agent saw with its clicks marked, and an action log. **Hand to
+computer. The Work pane's **Screen** tab (formerly Bot screen) shows the frames the agent saw with its clicks marked, and an action log. **Hand to
 agent** opens a consent sheet where you choose the window; **Take control** pauses the agent; **Return control**
 hands it back; **Stop** (in the tab, the always-on-top bar, the tray, or **Ctrl+Alt+Shift+S** / **⌃⌥⌘S**) ends the
 grant at once, even when the relay or Hermes is offline.
@@ -279,7 +357,7 @@ control** and **Agents allowed to use this computer**. On macOS, grant CuaDriver
 
 **Limits.** A grant lasts at most 2 hours and ends after 30 minutes idle, on lock, sleep or quit. Deck's own window and
 password managers cannot be handed over. Everything visible in the granted window can reach the agent's model
-provider as screenshots. The **Bot screen** tab is shown while desktop control is on or paused, or when the relay
+provider as screenshots. The **Screen** tab is shown while desktop control is on or paused, or when the relay
 has an agent space.
 
 ## Agent spaces
@@ -294,7 +372,7 @@ offers three modes:
 - **Overflow** (`DECK_SPACES=overflow`): the shared desktop first, and an agent's own desktop when the shared one is
   busy.
 
-The **Bot screen** tab shows a space live, with control levels **Watch**, **Together** (you get your own cursor, the
+The **Screen** tab shows a space live, with control levels **Watch**, **Together** (you get your own cursor, the
 agent continues) and **Full control** (agents wait). **Work on this device** moves an agent to your computer (with
 desktop control); **Send back to its space** returns it. An agent's desktop stops on its own when it sits idle and
 starts again on its next action.

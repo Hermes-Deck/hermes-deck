@@ -110,8 +110,8 @@
         waiting.set(sid, { since: now(), sawLive: false });
       },
       /**
-       * One bubble per queued message: text, a label, Send now (the one primary action) and an overflow menu with Edit,
-       * Interrupt and send (only when on.redirect is given: the running turn can be redirected) and Cancel.
+       * One bubble per queued message: text, a label, Send now and Cancel (both always visible) and an overflow menu
+       * with Edit and Interrupt and send (only when on.redirect is given: the running turn can be redirected).
        */
       bubbles(sid, on) {
         return load(sid).map((it, i) => {
@@ -120,7 +120,6 @@
           const items = [
             h("button", { class: "amenu-item", type: "button", role: "menuitem", dataset: { fk: `outbox-edit:${it.id}` }, onclick: pick(on.edit) }, i18nNode("queue.edit")),
             on.redirect && !(it.files && it.files.length) ? h("button", { class: "amenu-item", type: "button", role: "menuitem", title: i18nText("live.redirectTip"), dataset: { fk: `outbox-redirect:${it.id}` }, onclick: pick(on.redirect) }, i18nNode("live.redirect")) : null,
-            h("button", { class: "amenu-item danger", type: "button", role: "menuitem", dataset: { fk: `outbox-cancel:${it.id}` }, onclick: pick(on.cancel) }, i18nNode("queue.cancel")),
           ];
           return h("div", { class: `msg out outbox${it.error ? " failed" : ""}`, dataset: { fk: `outbox:${it.id}` } },
             it.text ? h("div", { class: "text" }, it.text) : null,
@@ -130,6 +129,7 @@
             h("div", { class: "outbox-meta" },
               h("span", { class: "outbox-label" }, i18nNode("queue.label"), i > 0 ? ` · ${i + 1}` : ""),
               h("button", { class: "linkbtn", type: "button", dataset: { fk: `outbox-sendnow:${it.id}` }, onclick: () => on.sendNow(it.id) }, i18nNode("queue.sendNow")),
+              h("button", { class: "linkbtn danger", type: "button", dataset: { fk: `outbox-cancel:${it.id}` }, onclick: pick(on.cancel) }, i18nNode("queue.cancel")),
               h("div", { class: "amenu-wrap outbox-more" },
                 h("button", {
                   class: `amore${open ? " on" : ""}`, type: "button", "aria-haspopup": "menu", "aria-expanded": open ? "true" : "false",

@@ -5,7 +5,13 @@
 (() => {
   const MAX = 20000; // characters shown (the tail); the store may hold more
 
-  function create({ h, i18nText, copy }) {
+  /**
+   * `seconds(sid)` resolves the measured thinking time of the turn that just ended in that session. It is only asked
+   * for the finished live message (key "<sid>:live"): a stored message never borrows a later turn's duration and
+   * keeps the unknown-duration label unless the caller passes its own measured `seconds`.
+   */
+  function create({ h, i18nText, copy, seconds: measured }) {
+    const lookup = measured || ((sid) => (typeof window === "object" && window.DeckLiveActivity ? window.DeckLiveActivity.thoughtSeconds(sid) : null));
     const write = copy || ((text) => (typeof navigator !== "undefined" && navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.resolve()));
     // blocks the reader opened (by message key): the transcript is rebuilt on every event, an open block stays open
     const opened = new Set();
@@ -14,7 +20,7 @@
       const t = String(text || "").trim();
       if (!t) return null;
       const k = String(key || "");
-      if (seconds == null && typeof window === "object") seconds = window.DeckLiveActivity?.thoughtSeconds(String(key).slice(0, String(key).lastIndexOf(":")));
+      if (seconds == null && k.endsWith(":live")) seconds = lookup(k.slice(0, -":live".length));
       const shown = t.length > MAX ? `…${t.slice(-MAX)}` : t;
       const btn = h("button", {
         class: "tb-copy", type: "button", title: i18nText("think.copy"), "aria-label": i18nText("think.copy"),

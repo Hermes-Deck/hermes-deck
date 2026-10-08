@@ -253,3 +253,11 @@ body.mac .app.side-hidden .topbar { padding-left: 80px; }
 @media (prefers-reduced-motion: reduce) {
   .ib, .modes button, .sh-nrow, .sh-arow, .sh-srcchip, .findbtn, .rtab { transition: none; }
 }
+
+/* segmented controls (Settings "busy Enter", Sessions active/archived, Screen levels): the old .chan look on Blend tokens */
+.chan { display: inline-flex; align-self: center; border: 1px solid var(--line2); border-radius: 8px; overflow: hidden; background: transparent; -webkit-app-region: no-drag; }
+.chan button { border: 0; background: none; color: var(--t3); font: 11px var(--mono); padding: 3px 10px; cursor: pointer; }
+.chan button + button { border-left: 1px solid var(--line2); }
+.chan button:hover { color: var(--t1); }
+.chan button[aria-pressed="true"] { background: var(--line2); color: var(--t1); }
+.chan button:focus-visible { outline: 2px solid var(--brass); outline-offset: -2px; }

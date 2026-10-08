@@ -470,6 +470,23 @@
     const pane = create({ shell: root.DeckShell, deck: root.deck });
     const surfaces = createSurfaces({ shell: root.DeckShell });
     root.DeckSurfaces = Object.freeze(surfaces);
-    root.DeckWorkPane = Object.freeze({ ...api, ...pane, dispose() { pane.dispose(); surfaces.dispose(); } });
+    // top bar: a live Browser / Screen chip for the open session's agent, rebuilt when a surface or the language changes
+    const shell = root.DeckShell, doc = root.document;
+    const crumb = () => {
+      if (typeof shell.mount !== "function") return;
+      const profile = shell.last?.("session")?.profile || undefined;
+      const chips = ["browser", "screen"].map(k => surfaces.chip(k, { profile })).filter(Boolean);
+      if (!chips.length) { shell.mount("crumb-extra", null); return; }
+      const box = doc.createElement("span");
+      box.className = "wk-surface-chips";
+      box.append(...chips);
+      shell.mount("crumb-extra", box);
+    };
+    const offCrumb = typeof shell.on === "function" ? shell.on("session", crumb) : null;
+    doc.addEventListener?.("deck-surfaces", crumb);
+    doc.addEventListener?.("deck-language", crumb);
+    crumb();
+    const disposeCrumb = () => { if (typeof offCrumb === "function") offCrumb(); doc.removeEventListener?.("deck-surfaces", crumb); doc.removeEventListener?.("deck-language", crumb); };
+    root.DeckWorkPane = Object.freeze({ ...api, ...pane, dispose() { pane.dispose(); surfaces.dispose(); disposeCrumb(); } });
   } else root.DeckWorkPane = api;
 })(typeof window === "object" ? window : globalThis);

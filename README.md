@@ -19,8 +19,8 @@ computer, both off until you allow them. Telegram is optional.
 | [Model and reasoning pickers](docs/features.md#model-and-reasoning-pickers) | Change the model or reasoning effort for one session | No | No |
 | [Usage and quotas](docs/features.md#usage-quotas-and-fleet) | Tokens, cost and cache use over 24h–All; Claude/Codex limits; gateway health | Yes | No |
 | [Notifications, pet, themes](docs/features.md#notifications-and-badge) | OS notifications, taskbar badge, status pet, themes, English/Turkish | No | No |
-| [Agent browsers](docs/features.md#agent-browsers-workspace-tab) | Watch an agent's browser live, take control, hand it back | Yes | No |
-| [Desktop control](docs/features.md#desktop-control-bot-screen-tab) | Let an agent use one window you hand over, with Stop always available | Yes | No |
+| [Agent browsers](docs/features.md#agent-browsers-browser-tab) | Watch an agent's browser live, take control, hand it back | Yes | No |
+| [Desktop control](docs/features.md#desktop-control-screen-tab) | Let an agent use one window you hand over, with Stop always available | Yes | No |
 | [Agent spaces](docs/features.md#agent-spaces) | Each agent on its own Linux desktop (or taking turns on a shared one); watch or join in, approve risky commands, undo changes | Yes | No |
 
 Details of each feature, what it needs and where its settings are: [docs/features.md](docs/features.md).

@@ -399,3 +399,34 @@ test("fleet selection for another session asks the app to open it and never fabr
   c.doc.dispatchEvent({ type: "deck-agent-select", detail: { sid: "session-a" } }); await c.settle();
   assert.doesNotMatch(c.text(), /another session/); assert.match(c.text(), /No sub-agents/); c.app.dispose();
 });
+
+test("renderer module mounts live Browser/Screen chips into the top bar and clears them when nothing is live", () => {
+  const fs = require("node:fs"), vm = require("node:vm");
+  const b = harness();
+  let live = { browser: true, screen: false };
+  const mounted = [], listeners = new Map(), sessionSubs = [];
+  const el = (tag) => ({ tag, className: "", children: [], append(...k) { this.children.push(...k); } });
+  const doc = Object.assign(Object.create(b.doc), {
+    createElement: el,
+    addEventListener: (t, f) => listeners.set(t, f), removeEventListener: (t) => listeners.delete(t),
+    dispatchEvent: (e) => listeners.get(e.type)?.(e),
+  });
+  const shell = Object.assign(Object.create(b.shell), {
+    service: (n) => n === "workspace" ? { live: () => live.browser } : n === "botscreen" ? { live: () => live.screen } : b.shell.service(n),
+    mount: (slot, node) => mounted.push([slot, node]),
+    on: (ev, f) => { if (ev === "session") sessionSubs.push(f); return () => {}; },
+    setTabLive() {},
+  });
+  const window = { DeckShell: shell, deck: { bridge: {} }, DeckI18n: I18N, document: doc, setTimeout: () => 0, clearTimeout() {},
+    CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init.detail; } } };
+  vm.runInNewContext(fs.readFileSync(require.resolve("../renderer/work-pane"), "utf8"), { window });
+  const [slot, node] = mounted.at(-1);
+  assert.equal(slot, "crumb-extra");
+  assert.equal(node.className, "wk-surface-chips");
+  assert.equal(node.children.length, 1, "only the live surface gets a chip");
+  live = { browser: false, screen: false };
+  listeners.get("deck-surfaces")({ type: "deck-surfaces" });
+  assert.deepEqual(mounted.at(-1), ["crumb-extra", null]);
+  window.DeckWorkPane.dispose(); b.app.dispose();
+  assert.equal(listeners.has("deck-surfaces"), false, "dispose removes the top-bar listeners");
+});

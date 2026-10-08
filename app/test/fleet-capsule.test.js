@@ -66,3 +66,22 @@ test("fleet child selection is one document event with the Lane D shape, and a m
   const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "../renderer/fleet-capsule.js"), "utf8");
   assert.ok(!/DeckWorkPane|service\("selectAgent"\)/.test(src), "no dead fallbacks besides the documented event");
 });
+
+test("fleet shows only live sub-agents; finished ones fold behind one toggle", t => {
+  const { dom } = require("./inbox-dom-helper"), { createStore } = require("../renderer/inbox");
+  const { h, doc, win, walk } = dom();
+  const store = createStore();
+  const done = Array.from({ length: 12 }, (_, i) => ({ sid: `d-${i}`, parent: "s-1", profile: "default", goal: `Done ${i}`, state: "done" }));
+  store.feedRelay({ t: "snapshot", agents: { Primary: { name: "Primary", profile: "default" } }, sessions: [{ sid: "s-1", profile: "default", state: "idle", lastMsg: "Root" }, { sid: "s-live", parent: "s-1", profile: "default", goal: "Live child", state: "running" }, ...done] });
+  const fleet = F.createFleet({ h, doc, win, store, t: (key, v) => v && v.n !== undefined ? `${key}:${v.n}` : key, usage: require("../renderer/usage-view"), shell: { openRight() {} }, openChat() {}, selectAgent() {} });
+  t.after(() => fleet.destroy());
+  fleet.toggle();
+  const kids = () => walk(fleet.panel).filter(x => x.attrs?.class === "tf-child");
+  assert.equal(kids().length, 1, "only the running child is listed");
+  const more = walk(fleet.panel).find(x => x.attrs?.class === "tf-more");
+  assert.ok(more.children.includes("triage.finishedSubs:12"));
+  more.click();
+  assert.equal(kids().length, 13);
+  walk(fleet.panel).find(x => x.attrs?.class === "tf-more").click();
+  assert.equal(kids().length, 1);
+});

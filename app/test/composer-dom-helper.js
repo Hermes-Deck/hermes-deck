@@ -7,7 +7,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 
 function environment({ session: initial } = {}) {
-  const frames = [], timers = [], observers = [], bridge = [], relay = [], shellListeners = new Map(), lastEvents = new Map();
+  const frames = [], timers = [], observers = [], resizes = [], bridge = [], relay = [], shellListeners = new Map(), lastEvents = new Map();
   let clock = 1_000_000;
   let pendingMutations = 0;
   function notify(target, added, removed) {
@@ -113,7 +113,7 @@ function environment({ session: initial } = {}) {
     blur() { if (doc.activeElement === this) doc.activeElement = doc.body; }
     getBoundingClientRect() { return { ...this.rect }; }
     setPointerCapture(id) { this.captured = id; } hasPointerCapture(id) { return this.captured === id; } releasePointerCapture() { this.captured = null; }
-    scrollTo({ top }) { this.scrollTop = top; this.dispatchEvent(event("scroll", { bubbles: false })); }
+    scrollTo({ top, behavior = "auto" }) { this.scrollTop = top; this.lastScroll = { top, behavior }; this.dispatchEvent(event("scroll", { bubbles: false })); }
     setSelectionRange(a, b) { this.selectionStart = a; this.selectionEnd = b; }
   }
   function event(type, props = {}) {
@@ -165,7 +165,7 @@ function environment({ session: initial } = {}) {
       observe(el, opts = {}) { this.targets.push({ el, subtree: !!opts.subtree }); }
       disconnect() { this.targets = []; pendingMutations -= this.queue.length; this.queue = []; }
     },
-    ResizeObserver: class { constructor(fn) { this.fn = fn; } observe() {} disconnect() {} },
+    ResizeObserver: class { constructor(fn) { this.fn = fn; resizes.push(this); } observe() {} disconnect() {} },
     requestAnimationFrame: fn => { frames.push(fn); return frames.length; },
     setInterval: fn => { timers.push(fn); return timers.length; }, clearInterval() {},
     setTimeout: (fn) => { frames.push(fn); return frames.length; }, clearTimeout() {},
@@ -213,6 +213,7 @@ function environment({ session: initial } = {}) {
   function emitShell(name, payload) { lastEvents.set(name, payload); for (const fn of shellListeners.get(name) || []) fn(payload); }
   return {
     doc, win, h, chat, inner, msgs, composer, input, send, sends, bridge, relay, opens, mutations, observers, timers, frames, event, flush, settle, load,
+    resize() { for (const r of resizes) r.fn([]); },
     toolCalls, details, Element,
     get clock() { return clock; }, set clock(v) { clock = v; },
     set interruptResult(v) { interruptResult = v; }, set main(v) { main = v; },

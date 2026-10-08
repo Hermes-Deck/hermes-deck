@@ -29,7 +29,7 @@ points. These controls apply to agents on their own desktops, including overflow
 Hermes profile ──computer_use──> deck-cua ──socket──> relay ──(host route)──> cua-driver ──> agent host desktop
                                                         │  ├─ lock + queue (shared mode)
                                                         │  └─ viewer proxy (token added) <── cua-spacesd (loopback)
-Deck (Bot screen tab) <── local proxy <── authenticated HTTP/WS ──┘
+Deck (Screen tab) <── local proxy <── authenticated HTTP/WS ──────┘
 Deck "Work on this device" <── device channel ── bounded cua-driver on your computer + its agent cursor
 ```
 
@@ -113,7 +113,7 @@ neither an operation in progress nor recovery pending. The activity drawer expos
   - If Deck's view is gone for 30 s during **Full control**, control returns to the agents.
 - **Stop.** Stop (in Deck or with the hotkey) frees the shared desktop at once.
 - **Work on this device** needs desktop control on that device: a device key, **Desktop control** on and a window
-  handed over ([features.md](features.md#desktop-control-bot-screen-tab)).
+  handed over ([features.md](features.md#desktop-control-screen-tab)).
 - **Cost.** Measured on an Apple M4: cua-spacesd uses about 65–70 MB idle and about 90 MB with roughly 8 % CPU while
   one Deck watches at 2560x1440. It streams only while someone watches.
 - **Clipboard.** Deck opens the viewer without clipboard sync, so watching never reads the agent host's clipboard.

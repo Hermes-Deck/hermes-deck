@@ -50,3 +50,6 @@
 @media (max-width: 900px) { .tf-stack, .tf-cost { display: none; } .tf-cap { gap: 6px; padding: 0 8px; font-size: 11px; } }
 @media (max-width: 480px) { .tf-agent { gap: 8px; padding: 10px 12px; } .tf-runtime small { max-width: 90px; } .tf-details { grid-column: 1/4; } .tf-today { gap: 8px; padding: 12px; } .tf-today b { font-size: 14px; } }
 @media (prefers-reduced-motion: reduce) { .tf-cap { transition: none; } .tf-stack .tf-avatar::after, .tf-panel.show { animation: none; } .tf-stack .tf-avatar.running::after { background: var(--teal); } }
+.tf-more { align-self: flex-start; padding: 2px 0; border: 0; background: none; color: var(--t3); font: 11px var(--mono); cursor: pointer; }
+.tf-more:hover { color: var(--t1); }
+.tf-more:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }

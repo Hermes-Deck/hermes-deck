@@ -705,7 +705,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     if (c.parent) kids.push(h("span", { class: "sh-cs", "aria-hidden": "true" }, "/"),
       h("button", { type: "button", class: "sh-lnk", title: c.parent.title, dataset: { fk: "crumb-parent" }, onclick: () => hermesSelect(c.parent.sid) }, c.parent.title));
     if (c.title) kids.push(c.agent || c.parent ? h("span", { class: "sh-cs", "aria-hidden": "true" }, "/") : null, h("span", { class: "sh-ct", title: c.title }, c.title));
-    if (c.channel && c.id) {
+    if (c.channel && c.id && c.channel.id !== "hermes") { // plain direct Hermes is the default: no chip
       const ICON = { hermes: "hermes", telegram: "telegram", readonly: "lock", bot: "bots", sub: "steer" };
       kids.push(h("span", { class: `sh-chip ${c.channel.id}`, dataset: { channel: c.channel.id } }, SH.icon(ICON[c.channel.id] || "hermes", 11), i18nNode(c.channel.key, c.channel.vars)));
     }
@@ -3079,7 +3079,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     const nodeOf = H.nodes.get(H.sel);
     return h(
       "div",
-      { class: `msg${m.role === "user" ? " out" : ""}` },
+      { class: `msg${m.role === "user" ? " out" : ""}`, ...(m.role === "user" && m.ts ? { dataset: { ts: String(m.ts) } } : {}) },
       u ? u.quote : null,
       m.role === "assistant" && m.think ? TB.el(m.think, `${H.sel}:${m.id || m.ts}`) : null, // stored reasoning: collapsed "Thinking"
       u && !u.text && u.chip ? null : Array.isArray(m.media) && m.media.length && !String(m.text || "").trim() ? null : m.role === "user" && window.DeckVoiceBubble && window.DeckVoiceBubble.hidesDefaultText(m.text, m.media) ? null : // the plugin's default text is not shown beside a voice note
@@ -4214,6 +4214,28 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     }
     return false;
   }
+  /**
+   * The composer's Stop (contracts.md, Lane B request): the same path as hermesStopNow, but it shows no note of its own
+   * (composer.js shows the result) and resolves with Hermes' status. Click/Escape only; never replayed.
+   */
+  async function stopTurnFor(req) {
+    const sid = req && typeof req.sid === "string" ? req.sid : "";
+    if (!sid) throw new Error(i18nText("U0087"));
+    const n = H.nodes.get(sid) || { sid, turnId: (req.turnId && String(req.turnId)) || "" };
+    const turnId = (req.turnId && String(req.turnId)) || n.turnId || undefined;
+    try {
+      const r = await deck.bridge.interrupt(sid, { profile: req.profile || n.profile || undefined, turnId });
+      if (r.status === "interrupted") LA.end(sid);
+      ctlTurnGone(n, r.status);
+      return { status: r.status };
+    } catch (e) {
+      // the bridge found no live turn to stop (U0087): the same as Hermes saying not_running
+      if (cleanErr(e) === i18nText("U0087") && ctlTurnGone(n, "not_running")) return { status: "not_running" };
+      throw new Error(cleanErr(e));
+    } finally {
+      mark("msgs", "strip", true);
+    }
+  }
   /** A read-only copy of what the triage views need when they start after the first pushes (no replay, no requests). */
   function triageData() {
     return {
@@ -4235,6 +4257,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   SH.provide("chat", () => currentChat());
   SH.provide("openChat", (req) => openChatFor(req));
   SH.provide("triageData", () => triageData());
+  SH.provide("stopTurn", (req) => stopTurnFor(req));
   (async () => {
     const st = await deck.ready();
     const ui = st.ui || {};

@@ -165,7 +165,7 @@ test("C: a head that failed stays in the outbox with its error and blocks the dr
   assert.match(JSON.stringify(bubble), /Not sent: offline/);
 });
 
-test("C: bubbles show Send now; Edit, Interrupt and send and Cancel sit in the overflow menu, in both languages", () => {
+test("C: bubbles show Send now and Cancel; Edit and Interrupt and send sit in the overflow menu, in both languages", () => {
   const { ob } = outbox();
   const a = ob.add("s", "hello");
   const calls = [];
@@ -173,12 +173,14 @@ test("C: bubbles show Send now; Edit, Interrupt and send and Cancel sit in the o
   const on = { edit: (id) => calls.push(["edit", id]), cancel: (id) => calls.push(["cancel", id]), sendNow: (id) => calls.push(["now", id]), redirect: (id) => calls.push(["redirect", id]), redraw() {} };
   const fks = (b) => walk(b).filter((n) => n.tag === "button").map((n) => n.attrs.dataset.fk.split(":")[0]);
   let bubble = ob.bubbles("s", on)[0];
-  assert.deepEqual(fks(bubble), ["outbox-sendnow", "outbox-more"], "closed: one primary action and the menu button");
-  for (const b of walk(bubble).filter((n) => n.tag === "button")) b.attrs.onclick({ stopPropagation() {} });
+  assert.deepEqual(fks(bubble), ["outbox-sendnow", "outbox-cancel", "outbox-more"], "closed: Send now and Cancel visible, plus the menu button");
+  const cancel = walk(bubble).find((n) => n.tag === "button" && /outbox-cancel/.test(n.attrs.dataset.fk));
+  assert.match(cancel.attrs.class, /danger/);
+  walk(bubble).find((n) => n.tag === "button" && /outbox-more/.test(n.attrs.dataset.fk)).attrs.onclick({ stopPropagation() {} });
   bubble = ob.bubbles("s", on)[0];
-  assert.deepEqual(fks(bubble), ["outbox-sendnow", "outbox-more", "outbox-edit", "outbox-redirect", "outbox-cancel"]);
-  for (const b of walk(bubble).filter((n) => n.tag === "button" && /edit|redirect|cancel/.test(n.attrs.dataset.fk))) b.attrs.onclick();
-  assert.deepEqual(calls, [["now", a.id], ["edit", a.id], ["redirect", a.id], ["cancel", a.id]]);
+  assert.deepEqual(fks(bubble), ["outbox-sendnow", "outbox-cancel", "outbox-more", "outbox-edit", "outbox-redirect"]);
+  for (const b of walk(bubble).filter((n) => n.tag === "button" && /sendnow|cancel|edit|redirect/.test(n.attrs.dataset.fk))) b.attrs.onclick();
+  assert.deepEqual(calls, [["now", a.id], ["cancel", a.id], ["edit", a.id], ["redirect", a.id]]);
   assert.match(JSON.stringify(bubble), /"Queued"/);
   assert.match(JSON.stringify(bubble), /Interrupt and send/);
   // no redirect callback (the turn is not controllable) or files on the message: no "Interrupt and send"
@@ -188,6 +190,7 @@ test("C: bubbles show Send now; Edit, Interrupt and send and Cancel sit in the o
   assert.ok(!fks(ob.bubbles("s", { ...on, redirect: null })[0]).includes("outbox-redirect"));
   I18N.setLanguage("tr");
   assert.match(JSON.stringify(ob.bubbles("s", on)[0]), /Sırada/);
+  assert.match(JSON.stringify(ob.bubbles("s", on)[0]), /İptal/);
 });
 
 // ------------------------------------------------------------------ C/A/B through the real app.js functions
