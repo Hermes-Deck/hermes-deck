@@ -1,6 +1,6 @@
 {
   "name": "deck-relay",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Hermes Deck relay: tails Hermes deck-events + Dispatch transcripts, keeps a live agent/session/token model, serves it over an authenticated WebSocket on the tailnet.",
   "repository": {

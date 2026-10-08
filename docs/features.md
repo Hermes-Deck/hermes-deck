@@ -101,9 +101,14 @@ the relay never sees it. Sessions are linked to chats with `relay/agents.json`: 
 **Needs.** Your own API keys from [my.telegram.org](https://my.telegram.org/apps). Live activity next to the chats
 needs the relay. No bot token is needed by the app.
 
-**Settings.** **Settings → Telegram**: **API keys**; **Chats** (**Group whose topics to show**, **Bots to hide**);
+**Settings.** **Settings → Telegram**: **API keys**; **Chats** (**Group whose topics to show**); **Hidden bots**;
 **Send read receipts to Telegram** (on by default; when off, unread counts are tracked locally); **Account** →
 **Log out of Telegram** (deletes the session on this computer and on Telegram).
+
+**Hiding a bot.** Every bot you have a DM with shows in the Agents list, including bots that are not Hermes agents.
+Right-click such a bot (or press the menu key, or Shift+F10) and choose **Hide from list**. **Settings → Telegram →
+Hidden bots** lists the hidden ones, each with **Show** to bring it back, and takes a username to hide by hand
+(`@` optional, up to 50). Hermes agents cannot be hidden this way.
 
 **Limits.** Bot DMs come from your first 300 dialogs. Media downloads are capped at 25 MB; bigger files open in
 Telegram. Known executable and script types are saved but never opened directly.
@@ -275,20 +280,43 @@ has an agent space.
 
 ## Agent spaces
 
-**What it is.** Instead of your desktop, agents use `computer_use` on their own desktop, a **space**. The current
-version has one shared space: the agent host's logged-in macOS desktop, used by one agent at a time while others wait
-in line. The **Bot screen** tab shows it live, with control levels **Watch**, **Together** (you get your own cursor,
-the agent continues) and **Full control** (agents wait). **Work on this device** moves an agent to your computer
-(with desktop control); **Send back to its space** returns it.
+**What it is.** Instead of your desktop, agents use `computer_use` on a desktop of their own, a **space**. The relay
+offers three modes:
 
-**How it works.** cua-spacesd (from the Cua project) runs on the agent host on loopback and streams the desktop. The
-relay gates each `computer_use` call with a lock and queue, and proxies the viewer to Deck with its own token; Deck
-shows the viewer in an isolated view.
+- **Shared** (`DECK_SPACES=shared`): the agent host's logged-in macOS desktop, used by one agent at a time while the
+  others wait in line.
+- **Agent** (`DECK_SPACES=agent`): each agent gets its own Linux desktop in a container, so several agents can work
+  at once without touching each other or your screen.
+- **Overflow** (`DECK_SPACES=overflow`): the shared desktop first, and an agent's own desktop when the shared one is
+  busy.
 
-**Needs.** A macOS agent host, relay with `DECK_SPACES=shared`, and cua-spacesd installed with
-`relay/tools/install-spacesd.sh`. **Settings → This device → Agent spaces** shows the mode and **Default control**.
-Setup and behaviour: [agent-spaces.md](agent-spaces.md). Experimental: one desktop per agent
-(`DECK_SPACES=agent`) is not implemented yet and shows as **Coming in phase 2**.
+The **Bot screen** tab shows a space live, with control levels **Watch**, **Together** (you get your own cursor, the
+agent continues) and **Full control** (agents wait). **Work on this device** moves an agent to your computer (with
+desktop control); **Send back to its space** returns it. An agent's desktop stops on its own when it sits idle and
+starts again on its next action.
+
+**Activity and safety** (agents on their own desktops):
+
+- **Activity log.** Every action, with optional screenshots, in a timeline per agent.
+- **Risky-command approval.** A terminal command that matches the risky list (for example `sudo`, `rm -rf`) is held,
+  and Deck shows a card. **Approve once** lets that exact command run one time; **Deny** refuses it. Enter never
+  approves.
+- **Undo points.** The agent's home folder is saved when its desktop stops, before an approved risky command and
+  before an undo. **Return to this point** puts the folder back.
+
+**How it works.** For the shared desktop, cua-spacesd (from the Cua project) runs on the agent host on loopback and
+the relay gates each `computer_use` call with a lock and queue. For own desktops, a **desktop host** runs the
+containers: a Deck computer with Docker Desktop, or the agent host with Docker or colima. The relay routes each agent
+to its desktop and proxies the viewer to Deck with its own token; Deck shows it in an isolated view.
+
+**Needs.** The relay with `DECK_SPACES` set. Shared mode needs a macOS agent host with cua-spacesd
+(`relay/tools/install-spacesd.sh`). Agent and overflow modes need a desktop host with Docker running and the pinned
+desktop image; a desktop uses up to 1.5 GB of RAM.
+
+**Settings.** **Settings → This device → Agent spaces** (mode, **Default control**), **Agent desktops** (**Host agent
+desktops on this device**, limits, each agent's home host) and **Activity and safety** (activity log, screenshots,
+retention, risky-command approval, number of undo points). Setup and behaviour: [agent-spaces.md](agent-spaces.md).
+Status: experimental.
 
 ## Updates
 

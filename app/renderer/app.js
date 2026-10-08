@@ -141,14 +141,16 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   function railAgents() {
     const items = [];
     const used = new Set();
+    const hidden = new Set(((S.settings && S.settings.hiddenBots) || []).map((v) => v.toLowerCase()));
+    const bots = S.tg.bots.filter((b) => !b.username || !hidden.has(b.username.toLowerCase()));
     for (const a of agentList()) {
-      const bot = S.tg.bots.find((b) => b.username && a.bot && b.username.toLowerCase() === a.bot.toLowerCase());
+      const bot = bots.find((b) => b.username && a.bot && b.username.toLowerCase() === a.bot.toLowerCase());
       if (bot) {
         items.push({ key: bot.key, bot, agent: a });
         used.add(bot.key);
       }
     }
-    for (const b of S.tg.bots) if (!used.has(b.key)) items.push({ key: b.key, bot: b, agent: null });
+    for (const b of bots) if (!used.has(b.key)) items.push({ key: b.key, bot: b, agent: null });
     return items;
   }
 
@@ -651,13 +653,38 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     }
     const m = lastMsg(key, bot.last);
     const unread = S.unread.get(key) || 0;
+    const canHide = chatMode() === "telegram" && !agent && !!bot.username;
+    let menuKeyAt = 0;
     return h(
       "button",
-      { class: "row agent", type: "button", title: name, "aria-current": S.sel === key ? "true" : null, dataset: { fk: `row:${key}` }, onclick: () => select(key) },
+      { class: "row agent", type: "button", title: name, "aria-current": S.sel === key ? "true" : null, dataset: { fk: `row:${key}` }, onclick: () => select(key),
+        oncontextmenu: canHide ? (e) => {
+          e.preventDefault();
+          if (Date.now() - menuKeyAt < 500) return;
+          openBotMenu(key, e.currentTarget, e.clientX === 0 && e.clientY === 0 ? null : { x: e.clientX, y: e.clientY });
+        } : null,
+        onkeydown: canHide ? (e) => {
+          if (!(e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey))) return;
+          e.preventDefault();
+          menuKeyAt = Date.now();
+          openBotMenu(key, e.currentTarget, null);
+        } : null },
       coin(name, { fill, live, subs: a ? a.subsRunning : 0, img: S.avatars[key] }),
       h("span", { class: "who" }, h("span", { class: "name" }, name), sub),
       h("span", { class: "meta" }, m ? hm(m.date) : "", unread ? h("span", { class: "badge", "aria-label": i18nText("U0435", { unread: unread }) , "data-i18n-aria-label": "U0435", "data-i18n-aria-label-vars": JSON.stringify({ unread: unread })}, String(unread)) : null)
     );
+  }
+
+  function openBotMenu(key, row, pos) {
+    const item = railAgents().find((it) => it.key === key);
+    if (chatMode() !== "telegram" || !item || item.agent || !item.bot.username) return;
+    MV.openMenu([{ label: i18nText("hiddenBots.hide"), run: async () => {
+      const current = railAgents().find((it) => it.key === key);
+      if (chatMode() !== "telegram" || !current || current.agent || !current.bot.username) return;
+      try {
+        if (await SV.updateHiddenBots(current.bot.username)) MV.toast(i18nText("hiddenBots.hidden"));
+      } catch (e) { MV.toast(cleanErr(e)); }
+    } }], row, pos, i18nText("hiddenBots.menu", { username: item.bot.username }));
   }
 
   function topicRow(t) {
@@ -1276,19 +1303,27 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
 
   /** One settings save from the Settings view: the result shows as a short note next to the control. */
   async function saveSettings(patch, okText) {
+    let saved = false;
     if (patch.language) { if (languageRestore) languageRestore(); languageSaves++; languageRestore = preserveLanguageFields(); }
     try {
       S.settings = await deck.settingsSave(patch);
+      if (patch.hiddenBots !== undefined) {
+        applyDialogs(S.tg);
+        mark("rail", "head", "msgs", "strip", "panel", true);
+      }
       applyWallpaper();
       settingsMessage(true, patch.language ? i18nText("settings.languageSaved") : okText);
+      saved = true;
     } catch (e) {
       settingsMessage(false, i18nText("common.saveFailed", { e: cleanErr(e) }));
+      if (patch.hiddenBots !== undefined) MV.toast(i18nText("common.saveFailed", { e: cleanErr(e) }));
     }
     mark("top", "panel", true);
     if (patch.language) requestAnimationFrame(() => {
       if (languageRestore) languageRestore();
       if (!--languageSaves) languageRestore = null;
     });
+    return saved;
   }
 
   /** A save through another IPC call (download folder pick/reset): same note as saveSettings. */
@@ -1799,10 +1834,13 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   function applyDialogs(d) {
     S.tg.me = d.me || S.tg.me;
     S.tg.group = d.group || null;
+    // Keep the snapshot intact: a reconnect can deliver it before the settings save reply.
     S.tg.bots = d.bots || [];
     S.tg.topics = d.topics || [];
     S.tg.forumGroups = d.forumGroups || [];
-    if (!S.tg.bots.length && !S.tg.topics.length) {
+    const items = railAgents();
+    if (S.sel && ![...items, ...S.tg.topics].some((x) => x.key === S.sel)) S.sel = null;
+    if (!items.length && !S.tg.topics.length) {
       // logged out (or nothing to show): forget everything from the previous account
       S.msgs.clear();
       S.loaded.clear();
@@ -1817,9 +1855,8 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       const relayDown = S.relay.status === "closed" || S.relay.status === "unconfigured";
       if (!agentList().length && !relayDown) return;
       const want = pendingSelect || store.get("deck.sel");
-      const items = railAgents();
       let key = null;
-      if (want && [...S.tg.bots, ...S.tg.topics].some((x) => x.key === want)) key = want;
+      if (want && [...items, ...S.tg.topics].some((x) => x.key === want)) key = want;
       else if (want) {
         const it = items.find((x) => x.agent && x.agent.name.toLowerCase() === want.toLowerCase());
         if (it) key = it.key;

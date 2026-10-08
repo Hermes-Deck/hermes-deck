@@ -11,6 +11,19 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
   const SECTIONS = ["general", "hermes", "relay", "telegram", "desktop", "device"];
   const BUSY_SEND = ["queue", "steer"];
 
+  /** Keep the stored spelling, matching Telegram usernames without case or a leading @. */
+  function hiddenBotsWith(list, username) {
+    const seen = new Set();
+    const merged = [...(list || []), username].map((v) => String(v || "").trim().replace(/^@/, "")).filter((v) => {
+      const key = v.toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    if (merged.length > 50) throw new Error(i18nText("hiddenBots.limit"));
+    return merged;
+  }
+
   /** The right-panel Bot screen tab exists while desktop control is on (or paused by Stop, so Resume stays near). */
   // the Bot screen tab: desktop control on (or paused), or an agent space on the relay to watch
   const screenTabVisible = (st, current) => (st ? !!(st.on || st.paused || st.spaces) : current === "screen");
@@ -166,6 +179,15 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
     const BUILDERS = {}; // one per section; each pushes its groups into `kids`
     const st = () => ctx.settings() || {};
     const T = (key, vars) => i18nText(key, vars);
+    let hiddenBotsSave = Promise.resolve();
+    // Reconnects can delay save replies; merge each action only after the previous one settles.
+    function updateHiddenBots(username, hide = true) {
+      const next = hiddenBotsSave.then(() => ctx.save({ hiddenBots: hide
+        ? hiddenBotsWith(st().hiddenBots, username)
+        : (st().hiddenBots || []).filter((v) => v.toLowerCase() !== username.toLowerCase()) }, T("U0492")));
+      hiddenBotsSave = next.catch(() => {});
+      return next;
+    }
     const input = (id, attrs = {}) => h("input", { id, autocomplete: "off", spellcheck: "false", ...attrs });
     const secretWarning = () => (st().plainSecrets ? h("p", { class: "form-error sv-warn" }, node("U0499")) : null);
     /** Host versions for this section (hostLines): one group, each line with the update command to copy. */
@@ -315,13 +337,32 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
       const sel = h("select", { id: "s-group", title: T("U0490"), onchange: (e) => ctx.save({ groupChatId: e.target.value }, T("U0492")) },
         h("option", { value: "" }, node("U0488")), groups.map((g) => h("option", { value: g.id, selected: g.id === s.groupChatId ? true : null }, g.title)));
       if (s.groupChatId && !groups.some((g) => g.id === s.groupChatId)) sel.appendChild(h("option", { value: s.groupChatId, selected: true }, s.groupChatId));
-      const hidden = input("s-hidden", { value: (s.hiddenBots || []).join(", "), placeholder: T("A0240"), title: T("U0491") });
-      hidden.addEventListener("change", () => ctx.save({ hiddenBots: hidden.value }, T("U0492")));
-      hidden.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); hidden.blur(); } });
+      const hidden = input("s-hidden", { placeholder: T("A0240"), title: T("U0491") });
+      const addHidden = async () => {
+        const submitted = hidden.value;
+        const username = submitted.trim().replace(/^@/, "").trim();
+        if (!username) return;
+        try {
+          await updateHiddenBots(username);
+          if ((st().hiddenBots || []).some((v) => v.toLowerCase() === username.toLowerCase())) {
+            if (hidden.value === submitted) hidden.value = "";
+            rebuild("telegram");
+          }
+        } catch (e) { notify(false, e.message); }
+      };
+      hidden.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addHidden(); } });
       kids.push(group(node("set.tgChats"),
         row(node("U0489"), sel, { id: "s-group" }),
-        row(node("A0239"), hidden, { id: "s-hidden" }),
         switchRow("s-read-receipts", node("U0494"), s.readReceipts !== false, async (on) => { await ctx.save({ readReceipts: on }, T("U0493")); ctx.readReceiptsChanged(); }, { title: T("U0495"), fk: "tg:read-receipts" })));
+      kids.push(group(node("A0239"),
+        ...(s.hiddenBots || []).map((username) => row(`@${username}`, h("button", {
+          class: "btn mini", type: "button", dataset: { fk: `hidden-show:${username.toLowerCase()}` },
+          "aria-label": T("hiddenBots.showNamed", { username }),
+          onclick: () => updateHiddenBots(username, false),
+        }, node("hiddenBots.show")))),
+        !(s.hiddenBots || []).length ? h("p", { class: "sv-row muted" }, node("hiddenBots.empty")) : null,
+        row(node("hiddenBots.username"), h("span", { class: "sv-inline" }, hidden,
+          h("button", { class: "btn mini", type: "button", dataset: { fk: "hidden-add" }, onclick: addHidden }, node("hiddenBots.add"))), { id: "s-hidden" })));
       const me = tg.me;
       kids.push(group(node("A0242"), me
         ? row(h("span", { class: "sv-value" }, me.name || String(me.id)), h("button", { class: `btn mini${V.logoutArmed ? " danger" : ""}`, type: "button", title: T("set.logoutTip"), dataset: { fk: "tg:logout" }, onclick: async () => {
@@ -791,7 +832,7 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
       if (was || ids.includes(section)) show(section);
     });
 
-    return { open, close, toggle: (s) => (V.open ? close() : open(s)), isOpen: () => V.open, refresh, notify, section: () => V.section, icon, _builders: BUILDERS };
+    return { open, close, toggle: (s) => (V.open ? close() : open(s)), isOpen: () => V.open, refresh, notify, section: () => V.section, icon, updateHiddenBots, _builders: BUILDERS };
   }
 
   const api = { create, SECTIONS, BUSY_SEND, screenTabVisible, tabFor, busySendOf, sectionOf, hostLines, hostBanners, sizeText, DOCKER_URL };

@@ -359,6 +359,69 @@ test("Agent desktops: no group without the desktops API; sizes read as people sa
   assert.equal(SVM.sizeText(null), "?");
 });
 
+test("hidden bots: saved usernames render with Show buttons and Show removes only that username", async () => {
+  const { sv, root, saves, setSettings } = mount();
+  setSettings({ hiddenBots: ["BotFather", "ExampleBot"] });
+  sv.open("telegram");
+  assert.match(root().text, /@BotFather/);
+  assert.match(root().text, /@ExampleBot/);
+  const show = root().querySelector('[data-fk="hidden-show:examplebot"]');
+  assert.ok(show, "saved bot has a Show button");
+  assert.equal(show.text, "Show");
+  show.dispatch("click");
+  await new Promise(setImmediate);
+  assert.deepEqual(saves, [{ hiddenBots: ["BotFather"] }]);
+  assert.doesNotMatch(root().text, /@ExampleBot/);
+});
+
+test("hidden bots: manual add trims, strips @ and dedupes without dropping saved entries", async () => {
+  const { sv, root, saves, setSettings } = mount();
+  setSettings({ hiddenBots: ["BotFather", "botfather"] });
+  sv.open("telegram");
+  const add = () => root().querySelector('[data-fk="hidden-add"]');
+  assert.ok(add(), "manual Hide button exists");
+  root().querySelector("#s-hidden").value = "  @ExampleBot  ";
+  add().dispatch("click");
+  await new Promise(setImmediate);
+  assert.deepEqual(saves.at(-1), { hiddenBots: ["BotFather", "ExampleBot"] });
+  root().querySelector("#s-hidden").value = "@examplebot";
+  root().querySelector("#s-hidden").dispatch("keydown", { key: "Enter" });
+  await new Promise(setImmediate);
+  assert.deepEqual(saves.at(-1), { hiddenBots: ["BotFather", "ExampleBot"] });
+  assert.equal(root().querySelectorAll('[data-fk="hidden-show:examplebot"]').length, 1);
+});
+
+test("hidden bots: empty state, blank input and 50-entry limit", async () => {
+  const { sv, root, saves, setSettings } = mount();
+  sv.open("telegram");
+  assert.match(root().text, /No hidden bots/);
+  root().querySelector("#s-hidden").value = "  @  ";
+  root().querySelector('[data-fk="hidden-add"]').dispatch("click");
+  await new Promise(setImmediate);
+  assert.equal(saves.length, 0);
+  setSettings({ hiddenBots: Array.from({ length: 50 }, (_, i) => `ExampleBot${i}`) });
+  sv.refresh();
+  root().querySelector("#s-hidden").value = "OverflowBot";
+  root().querySelector('[data-fk="hidden-add"]').dispatch("click");
+  await new Promise(setImmediate);
+  assert.equal(saves.length, 0, "a full list must not pretend to save another bot");
+  assert.match(root().text, /50/);
+});
+
+test("hidden bots: Enter refreshes the list while the input has focus and keeps other drafts", async () => {
+  const { sv, root } = mount();
+  sv.open("telegram");
+  root().querySelector("#s-apiid").value = "1234567";
+  const input = root().querySelector("#s-hidden");
+  input.value = "@ExampleBot";
+  input.focus();
+  input.dispatch("keydown", { key: "Enter" });
+  await new Promise(setImmediate);
+  assert.ok(root().querySelector('[data-fk="hidden-show:examplebot"]'), "Show appears without leaving the input");
+  assert.equal(root().querySelector("#s-hidden").value, "");
+  assert.equal(root().querySelector("#s-apiid").value, "1234567");
+});
+
 // ---------------------------------------------------------------- wiring and copy
 
 test("index.html loads the view before app.js; app.js routes every Settings entry point to it", () => {

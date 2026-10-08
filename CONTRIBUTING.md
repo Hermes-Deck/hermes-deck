@@ -124,6 +124,11 @@ Use synthetic values such as `example.com`, `<relay-host>` and `owner/name`. Run
 you push; CI runs it and a gitleaks secret scan on every pull request. If a match is a genuine false positive, add a
 narrow allowlist entry with a reason in the script (or `.gitleaks.toml`), never a whole-tree exception.
 
+Maintainers can also keep their own identifiers out of the history without publishing them: put one extended regex
+per line in the repository secret `PRIVATE_DENYLIST`, and the secret scan job checks every new commit's author,
+message and added lines against it, reporting only the commit and `file:line`. Commits keep a generic author
+(`git config user.name` / `user.email` for this clone), and pull requests merge by rebase so they keep it.
+
 ## Branches and pull requests
 
 1. Fork the repository (or create a branch if you have write access) and branch from `main`.

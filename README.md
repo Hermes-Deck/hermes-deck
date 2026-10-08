@@ -21,7 +21,7 @@ computer, both off until you allow them. Telegram is optional.
 | [Notifications, pet, themes](docs/features.md#notifications-and-badge) | OS notifications, taskbar badge, status pet, themes, English/Turkish | No | No |
 | [Agent browsers](docs/features.md#agent-browsers-workspace-tab) | Watch an agent's browser live, take control, hand it back | Yes | No |
 | [Desktop control](docs/features.md#desktop-control-bot-screen-tab) | Let an agent use one window you hand over, with Stop always available | Yes | No |
-| [Agent spaces](docs/features.md#agent-spaces) | Agents take turns on the host's own desktop; watch or join in | Yes | No |
+| [Agent spaces](docs/features.md#agent-spaces) | Each agent on its own Linux desktop (or taking turns on a shared one); watch or join in, approve risky commands, undo changes | Yes | No |
 
 Details of each feature, what it needs and where its settings are: [docs/features.md](docs/features.md).
 
@@ -135,6 +135,7 @@ With Telegram mode on, Telegram's API-key and phone login screens follow. Everyt
 - Node.js 22.13+ for the relay.
 - Windows x64 or macOS (Apple Silicon or Intel) for the desktop app.
 - For Telegram mode only: your own API keys from [my.telegram.org](https://my.telegram.org/apps).
+- For agent desktops only: Docker (Docker Desktop, Docker Engine or colima) on the computer that hosts them.
 
 App, relay and plugin share one version; run the same version of each. Full matrix and the version/protocol rules:
 [docs/compatibility.md](docs/compatibility.md).
