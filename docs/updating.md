@@ -135,6 +135,27 @@ running work, so it prints the commands for you to run at a quiet moment (`herme
 The Hermes root is `HERMES_ROOT`, otherwise `~/.hermes`. The Python used is `DECK_HERMES_PYTHON`, otherwise
 `<HERMES_ROOT>/hermes-agent/venv/bin/python` if it exists, otherwise `python3`.
 
+### Updating from the app
+
+Settings › Relay and › Hermes show **Update** when the relay or a profile's plugin is older than the app. It sends
+`POST /host/update {version}` (the app's version) to the relay. The relay starts `deck-relay-update apply --with-plugin`
+(or `deck-relay-update plugin` when only the plugin is behind) as a separate job, outside its own service: a
+transient `systemd-run --user` unit on Linux, a generated launchd job on macOS. The relay must run from an install
+root (see [Converting a checkout](#converting-a-checkout-once)). Progress is written to `<data>/update-status.json`
+and shown in the app.
+
+- Only a desktop Deck with the relay token and its device key, connected at that moment, can start it. The iOS app cannot.
+- The host never moves to an older version, and only one update runs at a time.
+- `DECK_REMOTE_UPDATE=0` in the relay's `.env` turns this off.
+- Settings › General › Updates › **Automatically update the host to this app's version** (off by default) sends the
+  same request when the app has updated and the host is behind. A version whose update failed is not tried again
+  automatically.
+
+Gateways: profiles whose plugin changed are listed in `<data>/restart-queue.json`. The relay restarts each one with
+`hermes [-p <profile>] gateway restart` once it has been idle on two checks 15 s apart (no active agents and no
+unfinished delegation). A busy profile waits; the app offers **Restart now**. If the relay cannot read a profile's
+gateway state, it never restarts it on its own. Set `DECK_HERMES_BIN` if `hermes` is not on the relay's PATH.
+
 ### Daily check (optional)
 
 ```sh

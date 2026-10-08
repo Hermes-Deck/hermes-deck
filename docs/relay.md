@@ -86,11 +86,12 @@ file named by `DECK_RELAY_ENV`); restart it to apply changes.
 | `DECK_HOST_NAME` | Agent-host label in the Workspace host picker |
 | `DECK_DESKTOP_HOST` | `1` lets desktop control fall back to the agent host's own screen; default off |
 | `DECK_HERMES_PYTHON` | Hermes' Python for the Bot Desktop lease and Settings › Hermes config; auto-detects `~/.hermes/hermes-agent/venv/bin/python` (Hermes config also falls back to `DECK_MOBILE_BRIDGE_PYTHON`) |
-| `DECK_HERMES_CONFIG`, `HERMES_AGENT_DIR`, `DECK_HERMES_BIN` | Settings › Hermes config: `0` turns it off; Hermes' install directory when it is not the folder around that Python's venv; the `hermes` command for Restart gateway (default `hermes` on PATH) |
+| `DECK_HERMES_CONFIG`, `HERMES_AGENT_DIR`, `DECK_HERMES_BIN` | Settings › Hermes config: `0` turns it off; Hermes' install directory when it is not the folder around that Python's venv; the `hermes` command for Restart gateway (default `hermes` on PATH); also the gateway restarts after a host update (fallback `~/.local/bin/hermes`) |
 | `DECK_CUA_DRIVER` | The real cua-driver `deck-cua` runs for the agent-host route; default `cua-driver` on PATH |
 | `DECK_SPACES`, `DECK_SPACESD_URL`, `DECK_SPACESD_TOKEN_FILE` | Agent spaces ([agent-spaces.md](agent-spaces.md)) |
 | `DECK_SPACES_*`, `DECK_DESKTOPS_*`, `DECK_AUDIT*`, `DECK_SNAPSHOT_KEEP`, `DECK_RISKY_PATTERNS_FILE` | Agent desktops, activity log and safety ([agent-spaces.md](agent-spaces.md)) |
 | `DECK_UPDATE_REPO`, `DECK_RELAY_AUTO_UPDATE`, `DECK_RELAY_SERVICE` | Relay updates ([updating.md](updating.md)) |
+| `DECK_REMOTE_UPDATE` | Host update from the app (default on; [updating.md](updating.md#updating-from-the-app)) |
 | `DECK_MOBILE_DEVICES_FILE`, `DECK_MOBILE_BRIDGE_PYTHON`, `DECK_MOBILE_BRIDGE_STREAM` | iOS app: mobile token store, and Hermes' Python plus `stream.py` path for the mobile bridge (empty stream disables it) |
 | `HERMES_PUSH_URL`, `HERMES_PUSH_SENDER_TOKEN` | iOS push: your push gateway's HTTPS origin and this relay's sender credential ([push gateway](https://github.com/Hermes-Deck/ios-app/tree/main/push) in the iOS app repository) |
 | `DECK_HOME`, `DECK_DRIVER_SOCK` | Plugin home (default `~/.hermes-deck`) and driver socket (default `<DECK_HOME>/driver.sock`). Must equal the plugin's |

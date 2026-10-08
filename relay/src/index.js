@@ -78,6 +78,8 @@ function config(env = process.env, mem = os.totalmem()) {
     eventsDir: env.DECK_EVENTS_DIR || home(".hermes-deck", "events"),
     stateDir: env.DECK_STATE_DIR || home(".hermes-deck", "state"),
     dataDir: env.DECK_DATA_DIR || path.join(__dirname, "..", "data"),
+    remoteUpdate: env.DECK_REMOTE_UPDATE !== "0",
+    hermesBin: env.DECK_HERMES_BIN || (fs.existsSync(home(".local", "bin", "hermes")) ? home(".local", "bin", "hermes") : "hermes"),
     agentsFile: env.DECK_AGENTS || path.join(__dirname, "..", "agents.json"),
     claudeDirs: list(env.CLAUDE_PROJECT_DIRS),
     claudeProfile: env.CLAUDE_PROFILE || "claude-code",
@@ -417,9 +419,27 @@ async function start(cfg) {
 
   const mobile = new MobileRelay({ tokensFile: cfg.mobileDevicesFile || path.join(cfg.dataDir, "mobile-devices.json"), bridgeConfig: cfg.mobileBridge, push: new MobilePushClient(), capabilities: { history: !!history, workspace: !!workspace && !!fallback?.available, desktop: false } });
   const host = { protocol: compat.PROTOCOL, plugins: compat.pluginCache(cfg.hermesRoot || null), update: () => compat.updateStatus(cfg.dataDir) };
+  const { HostUpdate } = require("./host-update");
+  const { Restarts } = require("./restarts");
+  const spawnRun = (cmd, args) => new Promise((resolve) => {
+    const { spawn } = require("child_process");
+    let out = "";
+    let child;
+    try { child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] }); } catch (e) { return resolve({ code: 1, out: e.message }); }
+    child.stdout.on("data", (d) => { out = (out + d).slice(-4000); });
+    child.stderr.on("data", (d) => { out = (out + d).slice(-4000); });
+    child.on("error", (e) => resolve({ code: 1, out: e.message }));
+    child.on("close", (code) => resolve({ code, out }));
+  });
+  const restarts = new Restarts({ file: path.join(cfg.dataDir, "restart-queue.json"), hermesRoot: cfg.hermesRoot, hermesBin: cfg.hermesBin || "hermes", run: spawnRun, onChange: () => hostUpdate.poll() });
+  const hostUpdate = new HostUpdate({
+    dataDir: cfg.dataDir, relayDir: path.join(__dirname, ".."), version: VERSION, remoteUpdate: cfg.remoteUpdate !== false,
+    tokensFile: (cfg.driver || driverConfig()).tokensFile, presence, plugins: () => compat.pluginVersions(cfg.hermesRoot || null), restarts,
+    uid: typeof process.getuid === "function" ? process.getuid() : 0, run: spawnRun, broadcast: (m) => broadcast(m),
+  });
   let quitRelay = null; // set by the entry point below: stop, then exit so the service manager starts the relay again
   const hermesConfig = new HermesConfig({ ...(cfg.hermesConfig || hermesConfigOptions({})), root: cfg.hermesRoot || (cfg.hermesConfig || {}).root, quit: () => (quitRelay ? quitRelay() : null) });
-  const srv = createServer({ hermesConfig, mobile, host, token: cfg.token, queryToken: !!cfg.queryToken, model, fleet, version: VERSION, hooks: deckHooks(presence, gateway, driver, workspace, bundles, spaces, spaceTunnel), history, plans, bundles });
+  const srv = createServer({ hermesConfig, hostUpdate, mobile, host, token: cfg.token, queryToken: !!cfg.queryToken, model, fleet, version: VERSION, hooks: deckHooks(presence, gateway, driver, workspace, bundles, spaces, spaceTunnel), history, plans, bundles });
   broadcast = srv.broadcast;
   if (workspace) workspace.setBroadcast(srv.broadcast);
 
@@ -446,6 +466,11 @@ async function start(cfg) {
     setInterval(saveCheckpoint, 30_000),
     setInterval(() => model.prune(), 600_000),
   ];
+  restarts.start();
+  const hostPoll = setInterval(() => hostUpdate.poll(), 1000);
+  hostPoll.unref?.();
+  timers.push(hostPoll);
+  hostUpdate.poll();
   if (spaceAudit) {
     spaceAudit.cleanup().catch(() => {});
     const maintenance = setInterval(() => { spaceAudit.cleanup().catch(() => {}); spaceApprovals?.sweep(); }, 60_000);
@@ -490,6 +515,7 @@ async function start(cfg) {
   const stop = () =>
     new Promise((resolve) => {
       for (const t of timers) clearInterval(t);
+      restarts.stop();
       fleet.stop();
       if (history) history.stop();
       try {

@@ -15,6 +15,36 @@ const { MobileRelay } = require("../src/mobile");
 
 const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "deck-hostver-"));
 
+async function boot(t) {
+  const dir = tmpDir();
+  const dataDir = path.join(dir, "data");
+  const cfg = {
+    host: "127.0.0.1", port: 0, token: "t".repeat(32), eventsDir: path.join(dir, "events"), stateDir: path.join(dir, "state"), dataDir,
+    claudeDirs: [], claudeProfile: "claude-code", claudeChatMap: null, launchdPrefixes: [], codexbar: null, agentsFile: path.join(dir, "agents.json"),
+    broadcastWindowS: 300, tickMs: 100, hermesRoot: hermesRoot(dir), history: false, remoteUpdate: true,
+  };
+  const relay = await start(cfg);
+  t.after(async () => { await relay.stop(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const ws = new WebSocket(`ws://127.0.0.1:${relay.port}/events`, { headers: { authorization: `Bearer ${cfg.token}` } });
+  const hello = await message(ws, "hello");
+  return { base: `http://127.0.0.1:${relay.port}`, hello, ws, dataDir };
+}
+
+function message(ws, type) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => finish(new Error(`no ${type} message`)), 5000);
+    const receive = (data) => { const value = JSON.parse(data); if (value.t === type) finish(null, value); };
+    const finish = (error, value) => {
+      clearTimeout(timer);
+      ws.off("message", receive);
+      ws.off("error", finish);
+      if (error) reject(error); else resolve(value);
+    };
+    ws.on("message", receive);
+    ws.on("error", finish);
+  });
+}
+
 /** A Hermes root: default (plugin 0.3.6), research (plugin 0.3.5), plain (no plugin), one junk entry. */
 function hermesRoot(dir) {
   const root = path.join(dir, ".hermes");
@@ -104,6 +134,36 @@ test("mobile capabilities carry relayVersion and protocol", () => {
   } finally {
     m.stop();
   }
+});
+
+test("hello carries hostUpdate, status changes reach WebSockets and health exposes only state and version", async (t) => {
+  const { base, hello, ws, dataDir } = await boot(t);
+  assert.deepStrictEqual(Object.keys(hello.hostUpdate).sort(), ["remote", "restarts", "status"]);
+  assert.deepStrictEqual(hello.hostUpdate, { remote: { enabled: true, managed: false }, status: null, restarts: [] });
+  const empty = await (await fetch(`${base}/health`)).json();
+  assert.strictEqual(empty.hostUpdate, undefined);
+  assert.strictEqual(empty.plugins, undefined);
+  const changed = message(ws, "hostUpdate");
+  fs.writeFileSync(path.join(dataDir, "update-status.json"), JSON.stringify({ state: "plugin-failed", version: "1.3.0", profile: "private-research", error: "private-research failed" }));
+  fs.writeFileSync(path.join(dataDir, "restart-queue.json"), JSON.stringify([{ profile: "private-research", pending: true, since: new Date().toISOString() }]));
+  const pushed = await changed;
+  assert.strictEqual(pushed.status.state, "plugin-failed");
+  assert.strictEqual(pushed.restarts[0].profile, "private-research");
+  const health = await (await fetch(`${base}/health`)).json();
+  assert.deepStrictEqual(health.hostUpdate, { state: "plugin-failed", version: "1.3.0" });
+  assert.strictEqual(health.plugins, undefined);
+  assert.ok(!JSON.stringify(health).includes("private-research"));
+  const queueChanged = message(ws, "hostUpdate");
+  fs.writeFileSync(path.join(dataDir, "restart-queue.json"), "[]");
+  assert.deepStrictEqual((await queueChanged).restarts, []);
+});
+
+test("remote update config honors the kill switch and Hermes executable override", () => {
+  assert.strictEqual(config({}).remoteUpdate, true);
+  assert.strictEqual(config({ DECK_REMOTE_UPDATE: "0" }).remoteUpdate, false);
+  assert.strictEqual(config({ DECK_HERMES_BIN: "/fixture/bin/hermes" }).hermesBin, "/fixture/bin/hermes");
+  const local = path.join(os.homedir(), ".local", "bin", "hermes");
+  assert.strictEqual(config({}).hermesBin, fs.existsSync(local) ? local : "hermes");
 });
 
 test("--self-check loads a temp config, opens nothing for writing, and exits 0 without listening", () => {

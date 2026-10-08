@@ -33,6 +33,7 @@ function tokenOk(req, token, queryToken = false) {
  *   POST /fleet/quotas/refresh (Bearer token or mobile token) force a quota refresh through the plugins; >= 30 s apart
  *   GET /snapshot | /fleet | /tokens?range=24h|7d|14d|30d|all (or legacy ?days=N) | /session/<sid>   (Bearer token)
  *   GET|POST /hermes/config[/schema], /hermes/restart   (Bearer token, never a mobile token; hermes-config.js)
+ *   POST /host/update | /host/restart (Bearer header + desktop device token + live desktop; host-update.js)
  *   GET /session/<sid>/plan    (Bearer token) {sid, plan, stored}: the latest plan, live or rebuilt from state.db (plan.js)
  *   GET /session/<sid>/messages | /session/<sid>/tools | /session/<sid>/call/<id> | /message/<id>/full   (Bearer token; history.js)
  *   WS  /events                (Bearer token; ?token= only with queryToken)  hello -> snapshot -> {t:"evs"|"fleet"|"agents"} pushes
@@ -42,18 +43,18 @@ function tokenOk(req, token, queryToken = false) {
  * onHttp(req, res, url) -> true when it answered an authenticated request (bot screen: /desktop/*, /cu/*; spaces: /spaces*).
  * onUpgrade(req, socket, head, url) -> true when it took a relay-token WebSocket under /spaces/ (the space viewer).
  */
-function createServer({ token, model, fleet, version, hooks = null, history = null, plans = null, queryToken = false, bundles = null, mobile = null, host = null, hermesConfig = null }) {
+function createServer({ token, model, fleet, version, hooks = null, history = null, plans = null, queryToken = false, bundles = null, mobile = null, host = null, hermesConfig = null, hostUpdate = null }) {
   const started = Date.now();
   // Host versions (compat.js): protocol, each profile's plugin version, the updater's last check. `v` stays first
   // and unchanged: apps before 0.3.6 read only `v` (as "the newest app version" signal).
   const hostInfo = () => {
-    if (!host) return {};
-    const out = { protocol: host.protocol, plugins: host.plugins ? host.plugins() : {} };
-    const upd = host.update ? host.update() : null;
+    const out = host ? { protocol: host.protocol, plugins: host.plugins ? host.plugins() : {} } : {};
+    const upd = host && host.update ? host.update() : null;
     if (upd) {
       out.updateAvailable = upd.available;
       if (upd.latest) out.latest = upd.latest;
     }
+    if (hostUpdate) out.hostUpdate = hostUpdate.info();
     return out;
   };
   const clients = new Set();
@@ -87,8 +88,9 @@ function createServer({ token, model, fleet, version, hooks = null, history = nu
       return json(res, 400, { error: "bad url" });
     }
     if (url.pathname === "/health") {
-      const { plugins: _private, ...publicHost } = hostInfo(); // profile names are not public
-      return json(res, 200, { ok: true, v: version, ...publicHost, uptime: Math.round((Date.now() - started) / 1000), clients: clients.size, sessions: model.sessions.size });
+      const { plugins: _private, hostUpdate: _full, ...publicHost } = hostInfo(); // profile names are not public
+      const pub = hostUpdate ? hostUpdate.publicInfo() : null;
+      return json(res, 200, { ok: true, v: version, ...publicHost, ...(pub ? { hostUpdate: pub } : {}), uptime: Math.round((Date.now() - started) / 1000), clients: clients.size, sessions: model.sessions.size });
     }
     if (mobile && mobile.onHttp(req, res, url)) return;
     const mobileAuth = mobile && mobile.authenticate(req);
@@ -103,6 +105,8 @@ function createServer({ token, model, fleet, version, hooks = null, history = nu
       if (hermesConfig && hermesConfig.onHttp(req, res, url)) return;
       return json(res, 404, { error: "not found" });
     }
+    if (["/host/update", "/host/restart"].includes(url.pathname) && !tokenOk(req, token, false)) return json(res, 401, { error: "relay bearer required" });
+    if (hostUpdate && hostUpdate.onHttp(req, res, url)) return;
     if (hooks && hooks.onHttp && hooks.onHttp(req, res, url)) return; // bot screen: lease, stop, frames
     if (req.method === "POST" && url.pathname === "/fleet/quotas/refresh") {
       // On-demand quota refresh (Usage refresh button, phone and desktop). Rate limit and wait live in Fleet.refreshQuotas.

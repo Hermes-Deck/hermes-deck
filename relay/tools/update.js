@@ -342,6 +342,26 @@ function lock(deps, root) {
   return () => deps.fs.rmSync(file, { force: true });
 }
 
+/** --status-file: one JSON object rewritten atomically at every step; a `job` field written by the relay is kept. */
+function statusWriter(deps, file, base) {
+  if (!file) return () => {};
+  let warned = false;
+  return (patch) => {
+    try {
+      let job;
+      try { job = JSON.parse(deps.fs.readFileSync(file, "utf8")).job; } catch { job = undefined; }
+      const value = { ...base, ...patch, at: new Date(deps.now()).toISOString(), ...(job !== undefined ? { job } : {}) };
+      deps.fs.writeFileSync(`${file}.tmp`, JSON.stringify(value));
+      deps.fs.renameSync(`${file}.tmp`, file);
+    } catch (e) {
+      if (!warned) {
+        warned = true;
+        try { deps.log(`status: could not write ${file}: ${e.message}`); } catch { /* reporting must never interrupt recovery */ }
+      }
+    }
+  };
+}
+
 /** Profiles under the Hermes root with the plugin installed (a plugins/hermes-deck folder and it named in config.yaml). */
 function pluginProfiles(deps, hermesRoot) {
   const out = [];
@@ -357,24 +377,107 @@ function pluginProfiles(deps, hermesRoot) {
   return out;
 }
 
-/** --with-plugin: the release's install.py, dry run first, then for real; gateways are never restarted here. */
-async function updatePlugin(deps, { releaseDir, env, dry }) {
+/** The Hermes home of a profile: the root for "default", <root>/profiles/<name> otherwise. */
+function profileHome(hermesRoot, profile) {
+  return profile === "default" ? hermesRoot : path.join(hermesRoot, "profiles", profile);
+}
+function installedPluginVersion(deps, home) {
+  const v = readJsonFile(deps, path.join(home, "hermes-deck", "installed.json"));
+  return v && typeof v.version === "string" ? v.version.replace(/^v/, "") : null;
+}
+
+function readQueue(deps, file) {
+  let text;
+  try {
+    text = deps.fs.readFileSync(file, "utf8");
+  } catch (e) {
+    if (e.code === "ENOENT") return [];
+    throw e;
+  }
+  try {
+    const queue = JSON.parse(text);
+    if (Array.isArray(queue)) return queue;
+  } catch { /* preserve malformed JSON before replacing it */ }
+  const moved = `${file}.corrupt-${deps.now()}`;
+  deps.fs.renameSync(file, moved);
+  deps.log(`plugin: restart queue ${file} was unreadable; moved to ${moved}`);
+  return [];
+}
+
+function writeQueue(deps, file, queue) {
+  deps.fs.writeFileSync(`${file}.tmp`, JSON.stringify(queue));
+  deps.fs.renameSync(`${file}.tmp`, file);
+}
+
+/** --with-plugin / plugin: the release's install.py, dry run first, then for real; changed profiles go to the restart queue. */
+async function updatePlugin(deps, { releaseDir, env, dry, restartQueue = null }) {
   const hermesRoot = env.HERMES_ROOT || path.join(deps.home, ".hermes");
   const profiles = pluginProfiles(deps, hermesRoot);
   if (!profiles.length) {
     deps.log(`plugin: no profile under ${hermesRoot} has hermes-deck installed; nothing to update`);
-    return { profiles };
+    return { profiles, changed: [] };
   }
+  const before = Object.fromEntries(profiles.map((p) => [p, installedPluginVersion(deps, profileHome(hermesRoot, p))]));
   const venv = path.join(hermesRoot, "hermes-agent", "venv", "bin", "python");
   const python = env.DECK_HERMES_PYTHON || (exists(deps, venv) ? venv : "python3");
   const installer = path.join(releaseDir, "hermes-plugin", "hermes-deck", "install.py");
   const args = [installer, "--home", hermesRoot, ...profiles.flatMap((p) => ["--profile", p])];
   const step = stepper(deps, dry);
+  let queue = restartQueue && !dry ? readQueue(deps, restartQueue) : [];
+  const target = restartQueue && !dry
+    ? /^\s*version:\s*["']?([^"'\s#]+)/m.exec(readText(deps, path.join(releaseDir, "hermes-plugin", "hermes-deck", "plugin.yaml")) || "")?.[1] || null
+    : null;
+  const since = new Date(deps.now()).toISOString();
+  let pending = [];
   await step(`plugin: ${python} ${[...args, "--dry-run"].join(" ")}`, async () => deps.log(String((await must(deps, python, [...args, "--dry-run"])).out || "").trim()));
+  if (restartQueue && !dry && target) {
+    // A previous install may have succeeded while its final queue write failed.
+    queue = queue.map((x) => x && x.pending === true && typeof x.target === "string" && installedPluginVersion(deps, profileHome(hermesRoot, x.profile)) === x.target
+      ? { ...x, pending: false, reason: `plugin ${x.target}` } : x);
+    pending = profiles.filter((p) => before[p] !== target);
+    for (const p of pending) {
+      queue = queue.filter((x) => x && x.profile !== p);
+      queue.push({ profile: p, reason: `plugin ${target}`, since, pending: true, target });
+    }
+    writeQueue(deps, restartQueue, queue);
+  }
   await step(`plugin: ${python} ${args.join(" ")}`, async () => deps.log(String((await must(deps, python, args)).out || "").trim()));
-  deps.log("plugin: gateways were not restarted. Restart each changed profile's gateway at a quiet moment:");
-  for (const p of profiles) deps.log(`  ${p === "default" ? "hermes gateway restart" : `hermes -p ${p} gateway restart`}`);
-  return { profiles };
+  if (dry) return { profiles, changed: [] };
+  const changed = profiles.filter((p) => { const now = installedPluginVersion(deps, profileHome(hermesRoot, p)); return now && now !== before[p]; });
+  if (restartQueue) {
+    queue = queue.filter((x) => !x || !pending.includes(x.profile) || changed.includes(x.profile));
+    for (const p of changed) {
+      queue = queue.filter((x) => x && x.profile !== p);
+      queue.push({ profile: p, reason: `plugin ${installedPluginVersion(deps, profileHome(hermesRoot, p))}`, since, pending: false, ...(target ? { target } : {}) });
+    }
+    writeQueue(deps, restartQueue, queue);
+    if (changed.length) deps.log(`plugin: queued gateway restarts for ${changed.join(", ")} (the relay restarts them when idle)`);
+  } else if (changed.length) {
+    deps.log("plugin: gateways were not restarted. Restart each changed profile's gateway at a quiet moment:");
+    for (const p of changed) deps.log(`  ${p === "default" ? "hermes gateway restart" : `hermes -p ${p} gateway restart`}`);
+  }
+  return { profiles, changed };
+}
+
+/** `deck-relay-update plugin`: the plugin step alone, from the running release (the app's "Try again"). */
+async function pluginOnly(deps, { root = null, dry = false, statusFile = null, restartQueue = null }) {
+  const loc = locate(deps, { root });
+  if (!loc.managed) throw new Error(`the relay in ${loc.relay} is a plain checkout; see deck-relay-update init`);
+  const env = relayEnv(deps, loc.relay);
+  const version = currentVersion(deps, loc.root);
+  const unlock = dry ? () => {} : lock(deps, loc.root);
+  const status = dry ? () => {} : statusWriter(deps, statusFile, { version, from: version });
+  try {
+    status({ step: "plugin", state: "running" });
+    const r = await updatePlugin(deps, { releaseDir: path.join(loc.root, "current"), env: { ...deps.env, ...env }, dry, restartQueue });
+    status({ step: "done", state: "done" });
+    return r;
+  } catch (e) {
+    status({ step: "plugin", state: "plugin-failed", error: e.message });
+    throw e;
+  } finally {
+    unlock();
+  }
 }
 
 /**
@@ -387,7 +490,7 @@ async function updatePlugin(deps, { releaseDir, env, dry }) {
  *   6 keep the last 3 releases; --with-plugin: the release's install.py (dry run, then real), no gateway restart
  * Returns {status: "updated"|"current"|"dry-run", from, to}.
  */
-async function apply(deps, { root, version = null, withPlugin = false, dry = false, force = false, healthTimeoutMs = HEALTH_TIMEOUT_MS }) {
+async function apply(deps, { root, version = null, withPlugin = false, dry = false, force = false, healthTimeoutMs = HEALTH_TIMEOUT_MS, statusFile = null, restartQueue = null }) {
   const loc = locate(deps, { root });
   if (!loc.managed) throw new Error(`the relay in ${loc.relay} is a plain checkout; update it with git, or convert it first: deck-relay-update init <dir> --dry-run`);
   root = loc.root;
@@ -395,91 +498,130 @@ async function apply(deps, { root, version = null, withPlugin = false, dry = fal
   const env = relayEnv(deps, loc.relay);
   const pkg = readJsonFile(deps, path.join(loc.relay, "package.json")) || {};
   const from = currentVersion(deps, root);
-  const repo = repoOf({ ...deps.env, ...env }, pkg);
-  const rel = await release(deps, repo, version);
-  const to = rel.version;
-  if (to === from && !force) {
-    deps.log(`relay ${from} is already the ${version ? "requested" : "latest"} release (${repo})`);
-    return { status: "current", from, to };
-  }
-  if (!version && compare(to, from) < 0 && !force) {
-    deps.log(`the latest release (${to}) is older than the running relay (${from}); pass --version to install it anyway`);
-    return { status: "current", from, to };
-  }
-  deps.log(`update relay ${from} -> ${to} from ${repo}${dry ? " — dry run, nothing is changed" : ""}`);
   const unlock = dry ? () => {} : lock(deps, root);
-  const releases = path.join(root, "releases");
-  const dir = path.join(releases, to);
-  const tmp = path.join(releases, `.tmp-${to}-${process.pid}`);
-  const archive = path.join(root, `.tmp-${sourceName(to)}`);
-  let switched = false;
   try {
-    const name = sourceName(to);
-    let data = null;
-    await step(`download ${name} and SHA256SUMS.txt from release ${rel.tag}; verify the archive's sha256`, async () => {
-      const sums = (await asset(deps, repo, rel, "SHA256SUMS.txt")).toString("utf8");
-      const want = sumFor(sums, name);
-      if (!want) throw new Error(`SHA256SUMS.txt of ${rel.tag} does not list ${name}; nothing was changed`);
-      data = await asset(deps, repo, rel, name);
-      const got = crypto.createHash("sha256").update(data).digest("hex");
-      if (got !== want) throw new Error(`checksum mismatch for ${name} (expected ${want}, got ${got}); nothing was changed`);
-    });
-    await step(`extract it to ${dir}`, async () => {
-      if (exists(deps, dir)) deps.fs.rmSync(dir, { recursive: true, force: true }); // a leftover of an earlier attempt; not running
-      deps.fs.rmSync(tmp, { recursive: true, force: true });
-      deps.fs.mkdirSync(tmp, { recursive: true });
-      deps.fs.writeFileSync(archive, data, { mode: 0o600 });
-      await must(deps, "tar", ["-xzf", archive, "-C", tmp, "--strip-components=1"]);
-      deps.fs.rmSync(archive, { force: true });
-      const got = (readJsonFile(deps, path.join(tmp, "relay", "package.json")) || {}).version;
-      if (got !== to) throw new Error(`the archive's relay/package.json says ${got || "nothing"}, not ${to}`);
-      deps.fs.renameSync(tmp, dir);
-    });
-    await step(`link relay/${SHARED.join(", relay/")} to ${path.join(root, "shared")}`, () => linkShared(deps, root, path.join(dir, "relay")));
-    await step(`npm ci --omit=dev in ${path.join(dir, "relay")}`, () => must(deps, "npm", ["ci", "--omit=dev", "--no-audit", "--no-fund"], { cwd: path.join(dir, "relay") }));
-    await step(`self-check: node src/index.js --self-check in ${path.join(dir, "relay")}`, () => must(deps, deps.node, ["src/index.js", "--self-check"], { cwd: path.join(dir, "relay") }));
-    await step(`switch ${path.join(root, "current")} to releases/${to}`, () => {
-      switchTo(deps, root, to);
-      switched = true;
-    });
-    const [cmd, args] = restartCommand(deps, env);
-    const url = healthUrl(env);
-    const healthy = await step(`restart: ${cmd} ${args.join(" ")}; wait up to ${Math.round(healthTimeoutMs / 1000)} s for ${url} to report v ${to}`, async () => {
-      const r = await deps.run(cmd, args);
-      if (!r || r.code !== 0) {
-        deps.log(`restart failed (exit ${r ? r.code : "?"}): ${String((r && r.out) || "").trim().slice(-400)}`);
-        return false;
-      }
-      return waitHealthy(deps, url, to, healthTimeoutMs);
-    });
-    if (!dry && !healthy) {
-      deps.log(`relay ${to} did not come up: switching back to ${from}`);
-      switchTo(deps, root, from);
-      switched = false;
-      const r = await deps.run(cmd, args);
-      const back = r && r.code === 0 && (await waitHealthy(deps, url, from, healthTimeoutMs));
-      throw new Error(`update to ${to} failed; rolled back to ${from}${back ? " (healthy)" : ` — but ${url} does not report ${from} either: check the service`}`);
+    const base = { version: version || null, from };
+    const status = dry ? () => {} : statusWriter(deps, statusFile, base);
+    let repo, rel;
+    try {
+      repo = repoOf({ ...deps.env, ...env }, pkg);
+      rel = await release(deps, repo, version);
+    } catch (e) {
+      status({ step: "download", state: "failed", error: e.message });
+      throw e;
     }
-    await step(`keep the last ${KEEP} releases in ${releases}`, () => {
-      const removed = prune(deps, root, [from]);
-      if (removed.length) deps.log(`removed: ${removed.join(", ")}`);
-    });
-    if (withPlugin) await updatePlugin(deps, { releaseDir: dry ? path.join(root, "current") : dir, env: { ...deps.env, ...env }, dry });
-    deps.log(dry ? "Dry run: nothing was changed." : `relay ${to} is running (was ${from}).`);
-    return { status: dry ? "dry-run" : "updated", from, to };
-  } catch (e) {
-    if (switched) {
-      // something threw between the switch and the health check: never leave `current` on an unproven release
-      deps.log(`switching back to ${from}`);
-      switchTo(deps, root, from);
+    const to = rel.version;
+    base.version = to;
+    if (to === from && !force) {
+      deps.log(`relay ${from} is already the ${version ? "requested" : "latest"} release (${repo})`);
+      status({ step: "done", state: "done" });
+      return { status: "current", from, to };
+    }
+    if (!version && compare(to, from) < 0 && !force) {
+      deps.log(`the latest release (${to}) is older than the running relay (${from}); pass --version to install it anyway`);
+      status({ step: "done", state: "done" });
+      return { status: "current", from, to };
+    }
+    deps.log(`update relay ${from} -> ${to} from ${repo}${dry ? " — dry run, nothing is changed" : ""}`);
+    const releases = path.join(root, "releases");
+    const dir = path.join(releases, to);
+    const tmp = path.join(releases, `.tmp-${to}-${process.pid}`);
+    const archive = path.join(root, `.tmp-${sourceName(to)}`);
+    let switched = false;
+    let phase = "download";
+    try {
+      const name = sourceName(to);
+      let data = null;
+      let want = null;
+      status({ step: "download", state: "running" });
+      await step(`download ${name} and SHA256SUMS.txt from release ${rel.tag}`, async () => {
+        const sums = (await asset(deps, repo, rel, "SHA256SUMS.txt")).toString("utf8");
+        want = sumFor(sums, name);
+        if (!want) throw new Error(`SHA256SUMS.txt of ${rel.tag} does not list ${name}; nothing was changed`);
+        data = await asset(deps, repo, rel, name);
+      });
+      phase = "verify";
+      status({ step: "verify", state: "running" });
+      await step(`verify the archive's sha256`, async () => {
+        const got = crypto.createHash("sha256").update(data).digest("hex");
+        if (got !== want) throw new Error(`checksum mismatch for ${name} (expected ${want}, got ${got}); nothing was changed`);
+      });
+      phase = "install";
+      status({ step: "install", state: "running" });
+      await step(`extract it to ${dir}`, async () => {
+        if (exists(deps, dir)) deps.fs.rmSync(dir, { recursive: true, force: true }); // a leftover of an earlier attempt; not running
+        deps.fs.rmSync(tmp, { recursive: true, force: true });
+        deps.fs.mkdirSync(tmp, { recursive: true });
+        deps.fs.writeFileSync(archive, data, { mode: 0o600 });
+        await must(deps, "tar", ["-xzf", archive, "-C", tmp, "--strip-components=1"]);
+        deps.fs.rmSync(archive, { force: true });
+        const got = (readJsonFile(deps, path.join(tmp, "relay", "package.json")) || {}).version;
+        if (got !== to) throw new Error(`the archive's relay/package.json says ${got || "nothing"}, not ${to}`);
+        deps.fs.renameSync(tmp, dir);
+      });
+      await step(`link relay/${SHARED.join(", relay/")} to ${path.join(root, "shared")}`, () => linkShared(deps, root, path.join(dir, "relay")));
+      await step(`npm ci --omit=dev in ${path.join(dir, "relay")}`, () => must(deps, "npm", ["ci", "--omit=dev", "--no-audit", "--no-fund"], { cwd: path.join(dir, "relay") }));
+      await step(`self-check: node src/index.js --self-check in ${path.join(dir, "relay")}`, () => must(deps, deps.node, ["src/index.js", "--self-check"], { cwd: path.join(dir, "relay") }));
+      phase = "switch";
+      status({ step: "switch", state: "running" });
+      await step(`switch ${path.join(root, "current")} to releases/${to}`, () => {
+        switchTo(deps, root, to);
+        switched = true;
+      });
+      phase = "health";
+      status({ step: "health", state: "running" });
       const [cmd, args] = restartCommand(deps, env);
-      await Promise.resolve(deps.run(cmd, args)).catch(() => {});
+      const url = healthUrl(env);
+      const healthy = await step(`restart: ${cmd} ${args.join(" ")}; wait up to ${Math.round(healthTimeoutMs / 1000)} s for ${url} to report v ${to}`, async () => {
+        const r = await deps.run(cmd, args);
+        if (!r || r.code !== 0) {
+          deps.log(`restart failed (exit ${r ? r.code : "?"}): ${String((r && r.out) || "").trim().slice(-400)}`);
+          return false;
+        }
+        return waitHealthy(deps, url, to, healthTimeoutMs);
+      });
+      if (!dry && !healthy) {
+        deps.log(`relay ${to} did not come up: switching back to ${from}`);
+        switchTo(deps, root, from);
+        switched = false;
+        const r = await deps.run(cmd, args);
+        const back = r && r.code === 0 && (await waitHealthy(deps, url, from, healthTimeoutMs));
+        throw Object.assign(new Error(`update to ${to} failed; rolled back to ${from}${back ? " (healthy)" : ` — but ${url} does not report ${from} either: check the service`}`), { rolledBack: true });
+      }
+      switched = false; // the new relay is proven healthy: nothing after this point may switch back
+      await step(`keep the last ${KEEP} releases in ${releases}`, () => {
+        const removed = prune(deps, root, [from]);
+        if (removed.length) deps.log(`removed: ${removed.join(", ")}`);
+      });
+      let plugin = null;
+      if (withPlugin) {
+        phase = "plugin";
+        status({ step: "plugin", state: "running" });
+        try {
+          plugin = await updatePlugin(deps, { releaseDir: dry ? path.join(root, "current") : dir, env: { ...deps.env, ...env }, dry, restartQueue });
+        } catch (e) {
+          status({ step: "plugin", state: "plugin-failed", error: e.message });
+          throw Object.assign(e, { pluginFailed: true });
+        }
+      }
+      status({ step: "done", state: "done" });
+      deps.log(dry ? "Dry run: nothing was changed." : `relay ${to} is running (was ${from}).`);
+      return { status: dry ? "dry-run" : "updated", from, to, plugin };
+    } catch (e) {
+      if (!e.pluginFailed) status({ step: phase, state: e.rolledBack ? "rolled-back" : "failed", error: e.message });
+      if (switched) {
+        // something threw between the switch and the health check: never leave `current` on an unproven release
+        deps.log(`switching back to ${from}`);
+        switchTo(deps, root, from);
+        const [cmd, args] = restartCommand(deps, env);
+        await Promise.resolve(deps.run(cmd, args)).catch(() => {});
+      }
+      if (!dry) {
+        deps.fs.rmSync(tmp, { recursive: true, force: true });
+        deps.fs.rmSync(archive, { force: true });
+      }
+      throw e;
     }
-    if (!dry) {
-      deps.fs.rmSync(tmp, { recursive: true, force: true });
-      deps.fs.rmSync(archive, { force: true });
-    }
-    throw e;
   } finally {
     unlock();
   }
@@ -491,8 +633,10 @@ const USAGE = `deck-relay-update: update the Hermes Deck relay from GitHub relea
   deck-relay-update --check [--auto]      is a newer release out? exit 0: up to date, 10: newer release available
                                           (--auto, for the timer: then apply it when DECK_RELAY_AUTO_UPDATE=1)
   deck-relay-update apply [--version X.Y.Z] [--with-plugin] [--dry-run] [--root DIR]
+                                          [--status-file FILE] [--restart-queue FILE]
                                           install a release next to the running one, switch, restart, health-check;
                                           switches back by itself when the new relay does not come up
+  deck-relay-update plugin [--root DIR] [--status-file F] [--restart-queue F] [--dry-run]   reinstall the plugin from the running release
   deck-relay-update init DIR [--dry-run]  turn this checkout into an install root at DIR (releases/, current, shared/)
 
 Environment: DECK_UPDATE_REPO (owner/name; default: relay/package.json "repository"), DECK_RELAY_ROOT (install root),
@@ -501,21 +645,21 @@ com.hermes-deck.relay), DECK_HERMES_PYTHON (Python for --with-plugin), GH_TOKEN 
 
 /** Parse argv: {cmd, flags, dir}; throws on anything unknown. */
 function parseArgs(argv) {
-  const out = { cmd: null, dir: null, version: null, root: null, dry: false, withPlugin: false, auto: false, force: false };
+  const out = { cmd: null, dir: null, version: null, root: null, statusFile: null, restartQueue: null, dry: false, withPlugin: false, auto: false, force: false };
   const a = [...argv];
   while (a.length) {
     const x = a.shift();
     if (x === "--check" || x === "check") out.cmd = "check";
-    else if (x === "apply" || x === "init" || x === "help" || x === "--help" || x === "-h") out.cmd = x.replace(/^-+/, "") === "h" ? "help" : x.replace(/^-+/, "");
+    else if (x === "apply" || x === "init" || x === "plugin" || x === "help" || x === "--help" || x === "-h") out.cmd = x.replace(/^-+/, "") === "h" ? "help" : x.replace(/^-+/, "");
     else if (x === "--dry-run") out.dry = true;
     else if (x === "--with-plugin") out.withPlugin = true;
     else if (x === "--auto") out.auto = true;
     else if (x === "--force") out.force = true;
-    else if (x === "--version" || x === "--root") {
+    else if (x === "--version" || x === "--root" || x === "--status-file" || x === "--restart-queue") {
       const v = a.shift();
       if (!v) throw new Error(`${x} needs a value`);
       if (x === "--version" && !parse(v)) throw new Error(`--version must be X.Y.Z, not "${v}"`);
-      out[x.slice(2)] = v;
+      out[{ "--version": "version", "--root": "root", "--status-file": "statusFile", "--restart-queue": "restartQueue" }[x]] = v;
     } else if (out.cmd === "init" && !out.dir && !x.startsWith("-")) out.dir = x;
     else throw new Error(`unknown argument: ${x}`);
   }
@@ -585,7 +729,11 @@ async function main(argv, deps = defaultDeps()) {
       if (args.auto && auto) deps.log("DECK_RELAY_AUTO_UPDATE=1, but this relay is a plain checkout: not applied (see deck-relay-update init)");
       return EXIT.updateAvailable;
     }
-    await apply(deps, { root: args.root, version: args.version, withPlugin: args.withPlugin, dry: args.dry, force: args.force });
+    if (args.cmd === "plugin") {
+      await pluginOnly(deps, { root: args.root, dry: args.dry, statusFile: args.statusFile, restartQueue: args.restartQueue });
+      return EXIT.ok;
+    }
+    await apply(deps, { root: args.root, version: args.version, withPlugin: args.withPlugin, dry: args.dry, force: args.force, statusFile: args.statusFile, restartQueue: args.restartQueue });
     return EXIT.ok;
   } catch (e) {
     deps.log(`error: ${e.message}${e.detail ? `\n${e.detail}` : ""}`);
@@ -593,4 +741,4 @@ async function main(argv, deps = defaultDeps()) {
   }
 }
 
-module.exports = { main, parseArgs, check, apply, init, prune, locate, repoOf, compare, sumFor, sourceName, healthUrl, restartCommand, pluginProfiles, parseEnv, EXIT, KEEP, USAGE };
+module.exports = { main, parseArgs, check, apply, init, prune, locate, repoOf, compare, sumFor, sourceName, healthUrl, restartCommand, pluginProfiles, profileHome, pluginOnly, parseEnv, statusWriter, EXIT, KEEP, USAGE };

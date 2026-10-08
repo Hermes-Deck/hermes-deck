@@ -37,6 +37,9 @@ function installRoot(have = ["0.3.5"]) {
     const relay = path.join(root, "releases", v, "relay");
     fs.mkdirSync(relay, { recursive: true });
     fs.writeFileSync(path.join(relay, "package.json"), JSON.stringify({ name: "deck-relay", version: v, repository: `github:${REPO}` }));
+    const plugin = path.join(root, "releases", v, "hermes-plugin", "hermes-deck");
+    fs.mkdirSync(plugin, { recursive: true });
+    fs.writeFileSync(path.join(plugin, "plugin.yaml"), `version: "${v}"\n`);
   }
   fs.mkdirSync(path.join(root, "shared", "data"), { recursive: true });
   fs.writeFileSync(path.join(root, "shared", ".env"), "DECK_RELAY_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nDECK_RELAY_PORT=9555\n");
@@ -96,6 +99,7 @@ function fakes({ root = null, latest = "0.3.6", releases = {}, broken = [], fail
         fs.writeFileSync(path.join(dest, "relay", "package.json"), JSON.stringify({ name: "deck-relay", version: v, repository: `github:${REPO}` }));
         fs.mkdirSync(path.join(dest, "hermes-plugin", "hermes-deck"), { recursive: true });
         fs.writeFileSync(path.join(dest, "hermes-plugin", "hermes-deck", "install.py"), "# installer\n");
+        fs.writeFileSync(path.join(dest, "hermes-plugin", "hermes-deck", "plugin.yaml"), `version: '${v}'\n`);
         return { code: 0, out: "" };
       }
       if (cmd === "node" && args.includes("--self-check")) {
@@ -106,11 +110,135 @@ function fakes({ root = null, latest = "0.3.6", releases = {}, broken = [], fail
         running = path.basename(fs.readlinkSync(path.join(root, "current")));
         return { code: 0, out: "" };
       }
+      if (args[0] && String(args[0]).endsWith("install.py") && !args.includes("--dry-run")) {
+        const home = args[args.indexOf("--home") + 1];
+        const release = path.dirname(path.dirname(path.dirname(args[0])));
+        const version = path.basename(path.basename(release) === "current" ? fs.readlinkSync(release) : release);
+        for (let i = 0; i < args.length; i++) if (args[i] === "--profile") {
+          const p = args[i + 1];
+          const dir = path.join(p === "default" ? home : path.join(home, "profiles", p), "hermes-deck");
+          fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(path.join(dir, "installed.json"), JSON.stringify({ version, protocol: 1 }));
+        }
+      }
       return { code: 0, out: `${cmd} ok` };
     },
   };
   return { deps, calls, logs, fetched, running: () => running };
 }
+
+const readStatus = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
+
+test("--status-file records each step and ends in done", async () => {
+  const root = installRoot(["0.3.5"]);
+  const status = path.join(root, "shared", "data", "update-status.json");
+  fs.writeFileSync(status, JSON.stringify({ state: "running", step: "starting", job: { label: "x" } }));
+  const f = fakes({ root });
+  const seen = [];
+  const write = f.deps.fs.writeFileSync;
+  f.deps.fs = { ...fs, writeFileSync: (p, d, o) => { if (String(p).startsWith(status)) seen.push(JSON.parse(d).step); return write(p, d, o); } };
+  assert.strictEqual(await U.main(["apply", "--root", root, "--status-file", status], f.deps), 0, f.logs.join("\n"));
+  assert.deepStrictEqual([...new Set(seen)], ["download", "verify", "install", "switch", "health", "done"]);
+  const s = readStatus(status);
+  assert.strictEqual(s.state, "done");
+  assert.strictEqual(s.version, "0.3.6");
+  assert.strictEqual(s.from, "0.3.5");
+  assert.deepStrictEqual(s.job, { label: "x" }, "the relay's job field is kept");
+});
+
+test("--status-file: a health failure ends in rolled-back", async () => {
+  const root = installRoot(["0.3.5"]);
+  const status = path.join(root, "shared", "data", "update-status.json");
+  const f = fakes({ root, broken: ["0.3.6"] });
+  assert.strictEqual(await U.main(["apply", "--root", root, "--status-file", status], f.deps), 1);
+  const s = readStatus(status);
+  assert.strictEqual(s.state, "rolled-back");
+  assert.strictEqual(s.step, "health");
+  assert.match(s.error, /rolled back to 0\.3\.5/);
+});
+
+test("--status-file: a checksum mismatch ends in failed at verify", async () => {
+  const root = installRoot(["0.3.5"]);
+  const status = path.join(root, "shared", "data", "update-status.json");
+  const f = fakes({ root, releases: { "0.3.6": { sums: `${"0".repeat(64)}  hermes-deck-0.3.6-source.tar.gz\n` } } });
+  assert.strictEqual(await U.main(["apply", "--root", root, "--status-file", status], f.deps), 1);
+  const s = readStatus(status);
+  assert.strictEqual(s.state, "failed");
+  assert.strictEqual(s.step, "verify");
+});
+
+test("a plugin failure after a healthy switch keeps the new relay (plugin-failed)", async () => {
+  const root = installRoot(["0.3.5"]);
+  const hermes = path.join(path.dirname(root), ".hermes");
+  fs.mkdirSync(path.join(hermes, "plugins", "hermes-deck"), { recursive: true });
+  fs.writeFileSync(path.join(hermes, "config.yaml"), "plugins: {enabled: [hermes-deck]}\n");
+  const status = path.join(root, "shared", "data", "update-status.json");
+  const f = fakes({ root, hermesRoot: hermes, env: { HERMES_ROOT: hermes, DECK_HERMES_PYTHON: "/opt/py" } });
+  const run = f.deps.run;
+  f.deps.run = async (cmd, args, opts) => (cmd === "/opt/py" && !args.includes("--dry-run") ? { code: 1, out: "boom" } : run(cmd, args, opts));
+  assert.strictEqual(await U.main(["apply", "--root", root, "--with-plugin", "--status-file", status], f.deps), 1);
+  assert.strictEqual(current(root), path.join("releases", "0.3.6"), "no rollback for a plugin failure");
+  const s = readStatus(status);
+  assert.strictEqual(s.state, "plugin-failed");
+  assert.strictEqual(s.step, "plugin");
+});
+
+test("--status-file: a failed status rename does not fail the update", async () => {
+  const root = installRoot(["0.3.5"]);
+  const status = path.join(root, "shared", "data", "update-status.json");
+  const f = fakes({ root });
+  f.deps.fs = { ...fs, renameSync: (from, to) => {
+    if (String(from).startsWith(status)) throw new Error("status disk full");
+    return fs.renameSync(from, to);
+  } };
+  const code = await U.main(["apply", "--root", root, "--status-file", status], f.deps);
+  assert.ok(!fs.existsSync(path.join(root, ".update.lock")), "the update lock is released");
+  assert.deepStrictEqual(f.logs.filter((s) => s.startsWith("status: could not write")), [
+    `status: could not write ${status}: status disk full`,
+  ], "only the first status failure is logged");
+  assert.strictEqual(code, 0, f.logs.join("\n"));
+  assert.strictEqual(current(root), path.join("releases", "0.3.6"));
+});
+
+test("--status-file: rejected release lookup ends in failed", async () => {
+  const root = installRoot(["0.3.5"]);
+  const status = path.join(root, "shared", "data", "update-status.json");
+  fs.writeFileSync(status, JSON.stringify({ state: "running", step: "starting" }));
+  const f = fakes({ root });
+  const fetch = f.deps.fetch;
+  f.deps.fetch = async (url, opts) => url.endsWith("/releases/latest") ? { ok: false, status: 404 } : fetch(url, opts);
+  assert.strictEqual(await U.main(["apply", "--root", root, "--status-file", status], f.deps), 1);
+  const s = readStatus(status);
+  assert.strictEqual(s.state, "failed");
+  assert.strictEqual(s.step, "download");
+  assert.strictEqual(s.version, null);
+  assert.strictEqual(s.from, "0.3.5");
+  assert.match(s.error, /GitHub 404/);
+  assert.ok(!fs.existsSync(path.join(root, ".update.lock")));
+});
+
+test("--status-file: older latest release ends in done", async () => {
+  const root = installRoot(["0.3.7"]);
+  const status = path.join(root, "shared", "data", "update-status.json");
+  fs.writeFileSync(status, JSON.stringify({ state: "running", step: "starting" }));
+  const f = fakes({ root });
+  assert.strictEqual(await U.main(["apply", "--root", root, "--status-file", status], f.deps), 0);
+  const s = readStatus(status);
+  assert.strictEqual(s.state, "done");
+  assert.strictEqual(s.step, "done");
+  assert.strictEqual(s.version, "0.3.6");
+  assert.strictEqual(s.from, "0.3.7");
+  assert.strictEqual(current(root), path.join("releases", "0.3.7"));
+  assert.ok(!fs.existsSync(path.join(root, ".update.lock")));
+});
+
+test("arguments: --status-file and --restart-queue need a value", () => {
+  assert.deepStrictEqual(
+    (({ statusFile, restartQueue }) => ({ statusFile, restartQueue }))(U.parseArgs(["apply", "--status-file", "/s.json", "--restart-queue", "/q.json"])),
+    { statusFile: "/s.json", restartQueue: "/q.json" });
+  assert.throws(() => U.parseArgs(["apply", "--status-file"]), /needs a value/);
+  assert.throws(() => U.parseArgs(["apply", "--restart-queue"]), /needs a value/);
+});
 
 const current = (root) => fs.readlinkSync(path.join(root, "current"));
 
@@ -245,7 +373,7 @@ test("--with-plugin runs install.py dry, then real, for profiles with the plugin
   ]);
   assert.ok(!f.calls.some((c) => /^hermes\b|\bgateway\b/.test(c)), "no gateway command is run");
   assert.deepStrictEqual(f.calls.filter((c) => c.startsWith("systemctl")), ["systemctl --user restart hermes-deck-relay"], "only the relay restarts");
-  assert.match(f.logs.join("\n"), /hermes -p research gateway restart/, "the restart command is printed instead");
+  assert.match(f.logs.join("\n"), /hermes -p research gateway restart/, "the restart command is printed when no queue is given");
 });
 
 test("a plain checkout is refused by apply and keeps working; init converts one (dry run first)", async () => {
@@ -293,4 +421,212 @@ test("arguments", () => {
   assert.throws(() => U.parseArgs(["apply", "--bogus"]), /unknown argument/);
   assert.throws(() => U.parseArgs(["init"]), /needs a directory/);
   assert.strictEqual(U.parseArgs(["--check"]).cmd, "check");
+});
+
+function pluginHermes(root, profiles) {
+  const hermes = path.join(path.dirname(root), ".hermes");
+  for (const [p, installed] of profiles) {
+    const home = p === "default" ? hermes : path.join(hermes, "profiles", p);
+    fs.mkdirSync(path.join(home, "plugins", "hermes-deck"), { recursive: true });
+    fs.writeFileSync(path.join(home, "config.yaml"), "plugins: {enabled: [hermes-deck]}\n");
+    if (installed) {
+      fs.mkdirSync(path.join(home, "hermes-deck"), { recursive: true });
+      fs.writeFileSync(path.join(home, "hermes-deck", "installed.json"), JSON.stringify({ version: installed }));
+    }
+  }
+  return hermes;
+}
+
+test("--restart-queue lists only profiles whose plugin version changed", async () => {
+  const root = installRoot(["0.3.5"]);
+  const hermes = pluginHermes(root, [["default", "0.3.5"], ["research", "0.3.6"], ["fresh", null]]);
+  const queue = path.join(root, "shared", "data", "restart-queue.json");
+  const f = fakes({ root, hermesRoot: hermes, env: { HERMES_ROOT: hermes, DECK_HERMES_PYTHON: "/opt/py" } });
+  assert.strictEqual(await U.main(["apply", "--root", root, "--with-plugin", "--restart-queue", queue], f.deps), 0, f.logs.join("\n"));
+  const q = JSON.parse(fs.readFileSync(queue, "utf8"));
+  assert.deepStrictEqual(q.map((x) => x.profile).sort(), ["default", "fresh"], "research was already 0.3.6");
+  assert.ok(q.every((x) => x.reason === "plugin 0.3.6" && typeof x.since === "string"));
+});
+
+test("--restart-queue keeps earlier entries and replaces a profile's older reason", async () => {
+  const root = installRoot(["0.3.5"]);
+  const hermes = pluginHermes(root, [["default", "0.3.5"]]);
+  const queue = path.join(root, "shared", "data", "restart-queue.json");
+  fs.writeFileSync(queue, JSON.stringify([{ profile: "default", reason: "plugin 0.3.5", since: "x" }, { profile: "other", reason: "plugin 0.3.5", since: "y" }]));
+  const f = fakes({ root, hermesRoot: hermes, env: { HERMES_ROOT: hermes, DECK_HERMES_PYTHON: "/opt/py" } });
+  assert.strictEqual(await U.main(["apply", "--root", root, "--with-plugin", "--restart-queue", queue], f.deps), 0);
+  const q = JSON.parse(fs.readFileSync(queue, "utf8"));
+  assert.deepStrictEqual(q.map((x) => [x.profile, x.reason]), [["other", "plugin 0.3.5"], ["default", "plugin 0.3.6"]]);
+});
+
+test("plugin subcommand: runs only the current release's installer and writes plugin status", async () => {
+  const root = installRoot(["0.3.6"]);
+  const hermes = pluginHermes(root, [["default", "0.3.5"]]);
+  fs.mkdirSync(path.join(root, "releases", "0.3.6", "hermes-plugin", "hermes-deck"), { recursive: true });
+  const status = path.join(root, "shared", "data", "update-status.json");
+  const queue = path.join(root, "shared", "data", "restart-queue.json");
+  const f = fakes({ root, hermesRoot: hermes, env: { HERMES_ROOT: hermes, DECK_HERMES_PYTHON: "/opt/py" } });
+  assert.strictEqual(await U.main(["plugin", "--root", root, "--status-file", status, "--restart-queue", queue], f.deps), 0, f.logs.join("\n"));
+  assert.ok(!f.calls.some((c) => /^(tar|npm|systemctl)\b/.test(c)), "no relay work");
+  assert.strictEqual(f.calls.filter((c) => c.startsWith("/opt/py")).length, 2, "dry run, then real");
+  assert.strictEqual(JSON.parse(fs.readFileSync(status, "utf8")).state, "done");
+  assert.strictEqual(readStatus(path.join(hermes, "hermes-deck", "installed.json")).version, "0.3.6");
+  assert.strictEqual(readStatus(queue)[0].reason, "plugin 0.3.6");
+  assert.strictEqual(readStatus(queue)[0].pending, false);
+});
+
+test("plugin subcommand: dry run leaves profiles, status and queue untouched", async () => {
+  const root = installRoot(["0.3.6"]);
+  const hermes = pluginHermes(root, [["default", "0.3.5"]]);
+  const status = path.join(root, "shared", "data", "update-status.json");
+  const queue = path.join(root, "shared", "data", "restart-queue.json");
+  const before = tree(path.dirname(root));
+  const f = fakes({ root, hermesRoot: hermes, env: { HERMES_ROOT: hermes } });
+  f.deps.fs = { ...fs, readFileSync: (file, ...args) => {
+    assert.notStrictEqual(file, queue, "dry run must not read the queue");
+    return fs.readFileSync(file, ...args);
+  } };
+  assert.strictEqual(await U.main(["plugin", "--root", root, "--dry-run", "--status-file", status, "--restart-queue", queue], f.deps), 0);
+  assert.deepStrictEqual(tree(path.dirname(root)), before);
+  assert.deepStrictEqual(f.calls, []);
+});
+
+test("plugin subcommand: a held lock leaves the active updater's status untouched", async () => {
+  const root = installRoot(["0.3.6"]);
+  const status = path.join(root, "shared", "data", "update-status.json");
+  fs.writeFileSync(status, JSON.stringify({ state: "running", step: "install", job: { label: "active" } }));
+  fs.writeFileSync(path.join(root, ".update.lock"), String(process.ppid));
+  const before = tree(root);
+  const f = fakes({ root });
+  assert.strictEqual(await U.main(["plugin", "--root", root, "--status-file", status], f.deps), 1);
+  assert.match(f.logs.join("\n"), /another update is running/);
+  assert.deepStrictEqual(tree(root), before);
+  assert.deepStrictEqual(f.calls, []);
+});
+
+test("plugin subcommand: installer failure writes plugin-failed and releases the lock", async () => {
+  const root = installRoot(["0.3.6"]);
+  const hermes = pluginHermes(root, [["default", "0.3.5"]]);
+  const status = path.join(root, "shared", "data", "update-status.json");
+  const f = fakes({ root, hermesRoot: hermes, env: { HERMES_ROOT: hermes } });
+  f.deps.run = async () => ({ code: 1, out: "installer failed" });
+  assert.strictEqual(await U.main(["plugin", "--root", root, "--status-file", status], f.deps), 1);
+  const saved = readStatus(status);
+  assert.strictEqual(saved.state, "plugin-failed");
+  assert.strictEqual(saved.step, "plugin");
+  assert.match(saved.error, /failed \(exit 1\)/);
+  assert.strictEqual(current(root), path.join("releases", "0.3.6"));
+  assert.ok(!fs.existsSync(path.join(root, ".update.lock")));
+});
+
+test("plugin queue: unreadable queue stops before any installer call and preserves its contents", async () => {
+  const root = installRoot(["0.3.6"]);
+  const hermes = pluginHermes(root, [["default", "0.3.5"]]);
+  const queue = path.join(root, "shared", "data", "restart-queue.json");
+  const status = path.join(root, "shared", "data", "update-status.json");
+  const original = JSON.stringify([{ profile: "other", reason: "plugin 0.3.5", since: "earlier" }]);
+  fs.writeFileSync(queue, original);
+  const f = fakes({ root, env: { HERMES_ROOT: hermes } });
+  f.deps.fs = { ...fs, readFileSync: (file, ...args) => {
+    if (file === queue) throw Object.assign(new Error("queue read denied"), { code: "EACCES" });
+    return fs.readFileSync(file, ...args);
+  } };
+  assert.strictEqual(await U.main(["plugin", "--root", root, "--restart-queue", queue, "--status-file", status], f.deps), 1);
+  assert.deepStrictEqual(f.calls, []);
+  assert.strictEqual(fs.readFileSync(queue, "utf8"), original);
+  assert.strictEqual(readStatus(status).state, "plugin-failed");
+});
+
+test("plugin queue: corrupt JSON and non-array queues are moved aside before a successful update", async () => {
+  for (const original of ["{broken", "{}", "null"]) {
+    const root = installRoot(["0.3.6"]);
+    const hermes = pluginHermes(root, [["default", "0.3.5"]]);
+    const queue = path.join(root, "shared", "data", "restart-queue.json");
+    fs.writeFileSync(queue, original);
+    const f = fakes({ root, env: { HERMES_ROOT: hermes } });
+    assert.strictEqual(await U.main(["plugin", "--root", root, "--restart-queue", queue], f.deps), 0, f.logs.join("\n"));
+    const moved = `${queue}.corrupt-${f.deps.now()}`;
+    assert.strictEqual(fs.readFileSync(moved, "utf8"), original);
+    assert.ok(f.logs.includes(`plugin: restart queue ${queue} was unreadable; moved to ${moved}`));
+    assert.strictEqual(readStatus(queue)[0].pending, false);
+  }
+});
+
+test("plugin queue: pre-write failure prevents the real install", async () => {
+  const root = installRoot(["0.3.6"]);
+  const hermes = pluginHermes(root, [["default", "0.3.5"]]);
+  const queue = path.join(root, "shared", "data", "restart-queue.json");
+  fs.writeFileSync(queue, "[]");
+  const f = fakes({ root, env: { HERMES_ROOT: hermes } });
+  f.deps.fs = { ...fs, renameSync: (from, to) => {
+    if (to === queue) throw new Error("queue rename denied");
+    return fs.renameSync(from, to);
+  } };
+  assert.strictEqual(await U.main(["plugin", "--root", root, "--restart-queue", queue], f.deps), 1);
+  assert.ok(f.calls.every((c) => c.endsWith("--dry-run")), "no real install");
+  assert.strictEqual(readStatus(path.join(hermes, "hermes-deck", "installed.json")).version, "0.3.5");
+  assert.strictEqual(fs.readFileSync(queue, "utf8"), "[]");
+});
+
+test("plugin queue: failed final rename leaves pending requests that a same-version retry reconciles", async () => {
+  const root = installRoot(["0.3.6"]);
+  const hermes = pluginHermes(root, [["default", "0.3.5"], ["research", "0.3.6"]]);
+  const queue = path.join(root, "shared", "data", "restart-queue.json");
+  const status = path.join(root, "shared", "data", "update-status.json");
+  const other = { profile: "other", reason: "plugin 0.3.5", since: "earlier" };
+  fs.writeFileSync(queue, JSON.stringify([other]));
+  const f = fakes({ root, env: { HERMES_ROOT: hermes } });
+  let writes = 0;
+  f.deps.fs = { ...fs, renameSync: (from, to) => {
+    if (to === queue && ++writes === 2) throw new Error("final queue rename denied");
+    return fs.renameSync(from, to);
+  } };
+  const args = ["plugin", "--root", root, "--restart-queue", queue, "--status-file", status];
+  assert.strictEqual(await U.main(args, f.deps), 1);
+  assert.strictEqual(readStatus(status).state, "plugin-failed");
+  assert.strictEqual(readStatus(path.join(hermes, "hermes-deck", "installed.json")).version, "0.3.6");
+  const pending = readStatus(queue);
+  assert.deepStrictEqual(pending, [other, { profile: "default", reason: "plugin 0.3.6", since: new Date(f.deps.now()).toISOString(), pending: true, target: "0.3.6" }]);
+  assert.strictEqual(await U.main(args, f.deps), 0, f.logs.join("\n"));
+  assert.deepStrictEqual(readStatus(queue), [other, { ...pending[1], pending: false }]);
+  assert.strictEqual(readStatus(status).state, "done");
+});
+
+test("plugin queue: unchanged profiles lose only this attempt's pending requests", async () => {
+  const root = installRoot(["0.3.6"]);
+  const hermes = pluginHermes(root, [["default", "0.3.5"], ["research", "0.3.6"]]);
+  const queue = path.join(root, "shared", "data", "restart-queue.json");
+  const leftover = { profile: "research", reason: "old reason", since: "earlier", pending: true, target: "0.3.6" };
+  fs.writeFileSync(queue, JSON.stringify([leftover]));
+  const f = fakes({ root, env: { HERMES_ROOT: hermes } });
+  f.deps.run = async (_cmd, args) => {
+    if (!args.includes("--dry-run")) {
+      assert.deepStrictEqual(readStatus(queue).map((x) => [x.profile, x.pending]), [["research", false], ["default", true]]);
+    }
+    return { code: 0, out: "no version change" };
+  };
+  assert.strictEqual(await U.main(["plugin", "--root", root, "--restart-queue", queue], f.deps), 0, f.logs.join("\n"));
+  assert.deepStrictEqual(readStatus(queue), [{ ...leftover, pending: false, reason: "plugin 0.3.6" }]);
+});
+
+test("plugin queue: unreadable manifest skips the pre-write and queues the installed version", async () => {
+  const root = installRoot(["0.3.6"]);
+  const hermes = pluginHermes(root, [["default", "0.3.5"]]);
+  const queue = path.join(root, "shared", "data", "restart-queue.json");
+  const f = fakes({ root, env: { HERMES_ROOT: hermes } });
+  let writes = 0;
+  f.deps.fs = { ...fs, readFileSync: (file, ...args) => {
+    if (String(file).endsWith("plugin.yaml")) throw new Error("manifest unavailable");
+    return fs.readFileSync(file, ...args);
+  }, renameSync: (from, to) => {
+    if (to === queue) {
+      writes++;
+      assert.strictEqual(readStatus(path.join(hermes, "hermes-deck", "installed.json")).version, "0.3.6");
+    }
+    return fs.renameSync(from, to);
+  } };
+  assert.strictEqual(await U.main(["plugin", "--root", root, "--restart-queue", queue], f.deps), 0, f.logs.join("\n"));
+  assert.strictEqual(writes, 1);
+  assert.strictEqual(readStatus(queue)[0].reason, "plugin 0.3.6");
+  assert.strictEqual(readStatus(queue)[0].pending, false);
 });
