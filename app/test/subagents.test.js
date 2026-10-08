@@ -16,7 +16,7 @@ setLanguage("en");
 const { BridgeClient } = bridge;
 const FAKE = path.join(__dirname, "fake-stream.js");
 const HOST = path.join(__dirname, "..", "..", "hermes-plugin", "hermes-deck", "testhost.py");
-const CFG = { mode: "ssh", target: "hermes-test", python: "/usr/bin/python3", stream: "/srv/hermes/hermes-deck/stream.py" };
+const CFG = { mode: "ssh", target: "hermes-test", python: "/usr/bin/python3", stream: "/srv/example/hermes-deck/stream.py" };
 const FAST = { request: 1500, write: 1000, handshake: 1500, heartbeat: 1200, kill: 500, backoffMin: 40, backoffMax: 160, keepalive: 60000 };
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "deck-subagents-"));
 after(() => fs.rmSync(TMP, { recursive: true, force: true }));

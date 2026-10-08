@@ -106,7 +106,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     unread: new Map(),
     typing: new Map(), // chat key -> ts
     sel: null,
-    tab: "activity",
+    tab: "", // the open right-slot tab by its old id (activity, usage, workspace, screen, ...); "" when the slot is closed
     open: new Set(), // session ids with their tool list expanded
     details: new Map(), // sid -> /session detail (recent tools), kept live by events
     sending: false,
@@ -328,10 +328,14 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     input: document.getElementById("input"),
     send: document.getElementById("send"),
     note: document.getElementById("note"),
-    tabs: document.getElementById("tabs"),
-    pane: document.getElementById("pane"),
+    crumb: document.getElementById("crumb"),
+    modes: document.getElementById("modes"),
+    quota: document.getElementById("quota"),
+    find: document.getElementById("find-btn"),
   };
   if (/Mac/i.test(navigator.platform)) document.body.classList.add("mac");
+  // the Blend shell (shell.js): sidebar | main | right slot, the top bar's toggles and the mount API for other modules
+  const SH = window.DeckShell;
 
   // message view (msgview.js): media, senders, replies, inline buttons, context menu, reply bar
   // inline voice-note player (voice-bubble.js): Hermes audio files and Telegram voice notes
@@ -446,17 +450,67 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
         h("span", { class: relayCls }, h("span", { class: "dot" }), relayTxt),
         h("span", { class: tgCls, hidden: !chatModes().includes("telegram") || (S.settings && !S.settings.firstRunDone) }, h("span", { class: "dot" }), tgTxt),
         hermesConn(),
-        channelSwitch(),
       ].filter(Boolean)
     );
+    renderModes();
+    renderQuota();
+    renderFind();
+    SH.publish("mode", { mode: chatMode(), modes: chatModes() }); // sent only when it changed
+    if (!hermesMode()) SH.setMain("chat"); // the inbox belongs to the Hermes modes
+    SH.publish("needs", { count: pendingCount() });
   }
 
-  /** Top bar owns all chat modes; bridge setup is not a prerequisite for choosing one. */
-  function channelSwitch() {
+  /** The sidebar's mode switch (Telegram | Sessions | Bots): only enabled modes, hidden when there is just one. */
+  function renderModes() {
     const modes = CM.switchItems(S.settings && S.settings.chat);
-    if (!modes.length || (S.settings && !S.settings.firstRunDone)) return null;
-    return h("span", { class: "chan", role: "group", "aria-label": CHAT_TEXT.title },
-      ...modes.map((v) => h("button", { type: "button", "aria-pressed": v === chatMode() ? "true" : "false", title: CHAT_TEXT.shortcut, dataset: { fk: `chan:${v}` }, onclick: () => setChatChannel(v) }, CHAT_TEXT.labels[v])));
+    const off = !modes.length || !S.settings || !S.settings.firstRunDone;
+    els.modes.hidden = off;
+    if (off) {
+      els.modes.replaceChildren();
+      return;
+    }
+    const cur = chatMode();
+    els.modes.replaceChildren(...modes.map((v) => h("button", { type: "button", class: v === cur ? "on" : null, "aria-pressed": v === cur ? "true" : "false",
+      title: `${CHAT_TEXT.labels[v]} · ${CHAT_TEXT.shortcut}`, dataset: { fk: `chan:${v}`, mode: v }, onclick: () => setChatChannel(v) },
+    SH.icon(v === "telegram" ? "telegram" : v === "bots" ? "bots" : "sessions", 13), h("span", null, CHAT_TEXT.labels[v]))));
+  }
+
+  /** Sidebar footer: one quota bar, the busiest window of any provider the fleet reports (Inspector > Usage has all). */
+  function renderQuota() {
+    const f = S.relay.fleet;
+    const quotas = f ? [...Object.values(f.quotas || {}), ...Object.values(f.profiles || {}).flatMap((p) => Object.values(p.quotas || {}))] : [];
+    let best = null;
+    for (const q of quotas) {
+      if (!q || !q.ok) continue;
+      for (const w of q.windows || []) if (typeof w.used === "number" && Number.isFinite(w.used) && (!best || w.used > best.w.used)) best = { q, w };
+    }
+    els.quota.hidden = !best;
+    if (!best) return els.quota.replaceChildren();
+    const used = Math.round(Math.min(100, Math.max(0, best.w.used)));
+    const prov = String(best.q.provider || "");
+    const name = `${prov.charAt(0).toUpperCase()}${prov.slice(1)}${window.DeckUsage ? ` · ${window.DeckUsage.windowLabel(best.w.minutes)}` : ""}`;
+    els.quota.replaceChildren(
+      h("button", { type: "button", class: "sh-qmini", title: i18nText("shell.quotaTip"), dataset: { fk: "quota" }, onclick: () => SH.openRight("inspector", "usage") },
+        h("span", { class: "sh-qname" }, name),
+        h("span", { class: "sh-qbar", role: "progressbar", "aria-label": name, "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": used },
+          h("i", { class: used >= 90 ? "bad" : used >= 70 ? "warn" : null, style: { width: `${used}%` } })),
+        h("span", { class: "sh-qpct" }, `${used}%`)));
+  }
+
+  /** Top bar search: the All sessions browser (sessions-browser.js); it belongs to the Hermes modes. */
+  function renderFind() {
+    const sb = allSessionsView();
+    els.find.hidden = !sb || !hermesMode();
+    els.find.setAttribute("aria-pressed", sb && sb.isOpen() ? "true" : "false");
+  }
+  function toggleFind() {
+    const sb = allSessionsView();
+    if (!sb || !hermesMode()) return;
+    SV.close();
+    SH.setMain("chat");
+    if (sb.isOpen()) sb.close();
+    else sb.show();
+    renderFind();
   }
 
   function syncChatMode(v) {
@@ -477,112 +531,20 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     syncChatMode(v);
   }
 
-  // ---------------------------------------------------------------- layout: collapsible sections, compact rail, drag gutters
+  // ---------------------------------------------------------------- layout: the Blend shell (shell.js)
+  // Widths, the hidden sidebar (Ctrl/Cmd+B), the right slot (inspector Ctrl/Cmd+Alt+I, work pane Ctrl/Cmd+\\) and their
+  // gutters live in shell.js. Here: the rail's collapsible sections and the shortcuts that reach app state.
   const layout = {
-    rail: Number(store.get("deck.railW")) || 268,
-    panel: Number(store.get("deck.panelW")) || 560,
-    compact: store.get("deck.compact") === "1",
-    panelClosed: store.get("deck.panelClosed") === "1",
+    compact: false, // the old coin-only rail is gone: a hidden sidebar replaces it
     closed: new Set((store.get("deck.closed") || "").split(",").filter(Boolean)), // collapsed rail sections
   };
-  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
-  function applyLayout() {
-    const shellW = document.querySelector(".shell").getBoundingClientRect().width || window.innerWidth;
-    const railW = layout.compact ? 76 : layout.rail;
-    layout.panel = clamp(layout.panel, 320, Math.max(320, shellW - railW - 12 - 380)); // the chat keeps >= 380px
-    document.documentElement.style.setProperty("--rail-w", `${railW}px`);
-    document.documentElement.style.setProperty("--panel-w", `${layout.panel}px`);
-    document.body.classList.toggle("rail-compact", layout.compact);
-    document.body.classList.toggle("panel-closed", layout.panelClosed);
-  }
-  function saveLayout() {
-    store.set("deck.railW", String(Math.round(layout.rail)));
-    store.set("deck.panelW", String(Math.round(layout.panel)));
-    store.set("deck.compact", layout.compact ? "1" : "0");
-    store.set("deck.panelClosed", layout.panelClosed ? "1" : "0");
-    store.set("deck.closed", [...layout.closed].join(","));
-  }
-  function toggleCompact() {
-    layout.compact = !layout.compact;
-    applyLayout();
-    saveLayout();
-    mark("rail", true);
-  }
-  function togglePanel() {
-    layout.panelClosed = !layout.panelClosed;
-    applyLayout();
-    saveLayout();
-    if (!layout.panelClosed) mark("panel", true);
-  }
-  document.getElementById("panel-open").addEventListener("click", togglePanel);
   function toggleSection(id) {
     if (layout.closed.has(id)) layout.closed.delete(id);
     else layout.closed.add(id);
-    saveLayout();
+    store.set("deck.closed", [...layout.closed].join(","));
     mark("rail", true);
   }
-  function gutter(el, side) {
-    el.addEventListener("pointerdown", (e) => {
-      e.preventDefault();
-      el.setPointerCapture(e.pointerId);
-      el.classList.add("dragging");
-      document.body.classList.add("dragging-col");
-      const shell = el.parentElement.getBoundingClientRect();
-      const move = (ev) => {
-        if (side === "left") {
-          const w = ev.clientX - shell.left;
-          const was = layout.compact;
-          layout.compact = w < 150; // drag far left to fold the rail down to coins
-          if (!layout.compact) layout.rail = clamp(w, 200, 480);
-          if (was !== layout.compact) mark("rail", true);
-        } else layout.panel = shell.right - ev.clientX;
-        applyLayout();
-      };
-      const up = (ev) => {
-        el.releasePointerCapture(ev.pointerId);
-        el.classList.remove("dragging");
-        document.body.classList.remove("dragging-col");
-        el.removeEventListener("pointermove", move);
-        el.removeEventListener("pointerup", up);
-        saveLayout();
-      };
-      el.addEventListener("pointermove", move);
-      el.addEventListener("pointerup", up);
-    });
-    el.addEventListener("dblclick", () => {
-      if (side === "left") {
-        layout.rail = 268;
-        layout.compact = false;
-        mark("rail", true);
-      } else layout.panel = 560;
-      applyLayout();
-      saveLayout();
-    });
-    el.addEventListener("keydown", (e) => {
-      const d = e.key === "ArrowLeft" ? -16 : e.key === "ArrowRight" ? 16 : 0;
-      if (!d) return;
-      e.preventDefault();
-      if (side === "left") {
-        layout.compact = false;
-        layout.rail = clamp(layout.rail + d, 200, 480);
-        mark("rail", true);
-      } else layout.panel -= d;
-      applyLayout();
-      saveLayout();
-    });
-  }
-  gutter(document.getElementById("gutter-left"), "left");
-  gutter(document.getElementById("gutter-right"), "right");
-  window.addEventListener("resize", applyLayout);
   document.addEventListener("keydown", (e) => {
-    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") {
-      e.preventDefault();
-      toggleCompact();
-    }
-    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "j") {
-      e.preventDefault();
-      togglePanel();
-    }
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === "h") {
       e.preventDefault();
       setChatChannel(CM.next(S.settings && S.settings.chat, chatMode()));
@@ -591,17 +553,23 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       e.preventDefault();
       SV.toggle(); // Settings view (settings-view.js)
     }
-    // the model picker (model-picker.js); Ctrl+M is the window menu's Minimize, Ctrl+Shift+M is dictation
-    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "k" && !e.isComposing) {
+    // Ctrl/Cmd+K: search (the All sessions browser); Ctrl/Cmd+Shift+K: the model picker (model-picker.js).
+    // Ctrl+M is the window menu's Minimize, Ctrl+Shift+M is dictation.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "k" && !e.isComposing) {
       e.preventDefault();
+      if (!e.shiftKey) return toggleFind();
       if (!PK) return;
       if (PK.isOpen()) PK.close(true);
       else PK.openModel();
     }
   });
-  // a rail click (a chat, All sessions) shows what was clicked: the Settings view steps aside
-  els.rail.addEventListener("click", () => SV.close());
-  applyLayout();
+  els.find.addEventListener("click", () => toggleFind());
+  // a rail click (a chat, All sessions) shows what was clicked: the Settings view steps aside, the chat takes the main area
+  els.rail.addEventListener("click", (e) => {
+    SV.close();
+    if (e.target && e.target.closest && e.target.closest(".row")) SH.setMain("chat");
+  });
+  SH.setHold((el) => holdRegion(el));
 
   function sectionHead(id, label, count) {
     const closed = layout.closed.has(id);
@@ -615,15 +583,11 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
 
   function renderRail() {
     if (hermesModeCheck()) return renderHermesRail();
-    if (SB) SB.close(); // All sessions belongs to the Hermes modes
+    allSessionsView()?.close(); // All sessions belongs to the Hermes modes
     const rail = els.rail;
     const items = railAgents();
     const kids = [];
-    kids.push(
-      h("div", { class: "rail-top" },
-        h("button", { class: "rail-toggle", type: "button", title: layout.compact ? i18nText("U0426") : i18nText("U0427"), "aria-label": layout.compact ? i18nText("U0428") : i18nText("U0429"), dataset: { fk: "rail-toggle" }, onclick: toggleCompact }, layout.compact ? "»" : "«"))
-    );
-    kids.push(sectionHead("agents", i18nText("A0217"), items.length));
+    kids.push(sectionHead("agents", i18nText("shell.telegramChats"), items.length));
     if (!items.length) {
       kids.push(h("p", { class: "rail-note" }, S.tg.status === "open" ? i18nNode("U0430") : i18nNode("U0431")));
     }
@@ -699,6 +663,80 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       h("span", { class: "meta" }, live ? h("span", { class: "livedot", title: i18nText("U0436") , "data-i18n-title": "U0436"}) : null, unread ? h("span", { class: "badge" }, String(unread)) : null)
     );
     return TP.decorate(t, row); // closed/pinned marks and colour (topics.js)
+  }
+
+  /**
+   * What the chat on screen is, in one record: the top bar's breadcrumb and channel chip draw from it and the shell
+   * sends it as the "session" event (shell.js). Facts only, from the real mode and session state.
+   */
+  function currentChat() {
+    const mode = chatMode();
+    if (!S.settings || !S.settings.firstRunDone) return { mode, kind: null, id: null };
+    if (!hermesMode()) {
+      const sc = scopeOf(S.sel);
+      if (!sc) return { mode, kind: "telegram", id: null, channel: SH.channelOf({ mode }) };
+      const sess = S.relay.status === "open" ? liveFor(S.sel) : null;
+      const agent = sc.kind === "dm" ? (sc.agent ? sc.agent.name : sc.bot ? sc.bot.title || sc.bot.username : "") : S.tg.group ? S.tg.group.title : "";
+      const title = sc.kind === "dm" ? (sc.bot && sc.bot.username ? `@${sc.bot.username}` : "") : `# ${sc.topic ? sc.topic.title : sc.tid}`;
+      return { mode, kind: "telegram", id: S.sel, key: S.sel, sid: sess ? sess.sid : null, agent, title, profile: sc.agent ? sc.agent.profile || null : null,
+        channel: SH.channelOf({ mode }) };
+    }
+    const sid = H.sel;
+    if (!sid) return { mode, kind: "hermes", id: null, channel: SH.channelOf({ mode }) };
+    const n = H.nodes.get(sid) || null;
+    const st = H.hist.get(sid);
+    const profile = (n && n.profile) || (st && st.profile) || "default";
+    const agentName = (agentList().find((a) => a.profile === profile) || {}).name || (profile === "default" ? i18nText("shell.defaultAgent") : profile);
+    const bot = BT && BT.headFor(sid);
+    const sub = isSubagent(n);
+    const parent = sub && n.parent ? H.nodes.get(n.parent) || null : null;
+    const readOnly = !!allSessionsView()?.readOnly(sid);
+    return { mode, kind: "hermes", id: sid, sid, profile, subagent: sub, readOnly, source: (n && n.source) || "",
+      parent: parent ? { sid: parent.sid, title: hermesTitle(parent) } : null,
+      agent: bot ? bot.title : agentName,
+      title: bot ? "" : n ? hermesTitle(n) : H.titles.get(sid) || `Hermes · ${sid.slice(-8)}`,
+      channel: SH.channelOf({ mode, subagent: sub, readOnly, source: n && n.source }) };
+  }
+
+  function renderCrumb() {
+    const c = currentChat();
+    const kids = [];
+    if (c.agent) kids.push(h("span", { class: "sh-ca" }, c.agent));
+    if (c.parent) kids.push(h("span", { class: "sh-cs", "aria-hidden": "true" }, "/"),
+      h("button", { type: "button", class: "sh-lnk", title: c.parent.title, dataset: { fk: "crumb-parent" }, onclick: () => hermesSelect(c.parent.sid) }, c.parent.title));
+    if (c.title) kids.push(c.agent || c.parent ? h("span", { class: "sh-cs", "aria-hidden": "true" }, "/") : null, h("span", { class: "sh-ct", title: c.title }, c.title));
+    if (c.channel && c.id) {
+      const ICON = { hermes: "hermes", telegram: "telegram", readonly: "lock", bot: "bots", sub: "steer" };
+      kids.push(h("span", { class: `sh-chip ${c.channel.id}`, dataset: { channel: c.channel.id } }, SH.icon(ICON[c.channel.id] || "hermes", 11), i18nNode(c.channel.key, c.channel.vars)));
+    }
+    if (c.id && hermesMode() && H.requests.some((r) => r.sid === c.id)) kids.push(h("span", { class: "sh-pill waiting" }, i18nNode("shell.state.needs")));
+    els.crumb.replaceChildren(...kids.filter(Boolean));
+    SH.publish("session", { id: c.id || null, kind: c.kind, mode: c.mode, sid: c.sid || null, key: c.key || null, profile: c.profile || null,
+      channel: c.channel ? c.channel.id : null, subagent: !!c.subagent, parent: c.parent ? c.parent.sid : null, readOnly: !!c.readOnly, source: c.source || "" });
+  }
+
+  /** Inspector > Session: the facts of the chat on screen, then its live session card(s). */
+  function paneSession(kids) {
+    const c = currentChat();
+    if (!c.id) {
+      kids.push(h("p", { class: "pane-title" }, hermesMode() ? (bridgeOpen() ? i18nNode("U0626") : hermesStatusText()) : i18nNode("U0502")));
+      return;
+    }
+    const n = c.sid ? H.nodes.get(c.sid) : null;
+    const rows = [
+      [i18nText("shell.fact.channel"), i18nText(c.channel.key, c.channel.vars)],
+      c.agent ? [i18nText("shell.fact.agent"), c.agent] : null,
+      c.kind === "hermes" ? [i18nText("shell.fact.profile"), profileLabel(c.profile)] : null,
+      n && n.source ? [i18nText("shell.fact.source"), n.source] : null,
+      n && n.model ? [i18nText("shell.fact.model"), n.model] : null,
+      n && n.ctxMax && n.ctxUsed ? [i18nText("shell.fact.context"), `${Math.round((100 * n.ctxUsed) / n.ctxMax)}%`] : null,
+      c.sid ? [i18nText("shell.fact.id"), c.sid, "mono"] : null,
+    ].filter(Boolean);
+    kids.push(h("section", { class: "card sh-facts" },
+      c.title ? h("h3", { class: "sh-facts-title" }, c.title) : null,
+      h("dl", { class: "sh-kv" }, ...rows.flatMap(([k, v, cls]) => [h("dt", null, k), h("dd", { class: cls || null, title: v }, v)])),
+      n ? hermesControls(n, `card:${n.sid}`) : null)); // Steer · Stop · Model for the open session
+    // the session's cards, sub-agents and tool calls are in Activity
   }
 
   function renderHead() {
@@ -1040,10 +1078,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
         cleanErr,
         openSettings: () => openSettings("device"),
         // a robot-check notification was clicked: show the Workspace tab (and the panel, if closed)
-        openWorkspace: () => {
-          if (layout.panelClosed) togglePanel();
-          setTab("workspace");
-        },
+        openWorkspace: () => setTab("workspace"),
         refreshSettings: () => refreshSettingsPane(),
         settingsMessage: (ok, text) => settingsMessage(ok, text),
       })
@@ -1071,7 +1106,6 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
         openSettings: () => openSettings("device"),
         openScreen: () => {
           if (!screenTabOn()) return openSettings("device"); // the tab exists only while desktop control is on
-          if (layout.panelClosed) togglePanel();
           setTab("screen");
         },
         // botscreen pushes a state change: the Bot screen tab appears/disappears with desktop control
@@ -1093,11 +1127,9 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   const SVM = window.DeckSettingsView;
   const screenState = () => (botscreen && botscreen.state ? botscreen.state() : null);
   const screenTabOn = () => !!botscreen && SVM.screenTabVisible(screenState(), S.tab);
-  /** The Bot screen tab follows desktop control: shown while it is on, and the panel leaves it when it goes. */
+  /** The Bot screen tab follows desktop control: shown while it is on; when it goes, the work pane shows its first tab. */
   function syncScreenTab() {
-    const want = SVM.tabFor(S.tab, screenState());
-    if (want !== S.tab) setTab(want);
-    else renderTabs();
+    renderTabs();
   }
   let hostVer = null; // main/host-versions.js state (applyHostVersions below)
   const SV = SVM.create({
@@ -1127,8 +1159,11 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     botscreenRows: () => (botscreen ? botscreen.settingsRows() : null),
     agents: () => agentList(), // Settings > Agent spaces: one home-host row per agent
     screenTab: () => screenTabOn(),
-    openScreen: () => { if (layout.panelClosed) togglePanel(); setTab("screen"); },
-    onToggle: () => renderGear(),
+    openScreen: () => setTab("screen"),
+    onToggle: (open) => {
+      if (open) SH.setMain("chat"); // Settings draws over the chat column
+      renderGear();
+    },
   });
   /** A small modal consent / confirmation sheet for Settings: resolves true only on its OK button (Esc, Cancel: false). */
   function confirmSheet({ title = "", body = "", ok = "" } = {}) {
@@ -1162,7 +1197,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   // A relay or plugin older than this app shows in Settings › Relay / › Hermes; a protocol mismatch blocks that one
   // connection and gets a banner in the top bar (its button opens the section with the update command).
   const hostBanner = h("div", { class: "hostver-banner", role: "alert", hidden: true });
-  document.querySelector("#conn").before(hostBanner);
+  document.getElementById("capsule").before(hostBanner);
   function applyHostVersions(state) {
     hostVer = state && typeof state === "object" ? state : null;
     const keys = SVM.hostBanners(hostVer);
@@ -1176,68 +1211,79 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     SV.notify(ok, text);
   }
   const gear = h("button", { class: "topbar-gear", type: "button", title: i18nText("set.open"), "aria-label": i18nText("A0231"), "data-i18n-title": "set.open", "data-i18n-aria-label": "A0231", dataset: { fk: "sv-gear" }, onclick: () => SV.toggle() }, SV.icon("gear", 15));
-  document.querySelector(".topbar .wordmark").after(gear);
+  document.getElementById("topbar").appendChild(gear);
   function renderGear() {
     gear.hidden = !(S.settings && S.settings.firstRunDone);
     gear.setAttribute("aria-pressed", SV.isOpen() ? "true" : "false");
   }
 
-  // ---------------------------------------------------------------- right panel
-  const TABS = () => [
-    ["activity", i18nText("A0232")],
-    ["fleet", i18nText("A0233")],
-    ["tokens", "Token"],
-    ["workspace", i18nText("U0476")],
-    screenTabOn() ? ["screen", i18nText("U0478")] : null, // only while desktop control is on (Settings > This device)
-  ].filter(Boolean);
+  // ---------------------------------------------------------------- right slot (shell.js): Inspector | Work pane
+  // Inspector tabs: Session (facts of the chat on screen), Activity (the activity tree), Usage (quotas + fleet, then
+  // tokens). Work pane tabs: Browser (workspace.js) and Screen (botscreen.js) mounted unchanged; Run, Plan, Diff and
+  // Agents are shell.js empty states until their module registers. The old tab ids below still route: setTab callers,
+  // --tab=<id> screenshot runs and a persisted deck.tab.
+  /** The tab ids the rest of app.js reads in S.tab (old names, so existing checks keep working). */
+  const OLD_ID = { "inspector:session": "session", "inspector:activity": "activity", "inspector:usage": "usage", "work:browser": "workspace", "work:screen": "screen" };
+  const tabIdOf = (r) => (r && r.kind ? OLD_ID[`${r.kind}:${r.tab}`] || r.tab || "" : "");
+  SH.on("right", (r) => {
+    S.tab = tabIdOf(r);
+    if (S.tab === "usage") refreshTokens();
+    renderGear();
+  });
 
   function renderTabs() {
     renderGear();
-    els.tabs.replaceChildren(
-      h("button", { class: "panel-toggle", type: "button", title: i18nText("U0479"), "aria-label": i18nText("U0480"), onclick: togglePanel , "data-i18n-title": "U0479", "data-i18n-aria-label": "U0480"}, "»"),
-      ...TABS().map(([id, label, later]) =>
-        h(
-          "button",
-          { class: "tab", type: "button", role: "tab", "aria-selected": S.tab === id ? "true" : "false", dataset: { fk: `tab:${id}` }, onclick: () => setTab(id) },
-          label,
-          later ? h("span", { class: "later" }, later) : null
-        )
-      )
-    );
+    SH.refresh();
   }
 
   function setTab(id) {
     if (id === "settings") return openSettings(); // Settings is its own view now (old callers, --tab=settings)
     id = SVM.tabFor(id, screenState());
-    S.tab = id;
-    store.set("deck.tab", id);
-    if (id === "tokens") refreshTokens();
-    renderTabs();
-    mark("panel", true);
+    const to = SH.legacyTab(id) || SH.legacyTab("activity");
+    SH.openRight(to[0], to[1]);
+  }
+
+  /** The app's own tabs draw through this: same rules as the old panel (first run, held fields, live language). */
+  function paneTab(fill) {
+    return (el) => {
+      const kids = [];
+      fill(kids);
+      el.replaceChildren(...kids);
+      window.DeckI18n.apply(document); // also refresh controls that were detached during a language change
+    };
+  }
+  /** A module's root mounted once and updated in place (workspace.js, botscreen.js). */
+  function mountOnce(mod, fallback) {
+    return (el) => {
+      if (!mod) {
+        if (!el.firstChild) el.append(fallback());
+        return;
+      }
+      if (el.firstChild !== mod.root) el.replaceChildren(mod.root);
+      mod.update();
+    };
+  }
+  /**
+   * The app's own right-slot tabs, registered "weak" (a module that registered the same id first keeps it). Called
+   * once at boot, after every const of this file exists: registering an open tab renders it at once.
+   */
+  function registerShellTabs() {
+    SH.registerInspectorTab("session", { weak: true, title: () => i18nText("shell.tab.session"), render: paneTab((kids) => paneSession(kids)) });
+    SH.registerInspectorTab("activity", { weak: true, title: () => i18nText("A0232"), render: paneTab((kids) => paneActivity(kids)) });
+    SH.registerInspectorTab("usage", { weak: true, title: () => i18nText("shell.tab.usage"), render: paneTab((kids) => { paneFleet(kids); paneTokens(kids); }) });
+    SH.registerWorkTab("browser", { weak: true, title: () => i18nText("shell.tab.browser"),
+      render: mountOnce(workspace, () => h("div", { class: "later-pane" }, h("h3", null, i18nNode("U0476")), i18nNode("U0477"))) });
+    // the Bot screen tab is conditional: only while desktop control is on (Settings > This device)
+    const screenTab = () => (screenTabOn() ? ["screen", i18nText("shell.tab.screen")] : null);
+    SH.registerWorkTab("screen", { weak: true, title: () => screenTab()?.[1] || i18nText("shell.tab.screen"), visible: () => !!screenTab(),
+      render: mountOnce(botscreen, () => h("div", { class: "later-pane" }, h("h3", null, i18nNode("U0478")), i18nNode("U0481"))) });
   }
 
   function renderPane() {
-    const pane = els.pane;
-    if (S.settings && !S.settings.firstRunDone) {
-      pane.replaceChildren(h("p", { class: "muted" }, i18nNode("setup.settingsLater")));
-      return;
-    }
-    // Workspace tab: its live canvas is mounted once and updates itself
-    if (S.tab === "workspace" && workspace && pane.firstChild === workspace.root) return workspace.update();
-    if (S.tab === "screen" && botscreen && pane.firstChild === botscreen.root) return botscreen.update(); // Bot ekranı: mounted once
-    if (holdRegion(pane)) return; // typing in a card's inline control
-    const keepScroll = pane.scrollTop;
-    const kids = [];
-    if (S.tab === "activity") paneActivity(kids);
-    else if (S.tab === "fleet") paneFleet(kids);
-    else if (S.tab === "tokens") paneTokens(kids);
-    else if (S.tab === "workspace") paneWorkspace(kids);
-    else kids.push(botscreen ? botscreen.root : h("div", { class: "later-pane" }, h("h3", null, i18nNode("U0478")), i18nNode("U0481")));
-    pane.replaceChildren(...kids);
-    pane.scrollTop = keepScroll;
-    if (S.tab === "workspace" && workspace) workspace.update(); // mounted: start watching
-    if (S.tab === "screen" && botscreen) botscreen.update(); // Bot ekranı: fill it now that it is mounted
-    window.DeckI18n.apply(document); // also refresh controls that were detached during a language change
+    const firstRun = !!(S.settings && !S.settings.firstRunDone);
+    SH.setLocked(firstRun); // first run: no right slot until setup is done
+    if (firstRun) return;
+    SH.refresh();
   }
 
   function nums(s) {
@@ -1571,7 +1617,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   const TV = window.DeckTokens
     ? window.DeckTokens.create({
       h, k, deck, store, mark,
-      isOpen: () => S.tab === "tokens",
+      isOpen: () => SH.isOpen("inspector", "usage"),
       snapshotRows: () => S.relay.tokens,
       usageStatus: () => S.relay.fleet && S.relay.fleet.usage,
       sessions: () => S.relay.sessions.values(),
@@ -1612,7 +1658,10 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       lastAt[p] = t;
       if (p === "top") renderTop();
       else if (p === "rail") renderRail();
-      else if (p === "head") renderHead();
+      else if (p === "head") {
+        renderHead();
+        renderCrumb(); // top bar: breadcrumb + channel chip, and the shell's "session" event
+      }
       else if (p === "msgs") renderMsgs();
       else if (p === "strip") renderStrip();
       else if (p === "panel") renderPane();
@@ -1894,7 +1943,8 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
         break;
       case "fleet":
         S.relay.fleet = m.fleet;
-        if (S.tab === "fleet") mark("panel");
+        if (SH.isOpen("inspector", "usage")) mark("panel");
+        mark("top"); // the sidebar footer's quota bar
         break;
       case "agents":
         S.relay.agents = m.agents || S.relay.agents;
@@ -2172,6 +2222,10 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   const SB = window.DeckSessions
     ? window.DeckSessions.create({ h, deck, mark, ago, cleanErr, nodeLive, bridgeOpen, hermesMode, hermesOpen, hermesForget, MV, H: () => H, beforeOpen: () => RG.leave(H.sel) })
     : null;
+  /** The All sessions browser for code above this point (the shell's search button, the crumb's read-only chip). */
+  function allSessionsView() {
+    return SB;
+  }
   /** Resolve the Hermes session behind the chat on screen, never an unrelated Hermes selection. */
   function composerSession() {
     if (!hermesMode()) {
@@ -2343,9 +2397,10 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
    * Finished sub-agents idle for SUB_FOLD_AFTER_S fold into one {fold} row under their parent; the selected
    * one and any running one stay visible. Rows are {node, depth} or {fold: {sid, count, open}, depth}.
    */
-  function hermesGroups(now = Date.now() / 1000) {
+  function hermesGroups(now = Date.now() / 1000, keep = null) {
     const byProfile = new Map();
     for (const n of H.nodes.values()) {
+      if (keep && !keep(n)) continue;
       if (!byProfile.has(n.profile)) byProfile.set(n.profile, []);
       byProfile.get(n.profile).push(n);
     }
@@ -2393,22 +2448,153 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       h("span", { class: "who" }, h("span", { class: "name" }, `${f.open ? "▾" : "▸"} `, i18nNode(f.open ? "deck.subsHide" : "deck.subsFinished", { n: f.count }))));
   }
 
-  function renderHermesRail() {
-    const kids = [
-      h("div", { class: "rail-top" },
-        // The top bar owns Oturumlar/Botlar; no second switch can reveal a disabled mode.
-        h("button", { class: "rail-toggle", type: "button", title: layout.compact ? i18nText("U0426") : i18nText("U0427"), "aria-label": layout.compact ? i18nText("U0428") : i18nText("U0429"), dataset: { fk: "rail-toggle" }, onclick: toggleCompact }, layout.compact ? "»" : "«")),
+  // ------------------------------------------------------------ sidebar (Sessions mode): smart filters, agents, sources
+  // View state of the Sessions list; filters only narrow what the rail shows, they never touch a session.
+  const rail = {
+    // "needs" opens the inbox: a restart comes back to the list ("all") rather than to an inbox stub
+    view: SH.FILTERS.includes(store.get("deck.view")) && store.get("deck.view") !== "needs" ? store.get("deck.view") : "all",
+    source: store.get("deck.source") || "all",
+    agent: null, // a profile picked in the Agents list
+    pins: new Set((store.get("deck.pins") || "").split(",").filter(Boolean)),
+  };
+  const SOURCE_NAMES = { tui: "TUI", cli: "CLI", api: "API", deck: "Deck", telegram: "Telegram", cron: "Cron", discord: "Discord", slack: "Slack" };
+  const sourceLabel = (v) => SOURCE_NAMES[v] || (v ? v.charAt(0).toUpperCase() + v.slice(1) : "");
+  /** Per session: the plain facts the smart filters and the agents list read (shell.js matchFilter). */
+  function sessionFacts() {
+    const asks = new Map();
+    for (const r of H.requests) asks.set(r.sid, (asks.get(r.sid) || 0) + 1);
+    const facts = new Map();
+    for (const n of H.nodes.values()) {
+      facts.set(n.sid, {
+        needs: asks.get(n.sid) || 0,
+        live: nodeLive(n),
+        waiting: n.state === "ratelimit" || OB.pending(n.sid) > 0,
+        pinned: rail.pins.has(n.sid),
+        updatedAt: n.updatedAt || n.terminalAt || 0,
+        source: String(n.source || "").toLowerCase(),
+        profile: n.profile || "default",
+      });
+    }
+    return facts;
+  }
+  /**
+   * The rail's keep(n) for the current filters, or null when nothing is filtered. A session stays when it passes, or
+   * when one of its descendants does (tree context). Parent links can form a cycle: each sid is decided once.
+   */
+  function railFilter(facts) {
+    if (rail.view === "all" && rail.source === "all" && !rail.agent) return null;
+    const pass = (x) => {
+      const f = facts.get(x.sid);
+      if (!f) return false;
+      if (rail.agent && f.profile !== rail.agent) return false;
+      if (rail.source !== "all" && !isSubagent(x) && f.source !== rail.source) return false;
+      return SH.matchFilter(rail.view, f);
+    };
+    const kids = new Map();
+    for (const c of H.nodes.values()) if (c.parent) (kids.get(c.parent) || kids.set(c.parent, []).get(c.parent)).push(c);
+    const memo = new Map();
+    const keep = (n) => {
+      if (memo.has(n.sid)) return memo.get(n.sid);
+      memo.set(n.sid, false); // a cycle back to this sid counts as "no"
+      const v = pass(n) || (kids.get(n.sid) || []).some(keep);
+      memo.set(n.sid, v);
+      return v;
+    };
+    return keep;
+  }
+  function setRailView(view) {
+    rail.view = view;
+    store.set("deck.view", view);
+    SH.setMain(view === "needs" ? "inbox" : "chat");
+    mark("rail", true);
+  }
+  function smartFilters(facts) {
+    const all = [...facts.values()];
+    const count = { needs: H.requests.length, all: all.length };
+    for (const v of ["running", "waiting", "today", "pinned"]) count[v] = all.filter((f) => SH.matchFilter(v, f)).length;
+    const ICON = { needs: "inbox", all: "all", running: "running", waiting: "waiting", today: "today", pinned: "pin" };
+    return h("div", { class: "sh-nav", role: "group", "aria-label": i18nText("shell.filters") },
+      ...SH.FILTERS.map((v) => {
+        const n = count[v] || 0;
+        const cls = v === "needs" && n ? "sh-count brass" : v === "running" && n ? "sh-count lv" : "sh-count";
+        return h("button", { type: "button", class: `sh-nrow${rail.view === v ? " on" : ""}`, "aria-pressed": rail.view === v ? "true" : "false", dataset: { fk: `view:${v}` }, onclick: () => setRailView(v) },
+          SH.icon(ICON[v], 15), h("span", { class: "sh-nlabel" }, i18nNode(`shell.view.${v}`)), n || v === "all" ? h("span", { class: cls }, String(n)) : null);
+      }));
+  }
+  /** Agents: one row per Hermes profile with its live state; a click narrows the list to that profile. */
+  function agentsBlock() {
+    const by = new Map();
+    for (const n of H.nodes.values()) {
+      const p = n.profile || "default";
+      if (!by.has(p)) by.set(p, { profile: p, live: 0, needs: 0 });
+      const a = by.get(p);
+      if (nodeLive(n)) a.live++;
+    }
+    for (const r of H.requests) {
+      const n = H.nodes.get(r.sid);
+      if (n && by.has(n.profile || "default")) by.get(n.profile || "default").needs++;
+    }
+    if (!by.size) return [];
+    const list = [...by.values()].sort((a, b) => (a.profile === "default" ? -1 : b.profile === "default" ? 1 : a.profile.localeCompare(b.profile)));
+    const nameOf = (p) => (agentList().find((a) => a.profile === p) || {}).name || (p === "default" ? i18nText("shell.defaultAgent") : p);
+    const closed = layout.closed.has("h:agents");
+    const live = list.reduce((n, a) => n + a.live, 0);
+    return [
+      sectionHead("h:agents", i18nText("A0217"), live ? i18nText("shell.agentsLive", { n: live }) : list.length),
+      closed ? null : h("div", { class: "sh-agents" }, ...list.map((a) => {
+        const st = a.needs ? "waiting" : a.live ? "running" : "idle";
+        const label = a.needs ? i18nText("shell.state.needs") : a.live ? (a.live > 1 ? i18nText("shell.state.runningN", { n: a.live }) : i18nText("shell.state.running")) : i18nText("shell.state.idle");
+        return h("button", { type: "button", class: `sh-arow${rail.agent === a.profile ? " on" : ""}`, "aria-pressed": rail.agent === a.profile ? "true" : "false", dataset: { fk: `agent:${a.profile}` },
+          onclick: () => { rail.agent = rail.agent === a.profile ? null : a.profile; mark("rail", true); } },
+          h("span", { class: `sh-av st-${st}`, "aria-hidden": "true" }, nameOf(a.profile).slice(0, 1).toUpperCase(), h("span", { class: `dot ${st}` })),
+          h("span", { class: "sh-nm" }, nameOf(a.profile)),
+          h("span", { class: `sh-ast ${st}` }, label));
+      })),
     ];
-    if (SB) kids.push(SB.entry()); // All sessions: opens the browser over the chat column
+  }
+  /** Source chips: All plus the sources the list actually holds (Deck, Telegram, TUI, Cron, ...). */
+  function sourceChips() {
+    const seen = new Map();
+    for (const n of H.nodes.values()) {
+      const v = String(n.source || "").toLowerCase();
+      if (v && !isSubagent(n)) seen.set(v, (seen.get(v) || 0) + 1);
+    }
+    if (rail.source !== "all" && !seen.has(rail.source)) rail.source = "all";
+    const list = [...seen.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([v]) => v);
+    if (list.length < 2 && rail.source === "all") return null;
+    const pick = (v) => { rail.source = v; store.set("deck.source", v); mark("rail", true); };
+    return h("div", { class: "sh-chips", role: "group", "aria-label": i18nText("shell.sourcesLabel") },
+      h("button", { type: "button", class: `sh-srcchip${rail.source === "all" ? " on" : ""}`, "aria-pressed": rail.source === "all" ? "true" : "false", dataset: { fk: "src:all" }, onclick: () => pick("all") }, i18nNode("shell.source.all")),
+      ...list.map((v) => h("button", { type: "button", class: `sh-srcchip${rail.source === v ? " on" : ""}`, "aria-pressed": rail.source === v ? "true" : "false", dataset: { fk: `src:${v}` }, onclick: () => pick(v) }, sourceLabel(v))));
+  }
+  function togglePin(sid) {
+    if (rail.pins.has(sid)) rail.pins.delete(sid);
+    else rail.pins.add(sid);
+    store.set("deck.pins", [...rail.pins].join(","));
+    mark("rail", true);
+  }
+
+  function renderHermesRail() {
+    // The sidebar's mode switch (#modes) owns Sessions/Bots; no second switch can reveal a disabled mode.
+    const kids = [];
+    const allSessions = SB ? SB.entry() : null; // All sessions: opens the browser over the chat column
     if (BT && BT.view() === "bots") {
+      if (allSessions) kids.push(allSessions);
       BT.renderRail(kids); // Botlar: one row per bot instead of the sessions grouped by profile
       els.rail.replaceChildren(...kids);
       return;
     }
-    const groups = hermesGroups();
+    // Sessions: smart filters, the agents (profiles) with their live state, source chips, then the session list
+    const facts = sessionFacts();
+    kids.push(smartFilters(facts));
+    kids.push(...agentsBlock());
+    kids.push(sourceChips());
+    if (allSessions) kids.push(allSessions);
+    const groups = hermesGroups(undefined, railFilter(facts));
     if (!groups.length) {
       kids.push(sectionHead("h:none", i18nText("U0580"), 0));
-      kids.push(h("p", { class: "rail-note" }, bridgeOpen() ? i18nNode("U0581") : hermesStatusText()));
+      const filtered = rail.view !== "all" || rail.source !== "all" || rail.agent;
+      kids.push(h("p", { class: "rail-note" }, filtered && H.nodes.size ? i18nNode("shell.filterEmpty") : bridgeOpen() ? i18nNode("U0581") : hermesStatusText()));
     }
     if (!groups.length && bridgeOpen() && !layout.compact) kids.push(newSessionRow("default"));
     for (const g of groups) {
@@ -2452,7 +2638,8 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     const n = H.nodes.get(sid);
     if (!sid || !n || !hermesMode() || !bridgeOpen() || (BT && BT.owns(sid))) return; // a Bot Chat belongs to its bot
     MV.openMenu(
-      [{ label: i18nText("session.delete"), danger: true, noReturn: true, run: () => confirmDeleteSession(n) }],
+      [{ label: i18nText(rail.pins.has(sid) ? "shell.unpin" : "shell.pin"), run: () => togglePin(sid) },
+        { label: i18nText("session.delete"), danger: true, noReturn: true, run: () => confirmDeleteSession(n) }],
       row, pos, i18nText("session.menuLabel", { title: hermesTitle(n) })
     );
   }
@@ -4001,13 +4188,20 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   });
 
   // ---------------------------------------------------------------- boot
+  registerShellTabs();
+  // what later modules may use without editing this file (contracts.md, Lane A)
+  SH.provide("h", h);
+  SH.provide("workspace", workspace);
+  SH.provide("botscreen", botscreen);
+  SH.provide("openSettings", (section) => openSettings(section));
+  SH.provide("chat", () => currentChat());
   (async () => {
     const st = await deck.ready();
     const ui = st.ui || {};
-    const wantTab = (ui.tab && ui.tab.split(":")[0]) || store.get("deck.tab") || "activity";
-    // "settings" was a tab before Settings became its own view; a persisted Bot screen tab waits for botscreen's state
-    S.tab = SVM.tabFor(wantTab, screenState());
-    if (!TABS().some(([id]) => id === S.tab)) S.tab = "activity";
+    // --tab=<id> (screenshot runs) opens that tab in the right slot; the slot itself remembers its last state
+    const wantTab = ui.tab && ui.tab.split(":")[0];
+    if (wantTab && wantTab !== "settings") setTab(wantTab);
+    S.tab = tabIdOf(SH.right());
     pendingSelect = ui.select || null;
     applyTgStatus(st.tg || {});
     S.settings = st.settings || null;
@@ -4037,7 +4231,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     renderTabs();
     renderNote();
     mark("top", "rail", "head", "msgs", "strip", "panel", true);
-    if (S.tab === "tokens") refreshTokens();
+    if (SH.isOpen("inspector", "usage")) refreshTokens();
     // --tab=settings[:<section>] (screenshot runs) opens the Settings view, at a section if one is named
     if (typeof ui.tab === "string" && ui.tab.split(":")[0] === "settings") openSettings(ui.tab.split(":")[1] || undefined);
     deck.rendered();

@@ -10,11 +10,11 @@ const THEMES = ["basalt", "marble", "aegean"];
 const CHOICES = [...THEMES, "system"];
 // window ground and Windows caption-button colours per theme (the page's --obsidian and --vein-text)
 const WINDOW = {
-  basalt: { bg: "#0D0E10", symbol: "#8B9098" },
+  basalt: { bg: "#000000", symbol: "#7D7D7D" },
   marble: { bg: "#F3F0EA", symbol: "#67625A" },
   aegean: { bg: "#0A1020", symbol: "#8995B2" },
 };
-const TITLE_H = 34; // matches --top in styles.css
+const TITLE_H = 44; // matches --top in styles.css
 
 let choice = "basalt";
 let applied = "basalt";

@@ -28,6 +28,7 @@ allowlist = [
     ('app/scripts/appshots-e2e.js', re.compile(r'/srv/example/')),
     ('app/test/bridge.test.js', re.compile(r'/srv/(?:hermes/|stream\.py)')),
     ('app/test/fake-stream.js', re.compile(r'/srv/example/')),
+    ('app/test/subagents.test.js', re.compile(r'/srv/example/')),
     ('app/test/voice-files.test.js', re.compile(r'/srv/(?:out(?:/|\b)|example/|hermes/|other/|ok\b|\.\./)')),
     ('hermes-plugin/hermes-deck/test_appshot.py', re.compile(r'/srv/example/')),
     ('hermes-plugin/hermes-deck/test_attach.py', re.compile(r'/srv/example(?:/|["\'])')),

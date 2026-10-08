@@ -29,39 +29,77 @@
   <link rel="stylesheet" href="live-activity.css">
   <link rel="stylesheet" href="model-picker.css">
   <link rel="stylesheet" href="think-block.css">
+  <link rel="stylesheet" href="shell.css">
+  <link rel="stylesheet" href="composer.css">
+  <link rel="stylesheet" href="receipts.css">
+  <link rel="stylesheet" href="timeline.css">
+  <link rel="stylesheet" href="work-pane.css">
+  <link rel="stylesheet" href="inbox.css">
+  <link rel="stylesheet" href="fleet-capsule.css">
 </head>
 <body>
-  <header class="topbar">
-    <span class="wordmark">Hermes Deck</span>
-    <span class="pulse-sum" id="sum"></span>
-    <span class="conn" id="conn"></span>
-  </header>
-  <div class="shell">
-    <nav class="rail" id="rail" aria-label="Agents and group topics" data-i18n-aria-label="html.rail"></nav>
-    <div class="gutter" id="gutter-left" role="separator" aria-orientation="vertical" aria-label="Sidebar width" data-i18n-aria-label="html.sidebarWidth" tabindex="0"></div>
-    <main class="chat" id="chat">
-      <button class="panel-open" id="panel-open" type="button" title="Open right panel (Ctrl+J)" data-i18n-title="html.openRightShortcut" aria-label="Open right panel" data-i18n-aria-label="html.openRight">«</button>
-      <header class="chat-head" id="head"></header>
-      <div class="msgs" id="msgs"><div class="msgs-inner" id="msgs-inner" aria-live="polite"></div></div>
-      <div class="strip" id="strip"></div>
-      <div class="composer">
-        <label class="sr-only" for="input" data-i18n="A0360">Message</label>
-        <textarea id="input" rows="1" placeholder="Write a message · Enter sends, Shift+Enter adds a line" data-i18n-placeholder="U0579"></textarea>
-        <div class="composer-bar">
-          <div class="composer-tools" role="group" aria-label="Message tools" data-i18n-aria-label="composer.attachGroup"></div>
-          <button class="send" id="send" type="button" disabled title="Send (Enter)" data-i18n-title="composer.sendHelp" data-i18n="U0616">Send</button>
-        </div>
+  <div class="app" id="app" data-main="chat" data-right="">
+    <aside class="side" id="side" aria-label="Sources" data-i18n-aria-label="shell.sources">
+      <div class="side-hdr">
+        <span class="brand"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">Hermes Deck</span></span>
+        <button class="ib" id="side-close" type="button" title="Hide sidebar (Ctrl+B)" data-i18n-title="shell.hideSidebarTip" aria-label="Hide sidebar" data-i18n-aria-label="shell.hideSidebar"></button>
       </div>
-      <p class="composer-note" id="note"></p>
-      <section class="detail" id="detail" hidden aria-label="Session details" data-i18n-aria-label="U0373"></section>
-    </main>
-    <div class="gutter" id="gutter-right" role="separator" aria-orientation="vertical" aria-label="Right panel width" data-i18n-aria-label="html.rightWidth" tabindex="0"></div>
-    <section class="panel" aria-label="Details" data-i18n-aria-label="U0862">
-      <div class="tabs" role="tablist" id="tabs"></div>
-      <div class="pane" id="pane" role="tabpanel"></div>
-    </section>
+      <div class="modes" id="modes" role="group" aria-label="Chat modes" data-i18n-aria-label="chat.modes" hidden></div>
+      <nav class="rail" id="rail" aria-label="Agents and group topics" data-i18n-aria-label="html.rail"></nav>
+      <div class="side-extra" id="side-extra" hidden></div>
+      <footer class="side-foot" id="side-foot">
+        <div class="conn" id="conn"></div>
+        <div class="pulse-sum" id="sum"></div>
+        <div class="qmini" id="quota" hidden></div>
+      </footer>
+    </aside>
+    <div class="gutter" id="gutter-left" role="separator" aria-orientation="vertical" aria-label="Sidebar width" data-i18n-aria-label="html.sidebarWidth" tabindex="0"></div>
+    <header class="topbar" id="topbar">
+      <button class="ib" id="side-open" type="button" hidden title="Show sidebar (Ctrl+B)" data-i18n-title="shell.showSidebarTip" aria-label="Show sidebar" data-i18n-aria-label="shell.showSidebar"></button>
+      <nav class="crumb" id="crumb" aria-label="Current chat" data-i18n-aria-label="shell.crumb"></nav>
+      <div class="crumb-extra" id="crumb-extra" hidden></div>
+      <div class="capsule" id="capsule"></div>
+      <button class="findbtn" id="find-btn" type="button" title="Search all sessions (Ctrl+K)" data-i18n-title="shell.searchTip"><span class="find-label" data-i18n="shell.search">Search sessions</span><kbd class="find-kbd" id="find-kbd">Ctrl K</kbd></button>
+      <button class="ib" id="work-btn" type="button" aria-pressed="false" title="Work pane (Ctrl+\)" data-i18n-title="shell.workTip" aria-label="Work pane" data-i18n-aria-label="shell.work"></button>
+      <button class="ib" id="insp-btn" type="button" aria-pressed="false" title="Inspector (Ctrl+Alt+I)" data-i18n-title="shell.inspectorTip" aria-label="Inspector" data-i18n-aria-label="shell.inspector"></button>
+    </header>
+    <div class="body" id="body">
+      <main class="chat" id="chat">
+        <div class="timeline" id="timeline" hidden></div>
+        <header class="chat-head" id="head"></header>
+        <div class="msgs" id="msgs"><div class="msgs-inner" id="msgs-inner" aria-live="polite"></div></div>
+        <div class="strip" id="strip"></div>
+        <div class="composer-status" id="composer-status" hidden></div>
+        <div class="composer">
+          <label class="sr-only" for="input" data-i18n="A0360">Message</label>
+          <textarea id="input" rows="1" placeholder="Write a message · Enter sends, Shift+Enter adds a line" data-i18n-placeholder="U0579"></textarea>
+          <div class="composer-bar">
+            <div class="composer-tools" role="group" aria-label="Message tools" data-i18n-aria-label="composer.attachGroup"></div>
+            <button class="send" id="send" type="button" disabled title="Send (Enter)" data-i18n-title="composer.sendHelp" data-i18n="U0616">Send</button>
+          </div>
+        </div>
+        <p class="composer-note" id="note"></p>
+        <section class="detail" id="detail" hidden aria-label="Session details" data-i18n-aria-label="U0373"></section>
+      </main>
+      <section class="inbox" id="inbox" aria-label="Needs you" data-i18n-aria-label="shell.inboxTitle"></section>
+    </div>
+    <div class="gutter" id="gutter-right" hidden role="separator" aria-orientation="vertical" aria-label="Right panel width" data-i18n-aria-label="html.rightWidth" tabindex="0"></div>
+    <div class="right" id="right" hidden>
+      <section class="rpanel insp" id="insp" aria-label="Inspector" data-i18n-aria-label="shell.inspector" hidden>
+        <header class="rhead"><div class="rtabs" id="insp-tabs" role="tablist" aria-label="Inspector" data-i18n-aria-label="shell.inspector"></div><span class="sp"></span><button class="ib" id="insp-close" type="button" title="Close inspector" data-i18n-title="shell.closeInspector" aria-label="Close inspector" data-i18n-aria-label="shell.closeInspector"></button></header>
+        <div class="rbody" id="insp-body"></div>
+      </section>
+      <section class="rpanel work" id="work" aria-label="Work pane" data-i18n-aria-label="shell.work" hidden>
+        <header class="rhead"><div class="rtabs" id="work-tabs" role="tablist" aria-label="Work pane" data-i18n-aria-label="shell.work"></div><span class="sp"></span><button class="ib" id="work-close" type="button" title="Close work pane" data-i18n-title="shell.closeWork" aria-label="Close work pane" data-i18n-aria-label="shell.closeWork"></button></header>
+        <div class="rbody" id="work-body"></div>
+      </section>
+    </div>
   </div>
   <script src="i18n.js"></script>
+  <script src="i18n-b.js"></script>
+  <script src="i18n-d.js"></script>
+  <script src="i18n-e.js"></script>
+  <script src="shell.js"></script>
   <script src="drafts.js"></script>
   <script src="takeover.js"></script>
   <script src="history-window.js"></script>
@@ -99,5 +137,11 @@
   <script src="pets/catalog.js"></script>
   <script src="settings-view.js"></script>
   <script src="app.js"></script>
+  <script src="composer.js"></script>
+  <script src="receipts.js"></script>
+  <script src="timeline.js"></script>
+  <script src="work-pane.js"></script>
+  <script src="inbox.js"></script>
+  <script src="fleet-capsule.js"></script>
 </body>
 </html>

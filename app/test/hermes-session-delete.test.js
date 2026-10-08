@@ -28,6 +28,9 @@ const plain = (x) => JSON.parse(JSON.stringify(x)); // values built inside the v
 const walk = (el) => [el, ...(el.kids || []).filter((x) => typeof x === "object").flatMap(walk)];
 const nodeText = (el) => (el.kids || []).map((k) => (typeof k === "string" ? k : k.textContent !== undefined && !k.kids ? k.textContent : nodeText(k))).join("");
 
+/** The menu's Delete item (the menu also offers Pin for the sidebar's Pinned filter). */
+const del = (menu) => menu.items.find((i) => i.danger);
+
 function world({ deleteImpl } = {}) {
   const sent = [];
   const menus = [];
@@ -42,6 +45,7 @@ function world({ deleteImpl } = {}) {
     i18nBind: (el, attr, key, vars) => { el[attr] = I18N.t(key, vars); },
     H: { sel: "s-a", nodes: new Map(sessions.map((n) => [n.sid, n])), hist: new Map([["s-a", {}]]), live: new Map([["s-a", {}]]), echo: new Map(), ctl: new Map(), titles: new Map(), rank: new Map(), requests: [{ sid: "s-a", id: "r1" }], deleted: new Set(), snap: [], stored: new Map() },
     OB: { drop() {} }, DR: { forget() {} },
+    rail: { pins: new Set() }, togglePin(sid) { ctx.rail.pins.add(sid); },
     BT: null, store: { value: "s-a", set(k, v) { this.value = v; } },
     els: { rail: element("nav") },
     MV: { openMenu: (items, anchor, pos, label) => menus.push({ items, anchor, pos, label }), toast: (t) => toasts.push(t) },
@@ -70,11 +74,14 @@ test("right-click on a session row opens a menu with Delete; Delete asks before 
   assert.equal(w.menus.length, 1);
   const menu = w.menus[0];
   assert.deepEqual(plain(menu.pos), { x: 40, y: 60 });
-  assert.equal(menu.items.length, 1);
-  assert.equal(menu.items[0].label, "Delete");
-  assert.equal(menu.items[0].danger, true);
+  assert.deepEqual(plain(menu.items.map((i) => i.label)), ["Pin", "Delete"], "Pin (sidebar's Pinned filter), then Delete");
+  assert.equal(del(menu).danger, true);
+  assert.equal(!!menu.items[0].danger, false, "Pin is not destructive");
   assert.match(menu.label, /Beta/);
-  menu.items[0].run(); // choosing Delete opens the confirmation
+  menu.items[0].run(); // Pin only marks the row: nothing is sent
+  assert.deepEqual(plain([...w.ctx.rail.pins]), ["s-b"]);
+  assert.equal(w.sent.length, 0);
+  del(menu).run(); // choosing Delete opens the confirmation
   assert.equal(w.sent.length, 0, "nothing deleted before the user confirms");
   assert.equal(w.dialog().attrs.class, "cd-back");
   assert.match(nodeText(w.dialog()), /Delete session\?/);
@@ -85,7 +92,7 @@ test("right-click on a session row opens a menu with Delete; Delete asks before 
 test("Cancel closes the dialog and deletes nothing", async () => {
   const w = world();
   w.press("contextmenu", { target: w.target("s-a"), clientX: 1, clientY: 1 });
-  w.menus[0].items[0].run();
+  del(w.menus[0]).run();
   const cancel = w.buttons().find((b) => b.attrs.class === "btn");
   cancel.listeners.click[0]();
   assert.equal(w.dialog().removed, true);
@@ -95,7 +102,7 @@ test("Cancel closes the dialog and deletes nothing", async () => {
 test("confirm sends the stored session id and its profile, then forgets the session", async () => {
   const w = world();
   w.press("contextmenu", { target: w.target("s-b"), clientX: 1, clientY: 1 });
-  w.menus[0].items[0].run();
+  del(w.menus[0]).run();
   const ok = w.buttons().find((b) => b.attrs.class === "btn danger");
   await ok.listeners.click[0]();
   assert.deepEqual(plain(w.sent), [["s-b", { profile: "research" }]]);
@@ -108,7 +115,7 @@ test("confirm sends the stored session id and its profile, then forgets the sess
 test("deleting the open session moves the selection to another one and clears its local state", async () => {
   const w = world();
   w.press("contextmenu", { target: w.target("s-a"), clientX: 1, clientY: 1 });
-  w.menus[0].items[0].run();
+  del(w.menus[0]).run();
   await w.buttons().find((b) => b.attrs.class === "btn danger").listeners.click[0]();
   assert.deepEqual(plain(w.sent), [["s-a", { profile: "default" }]]);
   assert.equal(w.ctx.H.sel, "s-b", "the next session in the rail opens");
@@ -120,7 +127,7 @@ test("deleting the last session leaves no selection", async () => {
   const w = world();
   w.ctx.H.nodes.delete("s-b");
   w.press("contextmenu", { target: w.target("s-a"), clientX: 1, clientY: 1 });
-  w.menus[0].items[0].run();
+  del(w.menus[0]).run();
   await w.buttons().find((b) => b.attrs.class === "btn danger").listeners.click[0]();
   assert.equal(w.ctx.H.sel, null);
   assert.equal(w.ctx.store.value, "");
@@ -129,7 +136,7 @@ test("deleting the last session leaves no selection", async () => {
 test("Hermes refusing a running session shows a friendly message and keeps everything", async () => {
   const w = world({ deleteImpl: async () => { throw new Error("Error invoking remote method 'bridge:delete': Error: cannot delete an active session"); } });
   w.press("contextmenu", { target: w.target("s-a"), clientX: 1, clientY: 1 });
-  w.menus[0].items[0].run();
+  del(w.menus[0]).run();
   const ok = w.buttons().find((b) => b.attrs.class === "btn danger");
   await ok.listeners.click[0]();
   const err = walk(w.dialog()).find((n) => n.attrs && n.attrs.class === "form-error");
@@ -144,7 +151,7 @@ test("Hermes refusing a running session shows a friendly message and keeps every
 test("other failures show their own text", async () => {
   const w = world({ deleteImpl: async () => { throw new Error("session not found"); } });
   w.press("contextmenu", { target: w.target("s-a"), clientX: 1, clientY: 1 });
-  w.menus[0].items[0].run();
+  del(w.menus[0]).run();
   await w.buttons().find((b) => b.attrs.class === "btn danger").listeners.click[0]();
   assert.equal(walk(w.dialog()).find((n) => n.attrs && n.attrs.class === "form-error").textContent, "session not found");
 });
