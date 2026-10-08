@@ -53,6 +53,27 @@ test("pet size: 1 by default, the four presets save, other numbers are refused o
   assert.equal(settings({ desktop: { petSize: 3 } }).s.publicView().desktop.petSize, 1);
 });
 
+/** A rig skin's spec (pets/skins/<id>.js calls PetRig or PetCatRig), its validation errors and image names; null for
+ * a sprite skin. The skin files are browser scripts: they run here against a stub window. */
+function rigSpec(root, id, src) {
+  if (!/PetRig|PetCatRig/.test(src)) return null;
+  const ctx = { window: {} };
+  vm.createContext(ctx);
+  vm.runInContext(fs.readFileSync(path.join(root, "pets/rig-logic.js"), "utf8"), ctx);
+  let spec = null;
+  ctx.window.PetRig = (_id, _art, s) => { spec = s; };
+  vm.runInContext(fs.readFileSync(path.join(root, "pets/skins/cat-rig.js"), "utf8"), ctx);
+  vm.runInContext(src, ctx);
+  const images = new Set();
+  for (const scene of Object.values(spec.scenes)) {
+    for (const layer of scene.layers) {
+      if (layer.img) images.add(layer.img);
+      for (const f of Object.values(layer.faces || {})) images.add(f);
+    }
+  }
+  return { spec, errors: [...ctx.window.PetRigLogic.validate(spec)], images };
+}
+
 test("pet catalog: every look is a valid setting, has a label in both languages, and sprites have art and a skin", () => {
   const { s } = settings({ firstRunDone: true });
   const root = path.join(__dirname, "../renderer");
@@ -64,7 +85,20 @@ test("pet catalog: every look is a valid setting, has a label in both languages,
     if (id === "orb" || id === "agent") continue;
     assert.match(html, new RegExp(`pets/skins/${id}\.js`), `${id}: pet.html loads its skin`);
     assert.match(html, new RegExp(`pets/skins/${id}\.css`), `${id}: pet.html loads its hit areas`);
-    const x3 = /x3: true/.test(fs.readFileSync(path.join(root, "pets/skins", `${id}.js`), "utf8"));
+    const src = fs.readFileSync(path.join(root, "pets/skins", `${id}.js`), "utf8");
+    const rig = rigSpec(root, id, src);
+    if (rig) {
+      // a cut-out rig: every layer and face image it names, at each scale it declares
+      assert.deepEqual(rig.errors, [], `${id}: rig spec`);
+      for (const name of rig.images) {
+        for (const n of rig.spec.scales) {
+          const file = `${name}${n === 1 ? "" : `@${n}x`}.png`;
+          assert.ok(fs.existsSync(path.join(root, "pets", id, file)), `${id}/${file}`);
+        }
+      }
+      continue;
+    }
+    const x3 = /x3: true/.test(src);
     for (const a of ["idle", "working", "reply", "waiting", "offline", "stand", "wake", "still-idle", "still-offline"]) {
       for (const sfx of ["", "@2x", ...(x3 ? ["@3x"] : [])]) assert.ok(fs.existsSync(path.join(root, "pets", id, `${a}${sfx}.png`)), `${id}/${a}${sfx}.png`);
     }

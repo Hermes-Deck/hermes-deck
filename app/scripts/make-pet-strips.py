@@ -32,6 +32,8 @@ import sys
 
 from PIL import Image, ImageChops
 
+from pet_stabilize import steady
+
 FRAME = 144  # CSS px of one frame box in renderer/pets/skins/sprite.css
 ANIMS = ["idle", "working", "reply", "waiting", "offline", "stand", "wake"]
 STILLS = ["idle", "working", "reply", "waiting", "offline"]
@@ -41,26 +43,26 @@ N = 4
 # normalise: anim (or one frame, "<anim>-<n>") -> (scale, dx in source px), brings an off-scale loop or frame onto
 # the shared scale; order: anim ->
 # which source frame fills each of the strip's four slots; scales: the strip resolutions written.
-# stills "frames": each still is its loop's first frame (NORMALISE included), not a separate drawing
+# stills "frames": each still is its loop's first frame (NORMALISE included), not a separate drawing;
+# steady: "<anim>-<n>" -> {"base": "<anim>-<m>", "patches": [...]}: that frame becomes the base frame with only
+# the patches pasted in (see pet_stabilize.py; a patch's "from" names the drawn frame it comes from, default the
+# frame itself), so nothing outside them moves
 SPLIT = {"src": 512, "feet": (256, 482), "normalise": {}, "order": {}, "scales": (1, 2, 3), "stills": "frames"}  # split-pet-sheets.py
 PETS = {
     # Karakter: waiting stops at 1.13, its "?" (waiting-2, alpha top y=43) must stay inside the frame
     "character": {"src": 384, "feet": (192, 361), "normalise": {"working": (0.92, -12), "waiting": (1.13, 11)},
                   "order": {"waiting": [1, 2, 4, 2]}, "scales": (1, 2)},
     "owl": {**SPLIT, "normalise": {"waiting": (1.12, 0)}},  # its waiting sheet came out ~12% small
-    # the cats wait sitting (pets/skins/<id>.js passes poses: {waiting: "sit"} to the skin)
-    # (and, like Karakter and the owl, their waiting sheets came out ~12% small: the "?" shrinks the figure)
-    # Hasret's and Hayat's idle sheets came out ~5% large against their other sheets
-    "leo": {**SPLIT, "poses": {"waiting": "sit"}, "normalise": {"waiting": (1.16, 0)}},
-    "hasret": {**SPLIT, "poses": {"waiting": "sit"}, "normalise": {"idle": (0.94, 0), "working": (0.97, 0), "waiting": (1.11, 0), "wake-1": (0.93, 0)}},
-    "hayat": {**SPLIT, "poses": {"waiting": "sit"}, "normalise": {"idle": (0.96, 0), "waiting": (1.14, 0)}},
     "philosopher": {**SPLIT, "normalise": {"waiting": (1.12, 0), "wake-1": (0.93, 0), "wake-4": (1.04, 0)}},
+    # Leo, Hasret and Hayat moved to the cut-out rig (make-pet-rig.py, pets/skins/cat-rig.js) on 2026-10-08;
+    # their sheet frames stay in app/art/pet-<id>/frames/ as the rig's source.
 }
 PET = "character"
 SRC_PX = 384
 FEET = (192, 361)
 NORMALISE = {}
 ORDER = {}
+STEADY = {}
 
 # (a, b): a loop's first frame and what it meets in a transition ("still:<state>": the motion-off still)
 MEETS = [
@@ -96,11 +98,12 @@ def meets(poses):
 
 def use(pid):
     """Points the module-level settings at one pet from PETS."""
-    global PET, SRC_PX, FEET, NORMALISE, ORDER, SRC, OUT, MEETS
+    global PET, SRC_PX, FEET, NORMALISE, ORDER, STEADY, SRC, OUT, MEETS
     if pid not in PETS:
         sys.exit(f"unknown pet {pid!r}; known: {', '.join(PETS)}")
     c = PETS[pid]
     PET, SRC_PX, FEET, NORMALISE, ORDER = pid, c["src"], c["feet"], c["normalise"], c["order"]
+    STEADY = c.get("steady", {})
     if c is not PETS["character"]:
         MEETS = meets(c.get("poses", {}))
     SRC = os.path.join(APP, "art", f"pet-{pid}")
@@ -122,14 +125,25 @@ def source(name, raw=False):
         name = f"{name[6:]}-1"
     still = name.startswith("still:")
     path = os.path.join(SRC, "stills", f"{name[6:]}.png") if still else os.path.join(SRC, "frames", f"{name}.png")
-    im = Image.open(path).convert("RGBA")
-    if im.size != (SRC_PX, SRC_PX):
-        sys.exit(f"{path}: expected {SRC_PX}x{SRC_PX}, got {im.size}")
-    im = im.convert("RGBa")
+    im = drawn(path)
+    if not still and not raw and name in STEADY:
+        spec = STEADY[name]
+        base = drawn(os.path.join(SRC, "frames", f"{spec['base']}.png"))
+        im = base
+        for p in spec["patches"]:
+            im = steady(im, drawn(os.path.join(SRC, "frames", f"{p.get('from', name)}.png")), [p])
     if not still and not raw:
         scale, dx = NORMALISE.get(name, NORMALISE.get(name.rsplit("-", 1)[0], (1, 0)))  # "<anim>-<n>" beats "<anim>"
         im = affine(im, scale, dx)
     return im
+
+
+def drawn(path):
+    """One source PNG as premultiplied RGBa, checked against the pet's canvas size."""
+    im = Image.open(path).convert("RGBA")
+    if im.size != (SRC_PX, SRC_PX):
+        sys.exit(f"{path}: expected {SRC_PX}x{SRC_PX}, got {im.size}")
+    return im.convert("RGBa")
 
 
 def scaled(name, px):

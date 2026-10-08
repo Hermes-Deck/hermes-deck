@@ -1,0 +1,45 @@
+{
+  "canvas": 512,
+  "scarf": [150, 48, 52],
+  "scenes": {
+    "idle": {
+      "body": "idle.body.png",
+      "layers": {
+        "tail1": {"src": "idle.tail.png", "poly": [[260, 378], [480, 378], [480, 512], [260, 512]], "feather": 0, "behind": [[230, 280], [344, 280], [344, 500], [230, 500]]},
+        "tail2": {"src": "idle.tail.png", "poly": [[260, 60], [480, 60], [480, 390], [260, 390]], "feather": 6},
+        "head": {"box": [86, 120, 392, 348], "cut": 340, "ramp": 12, "underfill": 30}
+      },
+      "faces": {"box": [146, 236, 306, 306], "feather": 10, "parent": "head", "names": ["half", "closed", "look"]}
+    },
+    "working": {
+      "layers": {
+        "head": {"box": [86, 120, 356, 330], "cut": 314, "ramp": 12, "underfill": 24, "clip": [[80, 110], [356, 110], [356, 288], [327, 294], [322, 340], [80, 340]]},
+        "pawA": {"poly": [[206, 382], [222, 377], [236, 383], [241, 396], [236, 408], [222, 412], [208, 408], [202, 396]], "feather": 1, "lift": true, "fill": true},
+        "pawB": {"poly": [[262, 371], [290, 366], [309, 364], [312, 371], [306, 388], [296, 394], [272, 393], [260, 386]], "feather": 1, "lift": true, "fill": true}
+      },
+      "faces": {"box": [196, 248, 330, 312], "feather": 10, "parent": "head", "names": ["half", "closed"]}
+    },
+    "reply": {
+      "body": "reply.body.png",
+      "layers": {
+        "tail1": {"src": "reply.tail.png", "poly": [[260, 378], [480, 378], [480, 512], [260, 512]], "feather": 0, "behind": [[230, 280], [344, 280], [344, 500], [230, 500]]},
+        "tail2": {"src": "reply.tail.png", "poly": [[260, 60], [480, 60], [480, 390], [260, 390]], "feather": 6}
+      },
+      "faces": {"box": [150, 236, 300, 306], "feather": 10, "parent": "body", "names": ["closed"]}
+    },
+    "waiting": {
+      "body": "waiting.body.png",
+      "layers": {
+        "tail1": {"src": "waiting.tail.png", "poly": [[260, 378], [480, 378], [480, 512], [260, 512]], "feather": 0, "behind": [[230, 280], [344, 280], [344, 500], [230, 500]]},
+        "tail2": {"src": "waiting.tail.png", "poly": [[260, 60], [480, 60], [480, 390], [260, 390]], "feather": 6},
+        "head": {"box": [86, 110, 392, 350], "cut": 338, "ramp": 12, "underfill": 30}
+      },
+      "faces": {"box": [148, 228, 290, 306], "feather": 10, "parent": "head", "names": ["half", "closed"]},
+      "props": {"q": "waiting.q.png"}
+    },
+    "offline": {
+      "layers": {},
+      "props": {"z1": "offline.z.png", "z2": "offline.z.png", "z3": "offline.z.png"}
+    }
+  }
+}

@@ -44,3 +44,6 @@ xcuserdata/
 
 # written by scripts/build-info.js for packaged builds
 app/main/build-info.json
+
+# make-pet-rig.py --preview sheets
+app/art/pet-*/rig/_preview-*.png
