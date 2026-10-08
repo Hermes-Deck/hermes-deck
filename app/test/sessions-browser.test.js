@@ -308,3 +308,65 @@ test("view: a platform chip and the search narrow the list; a profile that faile
   assert.equal(noMatch, 0);
   assert.match(textOf(t.doc.chat), /No session matches/);
 });
+
+test("view: sidebar pin toggles do not filter All sessions and report source-hidden rows honestly", async () => {
+  const values = new Map();
+  const store = { get: (k) => values.get(k) ?? null, set: (k, v) => values.set(k, v) };
+  const data = sample();
+  const prefs = SB.createSidebarSources({ store, rows: () => data });
+  const t = harness(data, { opts: { sidebarSources: prefs, sidebarNeeds: (r) => r.id === "s-busy" } });
+  t.view.show();
+  await t.tick();
+  const pin = buttons(t, "sb-source-pin:telegram")[0];
+  assert.match(textOf(t.doc.chat), /Sidebar chips are chosen automatically/);
+  assert.ok(pin, "every source filter has a separate sidebar pin toggle");
+  assert.match(pin.attrs["aria-label"], /Show in sidebar.*Telegram/);
+  assert.equal(pin.attrs["aria-pressed"], "true");
+  click(pin);
+  assert.equal(buttons(t, "sb-source-pin:telegram")[0].attrs["aria-pressed"], "false");
+  assert.deepEqual(rowsIn(t).map((r) => r.dataset.fk), ["sb:default:s-tg", "sb:ops:s-tui", "sb:default:s-busy"]);
+  assert.match(textOf(t.doc.chat), /Hidden by sidebar source preferences: 1/);
+  click(buttons(t, "sb-source-pin:webui")[0]);
+  assert.equal(prefs.visible("webui"), false);
+  assert.match(textOf(t.doc.chat), /Hidden by sidebar source preferences: 1/, "pending requests are not counted as hidden");
+  click(buttons(t, "sb-chip:telegram")[0]);
+  assert.deepEqual(rowsIn(t).map((r) => r.dataset.fk), ["sb:default:s-tg"], "source filter is independent from sidebar pin");
+  click(buttons(t, "sb-source-pin:telegram")[0]);
+  assert.equal(prefs.visible("telegram"), true);
+  t.view.close();
+});
+
+test("view: a newer platform keeps its own filter and pin instead of an unrelated Other bucket", async () => {
+  const data = [row("cron", { source: "cron" }), row("slack", { source: "slack" }), row("unknown", { source: "new-platform" })];
+  const store = { get: () => '["cron"]', set() {} };
+  const prefs = SB.createSidebarSources({ store, rows: () => data });
+  const t = harness(data, { opts: { sidebarSources: prefs } });
+  t.view.show();
+  await t.tick();
+  assert.ok(buttons(t, "sb-source-pin:cron")[0]);
+  assert.ok(buttons(t, "sb-source-pin:slack")[0]);
+  assert.ok(buttons(t, "sb-source-pin:new-platform")[0]);
+  click(buttons(t, "sb-chip:slack")[0]);
+  assert.deepEqual(rowsIn(t).map((r) => r.dataset.fk), ["sb:default:slack"]);
+  assert.match(textOf(t.doc.chat), /Hidden by sidebar source preferences: 2/);
+  t.view.close();
+});
+
+test("view: hidden count follows live requests when the sidebar rebuilds without another index fetch", async () => {
+  const data = sample();
+  const store = { get: () => '["tui"]', set() {} };
+  const prefs = SB.createSidebarSources({ store, rows: () => data });
+  let pending = false;
+  const t = harness(data, { opts: { sidebarSources: prefs, sidebarNeeds: () => pending } });
+  t.view.show();
+  await t.tick();
+  assert.match(textOf(t.doc.chat), /Hidden by sidebar source preferences: 2/);
+  pending = true;
+  t.view.entry();
+  assert.match(textOf(t.doc.chat), /Hidden by sidebar source preferences: 0/);
+  assert.equal(t.calls.filter((c) => c[0] === "index").length, 1);
+  pending = false;
+  t.view.entry();
+  assert.match(textOf(t.doc.chat), /Hidden by sidebar source preferences: 2/);
+  t.view.close();
+});

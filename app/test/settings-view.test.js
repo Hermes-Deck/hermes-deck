@@ -175,6 +175,88 @@ function mount(over = {}) {
   return { sv, saves, builds, store, ctx, root: () => doc.body.querySelector(".sv"), setSettings: (s) => { settings = s; } };
 }
 
+test("Appearance offers plain agent messages by default and saves bubble through ctx.save", async () => {
+  i18n.extend(require("../renderer/i18n-b"));
+  const { sv, saves, root } = mount();
+  window.PetCatalog = { SKINS: [] };
+  sv.open("desktop");
+  const choice = root().querySelector("#s-agent-messages");
+  assert.ok(choice, "Appearance includes the agent-message control");
+  assert.equal(choice.children.find(el => el.getAttribute("selected") !== null).getAttribute("value"), "plain");
+  choice.value = "bubble";
+  choice.dispatch("change");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(saves.at(-1), { reading: { agentMessages: "bubble" } });
+  assert.match(root().querySelector("#s-agent-messages").closest(".sv-row").text, /Saved/);
+});
+
+test("agent message preview is immediate and a failed save restores the held preference", async () => {
+  const applied = [];
+  let finish;
+  const { sv, root } = mount({ save: () => new Promise(resolve => { finish = resolve; }) });
+  window.PetCatalog = { SKINS: [] };
+  window.DeckReading = { apply: value => applied.push(value) };
+  sv.open("desktop");
+  const choice = root().querySelector("#s-agent-messages");
+  choice.value = "bubble";
+  choice.dispatch("change");
+  assert.equal(applied.at(-1).agentMessages, "bubble");
+  await new Promise(resolve => setImmediate(resolve));
+  finish(false);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(applied.at(-1), undefined, "held settings omitted reading, so default is reapplied");
+  assert.equal(root().querySelector("#s-agent-messages").children.find(el => el.getAttribute("selected") !== null).getAttribute("value"), "plain");
+});
+
+test("Appearance offers bundled message fonts and every integer size from 14 through 20", async () => {
+  const { sv, root, saves } = mount();
+  window.PetCatalog = { SKINS: [] };
+  window.DeckReading = require("../renderer/reading");
+  sv.open("desktop");
+  const font = root().querySelector("#s-message-font");
+  assert.ok(font, "Appearance has a message-font control");
+  assert.deepEqual(font.children.map(option => option.getAttribute("value")), ["newsreader", "geist", "atkinson"]);
+  assert.equal(font.children.find(option => option.getAttribute("selected") !== null).getAttribute("value"), "newsreader");
+  const size = root().querySelector("#s-message-size");
+  assert.ok(size);
+  assert.deepEqual(size.children.map(option => option.getAttribute("value")), ["14", "15", "16", "17", "18", "19", "20"]);
+  assert.equal(size.children.find(option => option.getAttribute("selected") !== null).getAttribute("value"), "17");
+  font.value = "atkinson"; font.dispatch("change");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(saves.at(-1), { reading: { font: "atkinson" } });
+  size.value = "20"; size.dispatch("change");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(saves.at(-1), { reading: { size: 20 } });
+});
+
+test("rapid reading choices preserve the entire live preview and serialize saves", async () => {
+  const Reading = require("../renderer/reading");
+  const applied = [], calls = [];
+  let settings = { desktop: {}, reading: { agentMessages: "plain", font: "newsreader", size: 17 } };
+  const { sv, root } = mount({ settings: () => settings,
+    save: patch => new Promise(resolve => calls.push({ patch, finish() {
+      settings = { ...settings, reading: { ...settings.reading, ...patch.reading } };
+      sv.notify(true, "Saved"); resolve(true);
+    } })) });
+  window.PetCatalog = { SKINS: [] };
+  window.DeckReading = { normalize: Reading.normalize, apply: value => applied.push(Reading.normalize(value)) };
+  sv.open("desktop");
+  const font = root().querySelector("#s-message-font"), size = root().querySelector("#s-message-size");
+  font.value = "geist"; font.dispatch("change");
+  size.value = "20"; size.dispatch("change");
+  assert.deepEqual(applied.at(-1), { agentMessages: "plain", font: "geist", size: 20 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.length, 1, "one save in flight");
+  calls[0].finish();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.length, 2);
+  assert.deepEqual(applied.at(-1), { agentMessages: "plain", font: "geist", size: 20 }, "older save must not undo a newer preview");
+  calls[1].finish();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(root().querySelector("#s-message-font").value, "geist");
+  assert.equal(root().querySelector("#s-message-size").value, "20");
+});
+
 test("the view opens over the chat column with one section shown; Esc closes it", () => {
   const { sv, root } = mount();
   assert.equal(root(), null, "nothing is built before it is opened");

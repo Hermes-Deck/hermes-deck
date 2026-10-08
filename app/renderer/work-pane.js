@@ -74,6 +74,22 @@
     }
     return [...files.values()];
   }
+  /** Agent-written entries from the timestamped live tail; leading partial entries and tool continuations are dropped. */
+  function agentNotes(text) {
+    if (typeof text !== "string") return "";
+    const entries = [];
+    let lines = null;
+    const finish = () => { const body = lines?.join("\n").trim(); if (body) entries.push(body); };
+    for (const line of text.split(/\r?\n/)) {
+      const entry = /^\d{2}:\d{2}:\d{2}\s+([^\s|]+)\s*\| ?(.*)$/.exec(line);
+      if (entry) {
+        finish();
+        lines = ["assistant", "final", "think"].includes(entry[1]) ? [entry[2]] : null;
+      } else if (lines) lines.push(line);
+    }
+    finish();
+    return entries.join("\n\n");
+  }
   function agentRows(agents) {
     const list = agents.filter(a => a && a.id).slice(0, 128), ids = new Set(list.map(a => a.id)), seen = new Set(), out = [];
     function walk(a, depth) {
@@ -417,6 +433,7 @@
         return;
       }
       const message = r.agentMessages.get(a.id) || controlNotice(a), busy = r.busy.has(a.id), tokens = a.tokens;
+      const notes = agentNotes(r.tail?.text);
       const tokenCount = tokens ? (number(tokens.input) || 0) + (number(tokens.output) || 0) + (number(tokens.cache_read) || 0) + (number(tokens.cache_write) || 0) : null;
       const field = h("textarea", { class: "wk-steer-input", "data-hold": "", "aria-label": t("work.steerLabel"), placeholder: t("work.steerPlaceholder"), maxlength: 32000,
         disabled: !canSteer(a) || busy || !deck.bridge?.steerSubagent, oninput: e => { r.drafts.set(a.id, e.target.value); syncControls(r); },
@@ -431,8 +448,10 @@
         r.vanished.has(a.id) ? h("p", { class: "wk-note", role: "status" }, t("work.agentGone")) : null,
         h("p", { class: "wk-task-goal" }, a.goal),
         h("div", { class: "wk-stats" }, stat("work.elapsed", duration(number(a.elapsedS) === null ? null : a.elapsedS * 1000)), stat("work.tokens", tokenCount === null ? "—" : String(tokenCount), false, t("work.tokensHint")), stat("work.calls", String(number(a.toolCount) ?? a.tools?.length ?? 0)), stat("work.agentCost", money(number(a.costUsd), a.costStatus === "estimated"))),
-        h("h3", { class: "wk-label" }, t("work.notes")), r.tail?.error ? h("p", { class: "wk-error", role: "alert" }, r.tail.error) : h("pre", { class: "wk-notes" }, r.tail?.text || t(r.tail?.available === false ? "work.tailEnded" : "work.noNotes")),
-        r.tail?.truncated ? h("p", { class: "wk-note" }, t("work.tailClipped")) : null,
+        notes ? [h("h3", { class: "wk-label" }, t("work.notes")), h("pre", { class: "wk-notes" }, notes)] : null,
+        r.tail?.error ? h("p", { class: "wk-error", role: "alert" }, r.tail.error)
+          : r.tail?.available === false ? h("p", { class: "wk-note" }, t("work.tailEnded")) : null,
+        notes && r.tail?.truncated ? h("p", { class: "wk-note" }, t("work.tailClipped")) : null,
         h("h3", { class: "wk-label" }, t("work.calls")), h("div", { class: "wk-tools" }, (a.tools || []).map(c => toolDisclosure(c, r))),
         h("div", { class: "wk-steer" }, field, h("footer", null, h("small", null, t("work.steerHint")), steer)), stop, note));
     }
@@ -513,7 +532,7 @@
       dispose() { disposed = true; if (timer !== null) clearTimer(timer); off(); doc.removeEventListener("deck-language", refresh); },
     };
   }
-  const api = { planSummary, runStats, timingBars, changedFiles, agentRows, canSteer, steerError, ended, create, createSurfaces };
+  const api = { planSummary, runStats, timingBars, changedFiles, agentNotes, agentRows, canSteer, steerError, ended, create, createSurfaces };
   if (typeof module === "object" && module.exports) module.exports = api;
   else if (root.DeckShell && root.deck) {
     const pane = create({ shell: root.DeckShell, deck: root.deck });

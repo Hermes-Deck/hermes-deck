@@ -30,11 +30,12 @@
 
 /* ---------- Blend editorial transcript ---------- */
 .app .msgs-inner > .msg:not(.out):not(.sysmsg) { align-self: stretch; width: 100%; max-width: none; padding: 0; margin: 4px 0 20px; background: none; border: 0; border-radius: 0; box-shadow: none; }
-.app .msgs-inner .msg:not(.out):not(.sysmsg) > .text { font: 400 17px/1.7 var(--serif); color: var(--t1); letter-spacing: -.003em; font-optical-sizing: auto; }
+.app .msgs-inner .msg:not(.out):not(.sysmsg) > .text { font: 400 var(--message-size, 17px)/var(--message-leading, 1.7) var(--message-font, var(--serif)); color: var(--t1); letter-spacing: -.003em; font-optical-sizing: auto; }
+.app .msgs-inner .msg.out:not(.sysmsg) > .text { font: 400 var(--message-size, 17px)/var(--message-leading, 1.7) var(--message-font, var(--serif)); font-optical-sizing: auto; }
 .app .msgs-inner .msg.out { font-family: var(--sans); background: var(--l2); border: 1px solid var(--line); border-radius: 16px; padding: 10px 14px; max-width: 85%; }
 .app .msg .text pre, .app .msg .text code { font-family: var(--mono); }
-.app .msg .text h1, .app .msg .text h2, .app .msg .text h3, .app .msg .text h4 { font-family: var(--sans); }
-.app .msg .text table { font: 13px/1.6 var(--sans); }
+.app .msg .text h1, .app .msg .text h2, .app .msg .text h3, .app .msg .text h4, .app .msg .text h5, .app .msg .text h6 { font-family: var(--message-font, var(--serif)); }
+.app .msg .text table { font: 400 var(--message-size, 17px)/var(--message-leading, 1.7) var(--message-font, var(--serif)); }
 .app .msg .text pre { font-size: 12px; line-height: 1.65; }
 .app .msg .t { color: var(--t3); font: 10.5px var(--mono); }
 .app .msg-row { max-width: 100%; }

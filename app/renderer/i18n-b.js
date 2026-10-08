@@ -3,6 +3,16 @@
 (function (root) {
   const strings = {
     en: {
+      "conv.messageFont": "Message font",
+      "conv.fontNewsreader": "Newsreader serif",
+      "conv.fontGeist": "Geist sans",
+      "conv.fontAtkinson": "Atkinson Hyperlegible (for tired eyes)",
+      "conv.textSize": "Text size",
+      "conv.textPixels": "{size}px",
+      "conv.agentMessages": "Agent messages",
+      "conv.agentPlain": "Plain",
+      "conv.agentBubble": "Bubble",
+      "conv.readingInvalid": "Invalid reading preference.",
       "conv.running": "Running {tool}",
       "conv.thinking": "Thinking",
       "conv.thought": "Thought for {seconds}s",
@@ -38,6 +48,16 @@
       "conv.timeline.approval": "Needs you"
     },
     tr: {
+      "conv.messageFont": "Mesaj yazı tipi",
+      "conv.fontNewsreader": "Newsreader serif",
+      "conv.fontGeist": "Geist sans",
+      "conv.fontAtkinson": "Atkinson Hyperlegible (yorgun gözler için)",
+      "conv.textSize": "Metin boyutu",
+      "conv.textPixels": "{size}px",
+      "conv.agentMessages": "Ajan mesajları",
+      "conv.agentPlain": "Düz",
+      "conv.agentBubble": "Baloncuk",
+      "conv.readingInvalid": "Geçersiz okuma tercihi.",
       "conv.running": "Çalışıyor: {tool}",
       "conv.thinking": "Düşünüyor",
       "conv.thought": "{seconds} sn düşündü",

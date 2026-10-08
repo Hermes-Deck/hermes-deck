@@ -14,11 +14,11 @@
   // ---------------------------------------------------------------- pure helpers
   const KINDS = ["inspector", "work"];
   /** Tab order per right-slot kind; ids a module adds later go after these, in registration order. */
-  const ORDER = { inspector: ["session", "activity", "usage"], work: ["run", "plan", "diff", "agents", "browser", "screen"] };
+  const ORDER = { inspector: ["session", "usage"], work: ["run", "plan", "diff", "agents", "browser", "screen"] };
   const DEFAULT_TAB = { inspector: "session", work: "run" };
   /** Right-panel tab ids from before the Blend shell (persisted, --tab=, old callers) -> [kind, tab]. */
   const LEGACY = {
-    activity: ["inspector", "activity"], fleet: ["inspector", "usage"], tokens: ["inspector", "usage"],
+    activity: ["inspector", "session"], fleet: ["inspector", "usage"], tokens: ["inspector", "usage"],
     workspace: ["work", "browser"], screen: ["work", "screen"],
   };
   for (const k of KINDS) for (const id of ORDER[k]) LEGACY[id] = LEGACY[id] || [k, id];

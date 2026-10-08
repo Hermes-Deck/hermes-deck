@@ -59,6 +59,9 @@
 .sv-ctl input:focus-visible, .sv-ctl select:focus-visible, .sv-legacy .field input:focus-visible, .sv-legacy .field select:focus-visible { outline: 2px solid var(--patina); outline-offset: 0; border-color: transparent; }
 .sv-ctl select:disabled { cursor: default; }
 
+/* Reading uses a short numeric select; keep it compact in narrow Appearance rows. */
+.sv-ctl select.sv-reading-size { width: 96px; }
+
 /* switches: label left, switch right */
 .sv .toggle.sv-row, .sv-legacy .toggle { display: flex; flex-direction: row-reverse; justify-content: space-between; align-items: center; margin: 0; }
 .sv .toggle.sv-row input, .sv-legacy .toggle input { left: auto; right: 14px; top: 50%; transform: translateY(-50%); }

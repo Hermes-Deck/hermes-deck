@@ -18,7 +18,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
 
   // ---------------------------------------------------------------- pure helpers
 
-  /** One of SOURCES for a Hermes `source` string; anything unknown is "other". */
+  /** One of SOURCES for display tokens; unknown source ids use the neutral Other styling. */
   function sourceKey(source) {
     const s = String(source || "").trim().toLowerCase();
     return SOURCES.includes(s) ? s : "other";
@@ -40,7 +40,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     const words = String(q).toLowerCase().split(/\s+/).filter(Boolean);
     return rows.filter((r) => {
       if (profile && r.profile !== profile) return false;
-      if (sources && sources.size && !sources.has(sourceKey(r.source))) return false;
+      if (sources && sources.size && !sources.has(sidebarSourceKey(r.source))) return false;
       if (!words.length) return true;
       const hay = `${r.title}\n${r.preview}\n${r.lastPreview || ""}\n${r.id}`.toLowerCase();
       return words.every((w) => hay.includes(w));
@@ -50,8 +50,68 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   /** How many rows each platform has (before the platform filter, so the chips stay meaningful). */
   function countBySource(rows) {
     const out = new Map();
-    for (const r of rows) out.set(sourceKey(r.source), (out.get(sourceKey(r.source)) || 0) + 1);
+    for (const r of rows) out.set(sidebarSourceKey(r.source), (out.get(sidebarSourceKey(r.source)) || 0) + 1);
     return out;
+  }
+
+  // Sidebar preferences use actual source ids, including platforms newer than this Deck build.
+  const sidebarSourceKey = (source) => String(source || "").trim().toLowerCase() || "other";
+
+  /** No saved choice means the legacy top-five chips, but no source hiding. */
+  function createSidebarSources({ store, rows, changed = () => {} }) {
+    let pinned = null;
+    try {
+      const saved = JSON.parse(store.get("deck.sourcePins"));
+      if (Array.isArray(saved) && saved.every((v) => typeof v === "string" && v.trim())) pinned = new Set(saved.map(sidebarSourceKey));
+    } catch { /* Invalid local preferences fall back to the untouched behavior. */ }
+    const chips = () => {
+      if (pinned !== null) return [...pinned];
+      const counts = new Map();
+      for (const r of rows()) {
+        if (r.parent || r.source === "subagent") continue;
+        const key = sidebarSourceKey(r.source);
+        if (!r.source) continue;
+        counts.set(key, (counts.get(key) || 0) + 1);
+      }
+      return [...counts].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([key]) => key);
+    };
+    const toggle = (source) => {
+      if (pinned === null) pinned = new Set(chips());
+      const key = sidebarSourceKey(source);
+      if (pinned.has(key)) pinned.delete(key);
+      else pinned.add(key);
+      store.set("deck.sourcePins", JSON.stringify([...pinned]));
+      changed();
+    };
+    return { chips, toggle, chosen: () => pinned !== null, visible: (source) => pinned === null || pinned.has(sidebarSourceKey(source)) };
+  }
+
+  /** Children inherit their root's source. Needs-you rows and their ancestors always remain visible. */
+  function sidebarVisibility(rows, prefs, needs = () => false) {
+    const id = (r) => `${r.profile || "default"}\u0000${r.sid || r.id}`;
+    const parentId = (r) => `${r.profile || "default"}\u0000${r.parent}`;
+    const byId = new Map(rows.map((r) => [id(r), r]));
+    const visible = new Set();
+    for (const r of rows) {
+      let root = r;
+      const seen = new Set([id(r)]);
+      while (root.parent && byId.has(parentId(root)) && !seen.has(parentId(root))) {
+        root = byId.get(parentId(root));
+        seen.add(id(root));
+      }
+      if (prefs.visible(root.source)) visible.add(id(r));
+    }
+    for (const r of rows) {
+      if (!needs(r) && r.state !== "approval" && r.state !== "question") continue;
+      let n = r;
+      const seen = new Set();
+      while (n && !seen.has(id(n))) {
+        seen.add(id(n));
+        visible.add(id(n));
+        n = n.parent ? byId.get(parentId(n)) : null;
+      }
+    }
+    return (r) => visible.has(id(r));
   }
 
   const pad = (n) => String(n).padStart(2, "0");
@@ -196,6 +256,16 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       return s;
     };
 
+    const pinIcon = () => {
+      const NS = "http://www.w3.org/2000/svg";
+      const icon = document.createElementNS(NS, "svg");
+      for (const [k, v] of Object.entries({ viewBox: "0 0 16 16", width: "13", height: "13", fill: "none", stroke: "currentColor", "stroke-width": "1.3", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" })) icon.setAttribute(k, v);
+      const line = document.createElementNS(NS, "path");
+      line.setAttribute("d", "M6 2h4l-.5 4 2 2v1h-7V8l2-2L6 2Zm2 7v5");
+      icon.appendChild(line);
+      return icon;
+    };
+
     // ------------------------------------------------------------ rendering
 
     function view() {
@@ -223,10 +293,23 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     function renderChips() {
       if (!root) return;
       const counts = countBySource(view().base);
-      const chips = SOURCES.filter((s) => counts.get(s) || B.sources.has(s)).map((s) =>
-        h("button", { class: `sb-chip src-${s}`, type: "button", "aria-pressed": B.sources.has(s) ? "true" : "false", dataset: { fk: `sb-chip:${s}` }, onclick: () => toggleSource(s) },
-          h("span", { class: "sb-dot", "aria-hidden": "true" }), L(`src.${s}`), h("span", { class: "sb-n" }, String(counts.get(s) || 0)))
-      );
+      const pins = d.sidebarSources ? new Set(d.sidebarSources.chips()) : null;
+      const allCounts = countBySource(allRows());
+      const available = new Set([...SOURCES, ...allCounts.keys(), ...B.sources, ...(pins || [])]);
+      const chips = [...available].filter((s) => allCounts.has(s) || B.sources.has(s) || (pins && pins.has(s))).map((s) => {
+        const filter = h("button", { class: `sb-chip src-${sourceKey(s)}`, type: "button", "aria-pressed": B.sources.has(s) ? "true" : "false", dataset: { fk: `sb-chip:${s}` }, onclick: () => toggleSource(s) },
+          h("span", { class: "sb-dot", "aria-hidden": "true" }), sourceName(s), h("span", { class: "sb-n" }, String(counts.get(s) || 0)));
+        if (!pins) return filter;
+        const fk = `sb-source-pin:${s}`;
+        const label = L("showInSidebar", { source: sourceName(s) });
+        const pin = h("button", { class: "sb-source-pin", type: "button", title: label, "aria-label": label, "aria-pressed": pins.has(s) ? "true" : "false", dataset: { fk }, onclick: () => {
+          d.sidebarSources.toggle(s);
+          renderChips();
+          renderNotes();
+          for (const group of parts.chips.children) for (const button of group.children) if (button.dataset && button.dataset.fk === fk) button.focus();
+        } }, pinIcon());
+        return h("span", { class: "sb-source-control" }, filter, pin);
+      });
       parts.chips.replaceChildren(...chips);
       parts.chips.hidden = !chips.length;
       for (const b of parts.views.children) b.setAttribute("aria-pressed", b.dataset.fk === `sb-view:${B.view}` ? "true" : "false");
@@ -235,6 +318,14 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     function renderNotes() {
       const data = dataNow();
       const notes = [];
+      if (d.sidebarSources) {
+        notes.push(h("p", { class: "sb-note sb-sidebar-hint" }, L(d.sidebarSources.chosen() ? "sidebarHint" : "sidebarAuto")));
+        if (data) {
+          const keep = sidebarVisibility(allRows(), d.sidebarSources, d.sidebarNeeds);
+          const hidden = allRows().filter((r) => !keep(r)).length;
+          notes.push(h("p", { class: "sb-note", "aria-live": "polite" }, L("sidebarHidden", { n: hidden })));
+        }
+      }
       if (B.error) notes.push(h("p", { class: "sb-note bad", role: "alert" }, L("loadError", { e: B.error })));
       if (data) {
         const failed = data.profiles.filter((p) => !p.ok).map((p) => p.name);
@@ -785,6 +876,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     /** The "All sessions" row for the top of the rail (rebuilt on every rail render). */
     function entry() {
       if (B.open && !hermesMode()) close(); // rebuilt on every rail render: a switch to Telegram closes the overlay
+      if (B.open) renderNotes(); // Requests may change independently of the cached session index.
       const total = B.data.active ? B.data.active.rows.length : 0;
       entryEl = h("button", { class: "row sb-entry", type: "button", title: L("entryHint"), "aria-pressed": B.open ? "true" : "false", dataset: { fk: "sb-entry" }, onclick: () => (B.open ? close() : show()) },
         h("span", { class: "sb-entry-ico", "aria-hidden": "true" }, listIcon()),
@@ -818,7 +910,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     return { entry, show, close, beforeSend, adopt, isOpen: () => B.open, readOnly: (sid) => copyOnly.has(sid), onStatus: () => { if (B.open) load(false); } };
   }
 
-  const api = { create, SOURCES, sourceKey, needsCopy, sortRows, filterRows, countBySource, groupRows, moveIndex, rowKey };
+  const api = { create, SOURCES, sourceKey, sidebarSourceKey, createSidebarSources, sidebarVisibility, needsCopy, sortRows, filterRows, countBySource, groupRows, moveIndex, rowKey };
   if (typeof window !== "undefined") window.DeckSessions = Object.freeze(api);
   if (typeof module === "object" && module.exports) module.exports = api; // Node unit tests
 })();

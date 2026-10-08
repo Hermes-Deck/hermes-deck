@@ -25,7 +25,7 @@
 .app .livebar.ph-approval, .app .livebar.ph-question { display: none; }
 .conv-queue { padding: 10px 14px 0; max-height: 140px; overflow: auto; }
 .conv-queue .msg.outbox { max-width: 100%; width: 100%; margin: 0 0 8px; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--line2); background: var(--l1); opacity: 1; }
-.conv-queue .msg.outbox > .text { font: 12px/1.5 var(--sans); max-height: 3em; overflow: auto; white-space: pre-wrap; }
+.conv-queue .msg.outbox > .text { font: 400 var(--message-size, 17px)/var(--message-leading, 1.7) var(--message-font, var(--serif)); max-height: calc(2em * var(--message-leading, 1.7)); overflow: auto; white-space: pre-wrap; }
 .conv-queue .msg.outbox.failed { border-color: var(--red); }
 .conv-queue .outbox-meta .linkbtn { font: 11px var(--sans); color: var(--t2); }
 .conv-queue .outbox-meta .linkbtn:first-of-type { color: var(--brass); }

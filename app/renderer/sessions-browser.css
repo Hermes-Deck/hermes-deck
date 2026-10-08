@@ -36,6 +36,14 @@ body.rail-compact .sb-entry .who, body.rail-compact .sb-entry .meta { display: n
 .sb-chip[aria-pressed="true"] { background: var(--slate-2); color: var(--marble); border-color: var(--patina-soft); box-shadow: inset 0 0 0 1px var(--patina-soft); }
 .sb-chip:focus-visible, .sb-more:focus-visible, .sb-iconbtn:focus-visible { outline: 2px solid var(--patina); outline-offset: 1px; }
 .sb-chip .sb-n { font: 10.5px var(--mono); color: var(--vein-text); font-variant-numeric: tabular-nums; }
+/* Separate buttons: filtering All sessions and choosing sidebar visibility are independent actions. */
+.sb-source-control { display: inline-flex; align-items: stretch; max-width: 100%; }
+.sb-source-control .sb-chip { border-radius: 12px 0 0 12px; min-width: 0; }
+.sb-source-pin { display: grid; place-items: center; flex: none; width: 28px; min-height: 28px; padding: 0; border: 1px solid var(--line2); border-left: 0; border-radius: 0 12px 12px 0; background: none; color: var(--t4); cursor: pointer; }
+.sb-source-pin:hover { background: var(--lift); color: var(--t2); }
+.sb-source-pin[aria-pressed="true"] { background: var(--brass-a); color: var(--brass); }
+.sb-source-pin:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+.sb-sidebar-hint { padding: 4px 0; border: 0; background: none; color: var(--t3); line-height: 1.5; }
 
 /* platform dots: one hue per surface, drawn from the existing palette */
 .sb-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--vein-text); flex: none; }

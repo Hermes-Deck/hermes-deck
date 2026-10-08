@@ -167,12 +167,13 @@ test("Agents detail reads tail, renders tool disclosure and steers once through 
     model: "model-b", effort: "high", elapsedS: 12, tokens: { input: 40, output: 10 }, costUsd: 0.01,
     tools: [{ call: "tool-a", tool: "terminal", status: "ok", result: "Child output" }] };
   const b = harness({ subagents: async () => ({ subagents: [child], failed: [] }),
-    subagentTail: async () => ({ available: true, text: "Notes so far", detail: child }),
+    subagentTail: async () => ({ available: true, text: "12:34:50 tool     | -> read_file({})\n12:34:51 result   | raw tool log\n12:34:56 assistant| Notes so far", detail: child }),
     steerSubagent: async (...args) => { calls.push(args); return { status: "queued" }; } });
   b.shell.openRight("work", "agents"); await b.settle();
   b.nodes().find(n => n.tag === "button" && n.attrs["data-agent"] === child.id).attrs.onclick(); await b.settle();
   assert.match(b.text(), /<script>task<\/script>/); assert.match(b.text(), /model-b.*high/); assert.match(b.text(), /Notes so far/);
   assert.ok(b.nodes().find(n => n.tag === "details")); assert.match(b.text(), /Child output/);
+  assert.doesNotMatch(b.text(), /12:34:|raw tool log|-> read_file/);
   const field = b.nodes().find(n => n.tag === "textarea"); field.value = "Check edge cases";
   field.attrs.oninput({ target: field });
   const e = { key: "Enter", ctrlKey: true, preventDefault() {} };
@@ -180,6 +181,32 @@ test("Agents detail reads tail, renders tool disclosure and steers once through 
   assert.equal(calls.length, 1); assert.equal(calls[0][0], "session-a"); assert.equal(calls[0][1], "child-a");
   assert.equal(calls[0][2], "Check edge cases"); assert.match(b.text(), /Queued; not yet delivered/);
   b.app.dispose(); assert.equal(b.timers.size, 0);
+});
+
+test("Agents omit Notes entirely for tool-only tails, while keeping their tool disclosures", async () => {
+  const child = { id: "notes-child", goal: "Task", status: "running", acceptingSteer: true,
+    tools: [{ call: "t", tool: "read_file", status: "ok", result: "Tool output" }] };
+  const b = harness({ subagents: async () => ({ subagents: [child], failed: [] }), subagentTail: async () => ({ available: true, truncated: true,
+    text: '12:34:56 tool     | -> read_file({})\n12:34:57 result   | read_file ok 0.1s: raw tool log\nresult continuation' }) });
+  b.shell.openRight("work", "agents"); await b.settle(); b.app.openAgent(child.id); await b.settle();
+  assert.doesNotMatch(b.text(), /Notes so far|No live output|Only the latest output|raw tool log|result continuation/);
+  assert.equal(b.nodes().filter(n => n.attrs.class === "wk-notes").length, 0);
+  assert.match(b.text(), /Tool output/);
+  b.app.dispose();
+});
+
+test("Agents with no notes still show relevant tail-ended and read-error notices", async () => {
+  const child = { id: "notes-child", goal: "Task", status: "running", tools: [] };
+  for (const unavailable of [true, false]) {
+    const b = harness({ subagents: async () => ({ subagents: [child], failed: [] }), subagentTail: async () => {
+      if (!unavailable) throw Error("Tail read refused");
+      return { available: false, text: "" };
+    } });
+    b.shell.openRight("work", "agents"); await b.settle(); b.app.openAgent(child.id); await b.settle();
+    assert.doesNotMatch(b.text(), /Notes so far|No live output was published/);
+    assert.match(b.text(), unavailable ? /Live output is unavailable/ : /Tail read refused/);
+    b.app.dispose();
+  }
 });
 
 test("Agents mutation failures stay inline, stop is not replayed and ended children reject steer", async () => {
@@ -208,8 +235,8 @@ test("Agents polls only while its tab is open and stale tails never replace anot
   await b.settle(); assert.equal(reads, 0);
   b.shell.openRight("work", "agents"); await b.settle(); assert.equal(reads, 1);
   b.app.openAgent("a"); await b.settle(); b.app.openAgent("b"); await b.settle();
-  tails.find(x => x.id === "a").resolve({ available: true, text: "Old tail" });
-  tails.find(x => x.id === "b").resolve({ available: true, text: "New tail" });
+  tails.find(x => x.id === "a").resolve({ available: true, text: "12:34:56 assistant| Old tail" });
+  tails.find(x => x.id === "b").resolve({ available: true, text: "12:34:56 assistant| New tail" });
   await b.settle(); assert.match(b.text(), /New tail/); assert.doesNotMatch(b.text(), /Old tail/);
   b.shell.openRight("work", "run"); await b.app.poll(); assert.equal(reads, 1); b.app.dispose();
 });
@@ -329,12 +356,12 @@ test("a slow plan read never holds resolved Run tools or their live dot", async 
 
 test("a child that leaves the tree stays ended even when a late tail reports it running", async () => {
   let agents = [{ id: "a", goal: "Task", status: "running", acceptingSteer: true, tools: [] }];
-  let tail = { available: true, text: "Early" };
+  let tail = { available: true, text: "12:34:56 assistant| Early" };
   const b = harness({ subagents: async () => ({ subagents: agents, failed: [] }), subagentTail: async () => tail,
     steerSubagent: async () => ({ status: "queued" }), interruptSubagent: async () => ({ found: true }) });
   b.shell.openRight("work", "agents"); await b.settle(); b.app.openAgent("a"); await b.settle();
   assert.equal(b.nodes().find(n => n.tag === "textarea").attrs.disabled, false);
-  agents = []; tail = { available: true, text: "Late notes", detail: { id: "a", goal: "Task", status: "running", acceptingSteer: true, elapsedS: 9, tools: [] } };
+  agents = []; tail = { available: true, text: "12:34:56 assistant| Late notes", detail: { id: "a", goal: "Task", status: "running", acceptingSteer: true, elapsedS: 9, tools: [] } };
   await b.app.poll(); await b.settle();
   assert.match(b.text(), /Late notes/); assert.match(b.text(), /no longer in the live list/);
   assert.equal(b.nodes().find(n => n.tag === "textarea").attrs.disabled, true);
@@ -411,7 +438,7 @@ test("unknown elapsed reads as a dash and the token figure says what it counts",
 
 test("fleet child selection opens Agents and the matching child once the tree has it", async () => {
   let agents = [];
-  const b = harness({ subagents: async () => ({ subagents: agents, failed: [] }), subagentTail: async () => ({ available: true, text: "Child notes" }),
+  const b = harness({ subagents: async () => ({ subagents: agents, failed: [] }), subagentTail: async () => ({ available: true, text: "12:34:56 assistant| Child notes" }),
     steerSubagent: async () => ({ status: "queued" }) });
   b.doc.dispatchEvent({ type: "deck-agent-select", detail: { sid: "session-a", profile: "default", childSid: "child-stored", subagentId: null } });
   await b.settle();

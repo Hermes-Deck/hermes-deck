@@ -1268,8 +1268,9 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
    * once at boot, after every const of this file exists: registering an open tab renders it at once.
    */
   function registerShellTabs() {
-    SH.registerInspectorTab("session", { weak: true, title: () => i18nText("shell.tab.session"), render: paneTab((kids) => paneSession(kids)) });
-    SH.registerInspectorTab("activity", { weak: true, title: () => i18nText("A0232"), render: paneTab((kids) => paneActivity(kids)) });
+    // Session holds the chat's facts and controls, then (Telegram mode) its relay sessions and what runs elsewhere.
+    // Sub-agents live in the Work pane only, so nothing is shown twice.
+    SH.registerInspectorTab("session", { weak: true, title: () => i18nText("shell.tab.session"), render: paneTab((kids) => paneSessionTab(kids)) });
     SH.registerInspectorTab("usage", { weak: true, title: () => i18nText("shell.tab.usage"), render: paneTab((kids) => { paneFleet(kids); paneTokens(kids); }) });
     SH.registerWorkTab("browser", { weak: true, title: () => i18nText("shell.tab.browser"),
       render: mountOnce(workspace, () => h("div", { class: "later-pane" }, h("h3", null, i18nNode("U0476")), i18nNode("U0477"))) });
@@ -1383,14 +1384,10 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     }
   }
 
-  function paneActivity(kids) {
-    if (!AV) {
-      const running = AG && AG.runningBlock(); // B2: everything running right now, across agents
-      if (running) kids.push(running);
-      return paneActivityMain(kids);
-    }
-    paneActivityMain(kids);
-    // what is running elsewhere comes after this chat's own tree, and never repeats an agent already shown above
+  function paneSessionTab(kids) {
+    paneSession(kids);
+    if (!hermesMode() && S.sel) paneActivityMain(kids); // a Telegram chat's sessions are only listed here
+    if (!AV) return;
     const shown = new Set();
     const roots = hermesMode() ? [S.relay.sessions.get(H.sel)] : S.sel && scopeOf(S.sel) ? sessionsFor(S.sel) : [];
     for (const s of roots) if (s) AV.descendants(s, shown);
@@ -2219,8 +2216,22 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   RG.bindUnload(window);
 
   // All sessions (sessions-browser.js): every stored session of every platform and profile, with search and bulk actions.
+  const sidebarSources = window.DeckSessions
+    ? window.DeckSessions.createSidebarSources({ store, rows: () => [...H.nodes.values()], changed: () => {
+      if (!sidebarSources.chips().includes(rail.source)) {
+        rail.source = "all";
+        store.set("deck.source", "all");
+      }
+      mark("rail", true);
+    } })
+    : null;
+  const sidebarNeeds = (r) => {
+    const sid = r.sid || r.id;
+    const n = H.nodes.get(sid);
+    return H.requests.some((ask) => ask.sid === sid) || !!(n && (n.state === "approval" || n.state === "question"));
+  };
   const SB = window.DeckSessions
-    ? window.DeckSessions.create({ h, deck, mark, ago, cleanErr, nodeLive, bridgeOpen, hermesMode, hermesOpen, hermesForget, MV, H: () => H, beforeOpen: () => RG.leave(H.sel) })
+    ? window.DeckSessions.create({ h, deck, mark, ago, cleanErr, nodeLive, bridgeOpen, hermesMode, hermesOpen, hermesForget, MV, H: () => H, sidebarSources, sidebarNeeds, beforeOpen: () => RG.leave(H.sel) })
     : null;
   /** The All sessions browser for code above this point (the shell's search button, the crumb's read-only chip). */
   function allSessionsView() {
@@ -2410,7 +2421,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     const busy = (n) => nodeLive(n) || H.requests.some((r) => r.sid === n.sid);
     const rank = (n) => (H.rank.has(n.sid) ? H.rank.get(n.sid) : 0);
     const order = (a, b) => (busy(a) !== busy(b) ? (busy(a) ? -1 : 1) : busy(a) ? rank(a) - rank(b) : (b.updatedAt || 0) - (a.updatedAt || 0) || rank(a) - rank(b));
-    const stale = (n) => !nodeLive(n) && n.sid !== H.sel && !H.requests.some((r) => r.sid === n.sid) && now - (n.updatedAt || n.terminalAt || 0) > SUB_FOLD_AFTER_S;
+    const stale = (n) => !nodeLive(n) && n.state !== "approval" && n.state !== "question" && n.sid !== H.sel && !H.requests.some((r) => r.sid === n.sid) && now - (n.updatedAt || n.terminalAt || 0) > SUB_FOLD_AFTER_S;
     return names.map((profile) => {
       const list = byProfile.get(profile).sort(order);
       const ids = new Set(list.map((n) => n.sid));
@@ -2457,8 +2468,8 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     agent: null, // a profile picked in the Agents list
     pins: new Set((store.get("deck.pins") || "").split(",").filter(Boolean)),
   };
-  const SOURCE_NAMES = { tui: "TUI", cli: "CLI", api: "API", deck: "Deck", telegram: "Telegram", cron: "Cron", discord: "Discord", slack: "Slack" };
-  const sourceLabel = (v) => SOURCE_NAMES[v] || (v ? v.charAt(0).toUpperCase() + v.slice(1) : "");
+  const SOURCE_NAMES = { tui: "TUI", cli: "CLI", api: "API", deck: "Deck", telegram: "Telegram", cron: "Cron", discord: "Discord", slack: "Slack", webui: "WebUI", ios: "iOS" };
+  const sourceLabel = (v) => SOURCE_NAMES[v] || (["desktop", "other"].includes(v) ? i18nText(`sessions.src.${v}`) : v ? v.charAt(0).toUpperCase() + v.slice(1) : "");
   /** Per session: the plain facts the smart filters and the agents list read (shell.js matchFilter). */
   function sessionFacts() {
     const asks = new Map();
@@ -2482,12 +2493,16 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
    * when one of its descendants does (tree context). Parent links can form a cycle: each sid is decided once.
    */
   function railFilter(facts) {
-    if (rail.view === "all" && rail.source === "all" && !rail.agent) return null;
+    if (rail.view === "all" && rail.source === "all" && !rail.agent && (!sidebarSources || !sidebarSources.chosen())) return null;
+    const visible = sidebarSources ? window.DeckSessions.sidebarVisibility([...H.nodes.values()], sidebarSources, (n) => !!facts.get(n.sid)?.needs) : () => true;
     const pass = (x) => {
       const f = facts.get(x.sid);
-      if (!f) return false;
+      if (!f || !visible(x)) return false;
+      // Source and smart filters never suppress a session waiting for an answer.
+      if (f.needs || x.state === "approval" || x.state === "question") return true;
       if (rail.agent && f.profile !== rail.agent) return false;
-      if (rail.source !== "all" && !isSubagent(x) && f.source !== rail.source) return false;
+      const source = window.DeckSessions ? window.DeckSessions.sidebarSourceKey(f.source) : f.source;
+      if (rail.source !== "all" && !isSubagent(x) && source !== rail.source) return false;
       return SH.matchFilter(rail.view, f);
     };
     const kids = new Map();
@@ -2552,16 +2567,14 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       })),
     ];
   }
-  /** Source chips: All plus the sources the list actually holds (Deck, Telegram, TUI, Cron, ...). */
+  /** Source chips follow local choices; untouched viewers retain the top-five behavior. */
   function sourceChips() {
-    const seen = new Map();
-    for (const n of H.nodes.values()) {
-      const v = String(n.source || "").toLowerCase();
-      if (v && !isSubagent(n)) seen.set(v, (seen.get(v) || 0) + 1);
+    const list = sidebarSources ? sidebarSources.chips() : [];
+    if (rail.source !== "all" && !list.includes(rail.source)) {
+      rail.source = "all";
+      store.set("deck.source", "all");
     }
-    if (rail.source !== "all" && !seen.has(rail.source)) rail.source = "all";
-    const list = [...seen.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([v]) => v);
-    if (list.length < 2 && rail.source === "all") return null;
+    if ((!sidebarSources || !sidebarSources.chosen()) && list.length < 2 && rail.source === "all") return null;
     const pick = (v) => { rail.source = v; store.set("deck.source", v); mark("rail", true); };
     return h("div", { class: "sh-chips", role: "group", "aria-label": i18nText("shell.sourcesLabel") },
       h("button", { type: "button", class: `sh-srcchip${rail.source === "all" ? " on" : ""}`, "aria-pressed": rail.source === "all" ? "true" : "false", dataset: { fk: "src:all" }, onclick: () => pick("all") }, i18nNode("shell.source.all")),
@@ -2593,7 +2606,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     const groups = hermesGroups(undefined, railFilter(facts));
     if (!groups.length) {
       kids.push(sectionHead("h:none", i18nText("U0580"), 0));
-      const filtered = rail.view !== "all" || rail.source !== "all" || rail.agent;
+      const filtered = rail.view !== "all" || rail.source !== "all" || rail.agent || (sidebarSources && sidebarSources.chosen());
       kids.push(h("p", { class: "rail-note" }, filtered && H.nodes.size ? i18nNode("shell.filterEmpty") : bridgeOpen() ? i18nNode("U0581") : hermesStatusText()));
     }
     if (!groups.length && bridgeOpen() && !layout.compact) kids.push(newSessionRow("default"));

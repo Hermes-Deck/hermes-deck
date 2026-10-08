@@ -380,6 +380,40 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
       kids.push(h("div", { class: "sv-legacy" }, box), hostGroup("hermes"));
     };
 
+    // Reading saves share ctx.save with all other settings. Serialize rapid choices so an older
+    // reply cannot undo the newest preview; always reconcile to S.settings after the final save.
+    let readingPending = 0, readingSave = Promise.resolve(), readingDraft = null;
+    const syncReading = () => { if (!readingPending) window.DeckReading?.apply(st().reading); };
+    function paintReading() {
+      const box = V.built.get("desktop");
+      const values = window.DeckReading?.normalize?.(st().reading) || { agentMessages: st().reading?.agentMessages === "bubble" ? "bubble" : "plain" };
+      for (const [key, value] of Object.entries(values)) {
+        const choice = box?.querySelector(`[data-fk="reading:${key}"]`);
+        if (!choice) continue;
+        choice.value = String(value);
+        for (const option of choice.children) {
+          option.selected = option.getAttribute("value") === String(value);
+          if (option.selected) option.setAttribute("selected", "");
+          else option.removeAttribute("selected");
+        }
+      }
+    }
+    function changeReading(key, value) {
+      readingPending++;
+      const before = readingDraft || st().reading || {};
+      readingDraft = { ...before, [key]: value };
+      window.DeckReading?.apply(readingDraft);
+      readingSave = readingSave.catch(() => {}).then(() => ctx.save({ reading: { [key]: value } }, T("set.saved"))).finally(() => {
+        readingPending--;
+        if (!readingPending) {
+          readingDraft = null;
+          syncReading();
+          paintReading();
+        }
+      });
+      return readingSave;
+    }
+
     BUILDERS.desktop = (kids) => {
       const d = st().desktop || {};
       const info = ctx.deskInfo() || {};
@@ -416,7 +450,23 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
           onchange: (e) => ctx.save({ wallpaper: { [mode]: { dim: Number(e.target.value) } } }, T("wall.dimSaved")) }) : null;
         return row(h("span", null, label), h("span", { class: "sv-inline" }, dim, choice, pick), { id: `s-wall-${mode}`, title: T("wall.help") });
       };
-      kids.push(group(node("set.appearance"), row(node("set.theme"), theme, { id: "s-theme" })));
+      const prefs = window.DeckReading?.normalize?.(readingDraft || st().reading) || { agentMessages: st().reading?.agentMessages === "bubble" ? "bubble" : "plain", font: "newsreader", size: 17 };
+      const agentMessages = prefs.agentMessages;
+      const agentChoice = h("select", { id: "s-agent-messages", dataset: { fk: "reading:agentMessages" },
+        onchange: (e) => changeReading("agentMessages", e.target.value) },
+        [["plain", T("conv.agentPlain")], ["bubble", T("conv.agentBubble")]]
+          .map(([value, label]) => h("option", { value, selected: value === agentMessages ? true : null }, label)));
+      const fontChoice = h("select", { id: "s-message-font", dataset: { fk: "reading:font" },
+        onchange: (e) => changeReading("font", e.target.value) },
+        [["newsreader", T("conv.fontNewsreader")], ["geist", T("conv.fontGeist")], ["atkinson", T("conv.fontAtkinson")]]
+          .map(([value, label]) => h("option", { value, selected: value === prefs.font ? true : null }, label)));
+      const sizeChoice = h("select", { id: "s-message-size", class: "sv-reading-size", dataset: { fk: "reading:size" },
+        onchange: (e) => changeReading("size", Number(e.target.value)) },
+        [14, 15, 16, 17, 18, 19, 20].map(value => h("option", { value: String(value), selected: value === prefs.size ? true : null }, T("conv.textPixels", { size: value }))));
+      kids.push(group(node("set.appearance"), row(node("set.theme"), theme, { id: "s-theme" }),
+        row(node("conv.agentMessages"), agentChoice, { id: "s-agent-messages" }),
+        row(node("conv.messageFont"), fontChoice, { id: "s-message-font" }),
+        row(node("conv.textSize"), sizeChoice, { id: "s-message-size" })));
       kids.push(group(node("wall.label"), ...["telegram", "sessions", "bots"].map(wallRow)));
       kids.push(group(node("A0186"),
         flag("notifications", node("A0186"), { title: winNote }),
@@ -769,11 +819,12 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
 
     /** Settings changed elsewhere (a save, the tray, account data): rebuild what is built, never under typing. */
     function refresh({ force = false } = {}) {
+      syncReading();
       if (!root) return;
       renderNav();
       if (ctx.hasSection && !ctx.hasSection(V.section) && V.open) show("general");
       for (const [id, box] of V.built) {
-        if (!force && (!V.open || id !== V.section || typing(box))) V.stale.add(id);
+        if ((id === "desktop" && readingPending) || (!force && (!V.open || id !== V.section || typing(box)))) V.stale.add(id);
         else rebuild(id);
       }
     }
@@ -786,7 +837,7 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
       // to the stored value, but leaves a text form as typed so the user can fix it (a password is not retyped).
       const changed = find(k);
       const isForm = !!(changed && (changed.closest(".form-actions") || (changed.tagName === "INPUT" && !["checkbox", "radio"].includes(changed.type))));
-      if (ok && k && V.open && V.built.has(k.section) && !typing(V.built.get(k.section))) rebuild(k.section, { keepTyped: false });
+      if (ok && !(k?.section === "desktop" && readingPending) && k && V.open && V.built.has(k.section) && !typing(V.built.get(k.section))) rebuild(k.section, { keepTyped: false });
       if (ok || !isForm) refresh();
       const el = find(k);
       const host = (el && el.closest(".sv-row, .toggle, .field, .form-actions")) || null;

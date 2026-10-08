@@ -43,7 +43,7 @@ test("right slot: one kind at a time, each kind remembers its tab, toggle closes
 });
 
 test("old right-panel tab ids route into the new slot", () => {
-  assert.deepEqual(SH.legacyTab("activity"), ["inspector", "activity"]);
+  assert.deepEqual(SH.legacyTab("activity"), ["inspector", "session"]);
   assert.deepEqual(SH.legacyTab("fleet"), ["inspector", "usage"], "Fleet moved into Usage");
   assert.deepEqual(SH.legacyTab("tokens"), ["inspector", "usage"], "Token moved into Usage");
   assert.deepEqual(SH.legacyTab("workspace"), ["work", "browser"]);
@@ -327,6 +327,7 @@ test("sidebar filters keep a parent of a matching sub-agent, survive parent cycl
   const node = (sid, extra = {}) => ({ sid, profile: "default", source: "deck", ...extra });
   const nodes = [node("root"), node("kid", { parent: "root", source: "subagent" }), node("other"), node("a", { parent: "b" }), node("b", { parent: "a" })];
   const ctx = { SH, H: { nodes: new Map(nodes.map((n) => [n.sid, n])) }, isSubagent: (n) => !!n.parent || n.source === "subagent",
+    window: { DeckSessions: require("../renderer/sessions-browser") }, sidebarSources: null,
     rail: { view: "all", source: "all", agent: null } };
   vm.createContext(ctx);
   vm.runInContext(appFn("railFilter"), ctx);

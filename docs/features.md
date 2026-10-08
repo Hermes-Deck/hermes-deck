@@ -28,8 +28,9 @@ or the **Work pane**, one at a time; each keeps its own width.
 - **Top bar.** Breadcrumb (agent / title, with the parent for a sub-agent) and a channel chip (**Hermes**,
   **Telegram**, **<Source> · read-only**, **Bot Chat**, **Sub-agent**), the fleet capsule, search, and the Work pane,
   Inspector and Settings buttons.
-- **Inspector.** **Session** (the chat's facts with **Steer**, **Stop** and **Model**), **Activity** and **Usage**.
-- **Work pane.** **Run**, **Plan**, **Diff**, **Agents**, **Browser** and **Screen** (see [Work pane](#work-pane)).
+- **Inspector.** **Session** (the chat's facts with **Steer**, **Stop** and **Model**, then what runs in other agents)
+  and **Usage**.
+- **Work pane.** **Run**, **Plan**, **Diff**, **Sub-agents**, **Browser** and **Screen** (see [Work pane](#work-pane)).
 
 | Shortcut (Cmd on macOS) | Action |
 |---|---|
@@ -160,9 +161,8 @@ Telegram. Known executable and script types are saved but never opened directly.
   between turns.
 - Approvals and questions from the agent appear in the composer tray and are answered there (or in the
   [inbox](#inbox-and-fleet)).
-- The Inspector's **Activity** tab shows one tree of sessions and their sub-agents (status, title, model and
-  reasoning level, elapsed time, cost so far), with per-row controls and drill-down into a session, its tool calls
-  and its sub-agent tree.
+- The Inspector's **Session** tab ends with what is running in other agents right now (status, title, model and
+  reasoning level, elapsed time, cost so far). A session's own sub-agents are in Work › **Sub-agents**.
 
 **How it works.** For chats on the direct connection, the plugin streams the turn's events and the app shows them.
 For the fleet-wide view (every agent on the host, including turns started in Telegram, the TUI or cron), the plugin
@@ -175,8 +175,8 @@ the app can also list a session's live sub-agents with their goal, model, reason
 and recent tool calls, read one sub-agent's live output, and steer or stop that one sub-agent with a click.
 Watching costs no model tokens: nothing asks an agent for its status.
 
-**Needs.** The plugin. The live row and controls in a Hermes chat need the direct connection; the **Activity** tree
-across all agents needs the relay. Steering needs a turn the plugin controls and a message without files; otherwise
+**Needs.** The plugin. The live row and controls in a Hermes chat need the direct connection; the list of what runs
+in other agents needs the relay. Steering needs a turn the plugin controls and a message without files; otherwise
 the message is queued.
 
 ## Attachments, voice notes, dictation and drafts
@@ -270,7 +270,7 @@ All of these are local to the app; nothing is sent anywhere.
 - **Plan**: the agent's own task list, live as it changes, with done/active/pending states, phases and blocked
   reasons. "This agent did not publish a plan" when there is none.
 - **Diff**: the files the agent wrote or patched, with the +/- counts the tool calls show. It is not a full diff.
-- **Agents**: the session's live sub-agents (goal, model, effort, state, elapsed time, tokens, cost, live output and
+- **Sub-agents**: the session's live sub-agents (goal, model, effort, state, elapsed time, tokens, cost, live output and
   recent tool calls) and recently failed delegations. **Steer** sends a message to one sub-agent and **Stop** ends it.
 - **Browser** and **Screen**: the [agent browser](#agent-browsers-browser-tab) and
   [desktop control](#desktop-control-screen-tab) views.
@@ -296,7 +296,7 @@ needs the relay.
 - **Fleet capsule** in the top bar: running agents (teal sweep), agents that wait for you (brass ring), "N running",
   "N need you" and today's cost. A click or **Ctrl/Cmd+J** opens the fleet panel: agents sorted waiting → running →
   idle → offline with task, elapsed time and model · effort, inline approvals and answers, sub-agent lines (open
-  Work › Agents), today's cost, tokens, calls and cache hit, and quota bars.
+  Work › Sub-agents), today's cost, tokens, calls and cache hit, and quota bars.
 
 **How it works.** Approvals and questions come from the direct connection and are answered through the same
 `request.answer` path as in the chat, once per click, never resent. Sessions, agents, costs and quotas come from the

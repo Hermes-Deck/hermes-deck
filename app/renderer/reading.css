@@ -1,0 +1,23 @@
+/* Reading font names only select bundled local families. The size/leading variables are bounded by reading.js. */
+:root {
+  --message-font: var(--serif);
+  --message-size: 17px;
+  --message-leading: 1.7;
+}
+:root[data-message-font="geist"] { --message-font: var(--sans); }
+:root[data-message-font="atkinson"] { --message-font: "Atkinson Hyperlegible Next", var(--sans); }
+.app .msgs-inner .think-block .tb-text {
+  font-family: var(--message-font);
+  font-size: var(--message-size);
+  line-height: var(--message-leading);
+}
+
+/* Optional agent cards. Theme aliases keep the surface just above the ground in every palette.
+   Thinking and file chips stay inside their message; tool receipts remain separate turn siblings. */
+:root[data-agent-messages="bubble"] .app .msgs-inner .msg:not(.out):not(.sysmsg) {
+  min-width: 0;
+  background: var(--l1);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px 18px;
+}

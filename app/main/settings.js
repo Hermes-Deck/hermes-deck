@@ -41,6 +41,8 @@ const DEFAULTS = {
   // composer: what Enter does while the agent is busy with a turn. queue = the message waits in the outbox
   // (its bubble keeps "Send now"); steer = it is injected into the running turn.
   composer: { busySend: "queue" },
+  // reading: how agent messages read (renderer/reading.js): plain or a quiet bubble, the message font and text size
+  reading: { agentMessages: "plain", font: "newsreader", size: 17 },
   // agent spaces (main/spaces.js): the control level the Bot screen opens the agents' desktop with
   spaces: { defaultLevel: "watch" },
   // agent spaces phase 2 (main/desktops.js): this computer hosts agents' own desktops in Docker. host is the user's
@@ -52,6 +54,26 @@ const DEFAULTS = {
   updates: { auto: true, repo: "", branch: "main", token: "", fromSource: false },
 };
 const BUSY_SEND = ["queue", "steer"];
+const READING = { agentMessages: ["plain", "bubble"], font: ["newsreader", "geist", "atkinson"] };
+const readingSize = (v) => Number.isInteger(v) && v >= 14 && v <= 20;
+/** A complete, valid reading preference from anything stored (unknown values fall back to the defaults). */
+function normalizeReading(r) {
+  const x = r && typeof r === "object" && !Array.isArray(r) ? r : {};
+  return {
+    agentMessages: READING.agentMessages.includes(x.agentMessages) ? x.agentMessages : "plain",
+    font: READING.font.includes(x.font) ? x.font : "newsreader",
+    size: readingSize(x.size) ? x.size : 17,
+  };
+}
+/** A reading patch is valid when it is an object of known keys with allowed values (checked before any change). */
+function readingPatchOk(r) {
+  if (!r || typeof r !== "object" || Array.isArray(r)) return false;
+  for (const [k, v] of Object.entries(r)) {
+    if (k === "size") { if (!readingSize(v)) return false; }
+    else if (!READING[k] || !READING[k].includes(v)) return false;
+  }
+  return true;
+}
 const SPACE_LEVELS = ["watch", "together", "full"]; // agent spaces: main/space-view-logic.js LEVELS
 // agent desktops (main/desktops.js): each field's rule. memory is Docker's --memory in gigabytes ("1.5g").
 const intIn = (lo, hi) => (v) => Number.isInteger(v) && v >= lo && v <= hi;
@@ -171,6 +193,7 @@ class Settings {
     d.wallpaper = wallpaper.normalize(d.wallpaper);
     if (!PET_SIZES.includes(d.desktop.petSize)) d.desktop.petSize = DEFAULTS.desktop.petSize;
     if (!d.composer || !BUSY_SEND.includes(d.composer.busySend)) d.composer = clone(DEFAULTS.composer);
+    d.reading = normalizeReading(raw.reading);
     if (!d.spaces || !SPACE_LEVELS.includes(d.spaces.defaultLevel)) d.spaces = clone(DEFAULTS.spaces);
     d.desktops = normalizeDesktops(raw.desktops);
     return this;
@@ -227,6 +250,7 @@ class Settings {
       updates: { auto: d.updates.auto !== false, repo: d.updates.repo || "", branch: d.updates.branch || "main", hasToken: !!d.updates.token, fromSource: d.updates.fromSource === true },
       wallpaper: wallpaper.normalize(d.wallpaper),
       composer: { busySend: BUSY_SEND.includes(d.composer && d.composer.busySend) ? d.composer.busySend : "queue" },
+      reading: normalizeReading(d.reading),
       spaces: { defaultLevel: SPACE_LEVELS.includes(d.spaces && d.spaces.defaultLevel) ? d.spaces.defaultLevel : "watch" },
       desktops: normalizeDesktops(d.desktops),
       botscreen: { agents: Array.isArray(d.botscreen.agents) ? [...d.botscreen.agents] : [], hasDeviceToken: !!d.botscreen.deviceToken, deviceKeyUnreadable: !!this.unreadableSecrets["botscreen.deviceToken"] },
@@ -316,6 +340,7 @@ class Settings {
     if (patch.desktop && patch.desktop.petSize !== undefined && !PET_SIZES.includes(patch.desktop.petSize)) throw new Error(i18nText("settings.invalidPetSize"));
     if (patch.composer !== undefined && (!patch.composer || typeof patch.composer !== "object" || Array.isArray(patch.composer) ||
         (patch.composer.busySend !== undefined && !BUSY_SEND.includes(patch.composer.busySend)))) throw new Error(i18nText("set.busySendInvalid"));
+    if (patch.reading !== undefined && !readingPatchOk(patch.reading)) throw new Error(i18nText("set.readingInvalid"));
     if (patch.spaces !== undefined && (!patch.spaces || typeof patch.spaces !== "object" || Array.isArray(patch.spaces) ||
         (patch.spaces.defaultLevel !== undefined && !SPACE_LEVELS.includes(patch.spaces.defaultLevel)))) throw new Error(i18nText("space.levelInvalid"));
     if (patch.desktops !== undefined) {
@@ -399,6 +424,7 @@ class Settings {
       d.wallpaper = w;
     }
     if (patch.composer && patch.composer.busySend !== undefined) d.composer = { ...d.composer, busySend: patch.composer.busySend };
+    if (patch.reading) d.reading = normalizeReading({ ...d.reading, ...patch.reading });
     if (patch.spaces && patch.spaces.defaultLevel !== undefined) d.spaces = { ...d.spaces, defaultLevel: patch.spaces.defaultLevel };
     if (patch.desktops !== undefined) d.desktops = { ...normalizeDesktops(d.desktops), ...patch.desktops };
     this.save();
