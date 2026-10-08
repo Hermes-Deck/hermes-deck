@@ -137,3 +137,17 @@ test("imported reveal uses existing older-page actions until its timestamp's use
   assert.equal(results.at(-1).status, "found");
   assert.equal(env.opens.length, 0);
 });
+
+test("a call whose receipt cannot be placed falls back to the message it was made under", () => {
+  const env = harness(), results = [];
+  env.doc.addEventListener("deck-tool-reveal-result", e => results.push(e.detail));
+  env.inner.append(env.user("Second prompt", 1000));
+  env.bridgeEvent({ t: "event", type: "deck.tools", sid: "s", payload: { tools: [{ call: "nots", tool: "terminal", status: "ok" }] } });
+  env.fire("deck-tool-reveal", { sid: "s", call: "nots", ts: 950 }); env.flush();
+  assert.equal(env.inner.querySelectorAll(".receipt").length, 0);
+  assert.equal(results.at(-1).status, "nearby");
+  assert.ok(env.msgs.lastScroll, "scrolled");
+  assert.ok(env.inner.querySelector('.msg.out[data-ts="900"]').classList.contains("receipt-reveal"));
+  env.fire("deck-tool-reveal", { sid: "s", call: "ghost", ts: 10 }); env.flush();
+  assert.equal(results.at(-1).status, "missing", "no loaded message precedes the call");
+});

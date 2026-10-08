@@ -216,17 +216,27 @@ class FixtureService extends EventEmitter {
 /** Stands in for RelayClient: a fixed snapshot, re-sent whenever the renderer asks to resync. */
 function fixtureHermesConfig() {
   const fields = {
-    model: { type: "string", description: "Default model", category: "general" },
-    toolsets: { type: "list", description: "Toolsets", category: "general" },
-    timezone: { type: "string", description: "Timezone", category: "general" },
-    "agent.max_turns": { type: "string", description: "Agent → Max Turns", category: "agent", free: true },
-    "agent.service_tier": { type: "select", description: "Fast mode", category: "agent", options: ["", "normal", "fast", "auto"] },
-    "agent.verbose": { type: "boolean", description: "Agent → Verbose", category: "agent" },
-    "display.compact": { type: "boolean", description: "Display → Compact", category: "display" },
-    "display.show_reasoning": { type: "boolean", description: "Display → Show Reasoning", category: "display" },
+    model: { type: "string", description: "Default model", category: "general", help: "The model new sessions start with, as provider/name. Leave empty to use the provider's own default.", default: "" },
+    toolsets: { type: "list", description: "Toolsets", category: "general", help: "Tool bundles the agent may use. One name per line.", default: ["web", "terminal"] },
+    timezone: { type: "string", description: "Timezone", category: "general", help: "IANA timezone, for example Europe/Berlin. Blank uses the system timezone.", default: "" },
+    "agent.max_turns": { type: "string", description: "Agent → Max Turns", category: "agent", free: true, help: "Maximum tool-calling iterations per conversation. Higher = more room for complex tasks, but costs more tokens.", default: 90 },
+    "agent.service_tier": { type: "select", description: "Fast mode", category: "agent", options: ["", "normal", "fast", "auto"], help: "Ask the provider for its faster, pricier tier when it has one.", default: "" },
+    "agent.verbose": { type: "boolean", description: "Agent → Verbose", category: "agent", help: "Print every tool call and its result while the agent works.", default: false },
+    "display.compact": { type: "boolean", description: "Display → Compact", category: "display", help: "Use a tighter layout with less spacing between messages and tool output.", default: false },
+    "display.show_reasoning": { type: "boolean", description: "Display → Show Reasoning", category: "display", help: "Show the model's reasoning text above each answer when the provider returns it.", default: false },
+    "delegation.max_iterations": { type: "number", description: "Delegation → Max Iterations", category: "delegation", help: "Max tool-calling turns per child agent (default: 250)", default: 250 },
+    "delegation.max_concurrent_children": { type: "number", description: "Delegation → Max Concurrent Children", category: "delegation", help: "Max parallel child agents per batch. Values above 10 multiply API cost linearly.", default: 10 },
+    "auxiliary.vision.model": { type: "string", description: "Auxiliary → Vision → Model", category: "auxiliary", help: "Model used to look at images. Empty: the main model if it can see, else the provider's default.", default: "" },
+    "auxiliary.vision.timeout": { type: "number", description: "Auxiliary → Vision → Timeout", category: "auxiliary", help: "Seconds to wait for an image analysis before giving up.", default: 120 },
+    "auxiliary.compression.model": { type: "string", description: "Auxiliary → Compression → Model", category: "auxiliary", help: "Model that writes the summary when a long conversation is compressed.", default: "" },
+    "auxiliary.compression.timeout": { type: "number", description: "Auxiliary → Compression → Timeout", category: "auxiliary", help: "Seconds to wait for a summary before giving up.", default: 120 },
   };
-  const values = { model: "example-model", toolsets: ["web", "terminal"], timezone: "", "agent.max_turns": 60, "agent.service_tier": "", "agent.verbose": false, "display.compact": true, "display.show_reasoning": false };
-  return { fields, values, explicit: ["model", "agent.max_turns", "display.compact"] };
+  const values = {
+    model: "example-model", toolsets: ["web", "terminal"], timezone: "", "agent.max_turns": 60, "agent.service_tier": "", "agent.verbose": false,
+    "display.compact": true, "display.show_reasoning": false, "delegation.max_iterations": 250, "delegation.max_concurrent_children": 4,
+    "auxiliary.vision.model": "", "auxiliary.vision.timeout": 120, "auxiliary.compression.model": "", "auxiliary.compression.timeout": 120,
+  };
+  return { fields, values, explicit: ["model", "agent.max_turns", "display.compact", "delegation.max_concurrent_children"] };
 }
 
 class FixtureRelay extends EventEmitter {
@@ -259,7 +269,7 @@ class FixtureRelay extends EventEmitter {
     if (!this.snapshot) return { status: 404, body: {} };
     const f = (this.hcfg ||= fixtureHermesConfig());
     const route = String(p).split("?")[0];
-    if (route === "/hermes/config/schema") return { status: 200, body: { ok: true, fields: f.fields, categoryOrder: ["general", "agent", "display"], profiles: ["default", "scout"] } };
+    if (route === "/hermes/config/schema") return { status: 200, body: { ok: true, fields: f.fields, categoryOrder: ["general", "agent", "display", "delegation", "auxiliary"], profiles: ["default", "scout"] } };
     if (route === "/hermes/config" && method === "GET") return { status: 200, body: { ok: true, profile: "default", rev: "0".repeat(64), values: f.values, explicit: f.explicit, managed: false, restartNeeded: false } };
     if (route === "/hermes/config") return { status: 200, body: { ok: true, profile: body.profile, rev: "1".repeat(64), values: { ...f.values, ...body.set }, explicit: f.explicit, saved: Object.keys(body.set), backup: "config.yaml.bak-deck-fixture" } };
     if (route === "/hermes/restart") return { status: method === "POST" ? 202 : 200, body: { ok: true, gateway: null, relay: { startedAt: 1, supervised: true }, restartNeeded: false } };

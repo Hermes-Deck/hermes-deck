@@ -107,7 +107,7 @@ test("Run replaces tool pushes, follows running calls and synchronizes explicit 
   await b.settle(); assert.equal(b.live.get("run"), true); assert.doesNotMatch(b.text(), /Earlier output/);
   b.app.selectTool({ sid: "session-a", call: "a" }); await b.settle();
   assert.match(b.text(), /<img onerror=bad>/);
-  assert.ok(b.nodes().find(n => n.attrs["aria-pressed"] === "true" && n.children.includes("terminal")));
+  assert.ok(b.nodes().find(n => n.attrs["aria-pressed"] === "true" && n.children.some(c => c?.children?.includes("terminal"))));
   b.event({ type: "deck.tools", sid: "session-a", payload: { tools: [] } });
   await b.settle(); assert.equal(b.live.get("run"), false); assert.match(b.text(), /No tool calls/);
   b.app.dispose();
@@ -318,10 +318,14 @@ test("every Run row and the selected output header reveal their call through the
   const b = harness({ toolCalls: async () => [{ call: "a", tool: "terminal", status: "ok" }, { call: "b", tool: "patch", status: "ok" }] }, {},
     { emitReveal: detail => revealed.push(detail) });
   b.shell.openRight("work", "run"); await b.settle();
-  const actions = b.nodes().filter(n => n.tag === "button" && n.children.includes("Show in chat"));
+  const actions = b.nodes().filter(n => n.tag === "button" && n.attrs["aria-label"] === "Show in chat");
   assert.equal(actions.length, 3, "two row actions plus the output header action");
   actions[0].attrs.onclick(); await b.settle();
   assert.deepEqual(revealed, [{ sid: "session-a", call: "a" }]);
+  b.nodes().find(n => n.attrs?.class?.startsWith("wk-run-row") && n.children.some(c => c?.attrs?.class === "wk-name" && c.children.includes("patch"))).attrs.onclick(); await b.settle();
+  assert.deepEqual(revealed.at(-1), { sid: "session-a", call: "b" }, "a row click also reveals");
+  b.nodes().find(n => n.attrs?.class?.startsWith("wk-run-row") && n.children.some(c => c?.attrs?.class === "wk-name" && c.children.includes("terminal"))).attrs.onclick(); await b.settle();
+  assert.ok(b.nodes().some(n => n.attrs?.class === "wk-name" && n.attrs.title === "patch"), "full tool name in a title");
   b.nodes().find(n => n.tag === "header").children.find(n => n.tag === "button").attrs.onclick();
   assert.deepEqual(revealed.at(-1), { sid: "session-a", call: "a" });
   assert.ok(b.nodes().filter(n => n.tag === "button").every(n => !n.children.some(c => c?.tag === "button")), "no nested buttons");
@@ -466,10 +470,10 @@ test("fleet selection for another session asks the app to open it and never fabr
   assert.doesNotMatch(c.text(), /another session/); assert.match(c.text(), /No sub-agents/); c.app.dispose();
 });
 
-test("renderer module mounts live Browser/Screen chips into the top bar and clears them when nothing is live", () => {
+test("renderer module mounts a live Screen chip into the top bar and clears it when nothing is live", () => {
   const fs = require("node:fs"), vm = require("node:vm");
   const b = harness();
-  let live = { browser: true, screen: false };
+  let live = { browser: true, screen: true };
   const mounted = [], listeners = new Map(), sessionSubs = [];
   const el = (tag) => ({ tag, className: "", children: [], append(...k) { this.children.push(...k); } });
   const doc = Object.assign(Object.create(b.doc), {

@@ -120,7 +120,7 @@ body.mac .side-hdr { padding-left: 80px; } /* macOS traffic lights */
 .side .rail-live-dot { background: var(--teal); }
 .side .sb-entry { border-color: var(--line2); }
 
-/* footer: connection and one quota bar */
+/* footer: connection and the running line */
 .side-foot { flex: none; display: flex; flex-direction: column; gap: 6px; padding: 10px 16px 12px; border-top: 1px solid var(--line2); }
 .side-foot .conn { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 12px; font: 11.5px var(--sans); color: var(--t3); }
 .side-foot .conn .dot { width: 6px; height: 6px; margin-right: 6px; }
@@ -129,17 +129,6 @@ body.mac .side-hdr { padding-left: 80px; } /* macOS traffic lights */
 .side-foot .conn .bad .dot { background: var(--red); }
 .side-foot .pulse-sum { font: 11px var(--mono); color: var(--t4); }
 .side-foot .pulse-sum:empty { display: none; }
-.sh-qmini {
-  display: grid; grid-template-columns: auto minmax(24px, 1fr) auto; align-items: center; gap: 8px; width: 100%; padding: 0;
-  border: 0; background: none; color: var(--t4); font: 11px var(--sans); text-align: left; cursor: pointer;
-}
-.sh-qmini:hover { color: var(--t2); }
-.sh-qname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }
-.sh-qbar { height: 3px; border-radius: 2px; background: var(--l4); overflow: hidden; }
-.sh-qbar i { display: block; height: 100%; border-radius: 2px; background: var(--t2); }
-.sh-qbar i.warn { background: var(--brass); }
-.sh-qbar i.bad { background: var(--red); }
-.sh-qpct { font: 500 11px var(--mono); font-variant-numeric: tabular-nums; }
 
 /* ---------- top bar (window drag region) ---------- */
 .app .topbar {

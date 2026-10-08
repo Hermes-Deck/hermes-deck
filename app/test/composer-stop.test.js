@@ -24,7 +24,7 @@ test("Stop is enabled for a bound runtime session and disabled for an uncontroll
   assert.equal(stop(env).disabled, false, "bound gateway session can be interrupted");
   snap(env, node({ controlAvailable: false, ownerPid: null, bound: false }));
   assert.equal(stop(env).disabled, true);
-  assert.equal(env.doc.querySelector(".conv-hint").textContent, "Enter queues");
+  assert.equal(env.doc.querySelector(".conv-hint"), null, "the working row carries no key hint");
   snap(env, node({ controlAvailable: true, ownerPid: null }));
   assert.equal(stop(env).disabled, true, "control needs an owner process, like the bridge");
 });

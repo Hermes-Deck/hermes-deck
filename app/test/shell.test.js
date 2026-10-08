@@ -269,7 +269,7 @@ test("an old open right panel comes back as the matching right-slot tab", () => 
 
 test("wiring: index.html has the Blend frame and every slot; scripts load in order; no inline style or script", () => {
   const html = fs.readFileSync(path.join(RENDERER, "index.html"), "utf8");
-  for (const id of ["app", "side", "modes", "rail", "side-foot", "conn", "quota", "topbar", "crumb", "capsule", "find-btn", "work-btn", "insp-btn",
+  for (const id of ["app", "side", "modes", "rail", "side-foot", "conn", "topbar", "crumb", "capsule", "find-btn", "work-btn", "insp-btn",
     "chat", "inbox", "timeline", "composer-status", "right", "insp", "work", "insp-tabs", "work-tabs", "insp-body", "work-body", "msgs", "input", "send", "detail"]) {
     assert.ok(html.includes(`id="${id}"`), `#${id}`);
   }

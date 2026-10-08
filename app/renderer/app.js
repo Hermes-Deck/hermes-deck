@@ -330,7 +330,6 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     note: document.getElementById("note"),
     crumb: document.getElementById("crumb"),
     modes: document.getElementById("modes"),
-    quota: document.getElementById("quota"),
     find: document.getElementById("find-btn"),
   };
   if (/Mac/i.test(navigator.platform)) document.body.classList.add("mac");
@@ -432,12 +431,11 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     const agents = agentList();
     const running = agents.reduce((n, a) => n + (a.running ? 1 : 0), 0);
     const subs = agents.reduce((n, a) => n + (a.subsRunning || 0), 0);
+    // idle shows nothing: the sidebar line only speaks while agents run
     els.sum.replaceChildren(
-      S.relay.status !== "open"
+      S.relay.status !== "open" || !(running || subs)
         ? ""
-        : running || subs
-          ? h("span", { class: "live" }, i18nNode("U0416", { running: running, v: subs ? i18nText("A0214", { subs: subs }) : "" }))
-          : i18nText("U0417")
+        : h("span", { class: "live" }, i18nNode("U0416", { running: running, v: subs ? i18nText("A0214", { subs: subs }) : "" }))
     );
     const r = S.relay;
     const t = S.tg;
@@ -453,7 +451,6 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       ].filter(Boolean)
     );
     renderModes();
-    renderQuota();
     renderFind();
     SH.publish("mode", { mode: chatMode(), modes: chatModes() }); // sent only when it changed
     if (!hermesMode()) SH.setMain("chat"); // the inbox belongs to the Hermes modes
@@ -473,28 +470,6 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     els.modes.replaceChildren(...modes.map((v) => h("button", { type: "button", class: v === cur ? "on" : null, "aria-pressed": v === cur ? "true" : "false",
       title: `${CHAT_TEXT.labels[v]} · ${CHAT_TEXT.shortcut}`, dataset: { fk: `chan:${v}`, mode: v }, onclick: () => setChatChannel(v) },
     SH.icon(v === "telegram" ? "telegram" : v === "bots" ? "bots" : "sessions", 13), h("span", null, CHAT_TEXT.labels[v]))));
-  }
-
-  /** Sidebar footer: one quota bar, the busiest window of any provider the fleet reports (Inspector > Usage has all). */
-  function renderQuota() {
-    const f = S.relay.fleet;
-    const quotas = f ? [...Object.values(f.quotas || {}), ...Object.values(f.profiles || {}).flatMap((p) => Object.values(p.quotas || {}))] : [];
-    let best = null;
-    for (const q of quotas) {
-      if (!q || !q.ok) continue;
-      for (const w of q.windows || []) if (typeof w.used === "number" && Number.isFinite(w.used) && (!best || w.used > best.w.used)) best = { q, w };
-    }
-    els.quota.hidden = !best;
-    if (!best) return els.quota.replaceChildren();
-    const used = Math.round(Math.min(100, Math.max(0, best.w.used)));
-    const prov = String(best.q.provider || "");
-    const name = `${prov.charAt(0).toUpperCase()}${prov.slice(1)}${window.DeckUsage ? ` · ${window.DeckUsage.windowLabel(best.w.minutes)}` : ""}`;
-    els.quota.replaceChildren(
-      h("button", { type: "button", class: "sh-qmini", title: i18nText("shell.quotaTip"), dataset: { fk: "quota" }, onclick: () => SH.openRight("inspector", "usage") },
-        h("span", { class: "sh-qname" }, name),
-        h("span", { class: "sh-qbar", role: "progressbar", "aria-label": name, "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": used },
-          h("i", { class: used >= 90 ? "bad" : used >= 70 ? "warn" : null, style: { width: `${used}%` } })),
-        h("span", { class: "sh-qpct" }, `${used}%`)));
   }
 
   /** Top bar search: the All sessions browser (sessions-browser.js); it belongs to the Hermes modes. */

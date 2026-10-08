@@ -16,6 +16,8 @@ Boundaries:
   - "unset" removes a written key so Hermes' default applies again.
   - Fields whose default is null carry "free": true (Hermes cannot infer their type); they take text, a number,
     true/false or null.
+  - Each field carries "help" (from the inline and preceding comments of Hermes' annotated cli-config.yaml.example,
+    else a hand-written schema description) and "default" (Hermes' built-in value) when known.
   - A write needs the revision (sha256 of config.yaml) the editor read; a file changed since then is refused (409).
   - Every write first copies config.yaml to config.yaml.bak-deck-<UTC timestamp>; the newest BACKUPS_KEEP are kept.
 """
@@ -103,6 +105,188 @@ def is_secret(key):
     return bool(SECRET_RE.search(key))
 
 
+KEY_LINE_RE = re.compile(r"^(\s*)(\"[^\"]+\"|[A-Za-z0-9_.-]+):(?:\s+(.*))?$")
+COMMENTED_KEY_RE = re.compile(r"^(\s*)#\s?(\s*)([a-z][a-z0-9_]*):(?:\s+(.*))?$")
+RULE_RE = re.compile(r"^[#\s=\-_*~]{3,}$")
+HELP_MAX = 700
+_help_cache = {}
+
+
+def inline_comment(text):
+    """The trailing '# ...' of a YAML value (outside quotes), or ''."""
+    quote = None
+    for i, ch in enumerate(text):
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "#" and (i == 0 or text[i - 1].isspace()):
+            return text[i + 1:].strip()
+    return ""
+
+
+def tidy_help(parts):
+    text = re.sub(r"\s+", " ", " ".join(p for p in parts if p)).strip()
+    return text if len(text) <= HELP_MAX else text[:HELP_MAX - 1].rstrip() + "…"
+
+
+def parse_example_help(text, known):
+    """{dotted key: help text} from an annotated YAML example. A key's help is the comment block right above it plus
+    its trailing '# ...' (and indented continuation comments below it). Commented-out `key: value` lines are
+    examples, except where they name a known field: then their trailing comment documents that field."""
+    helps, stack, pending, last = {}, [], [], None  # stack: [(indent, key)]
+
+    def put(path, parts, real):
+        h = tidy_help(parts)
+        if h and (path not in helps or (real and not helps[path][1])):
+            helps[path] = (h, real)
+
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            pending, last = [], None
+            continue
+        if stripped.startswith("#"):
+            if RULE_RE.match(stripped):
+                pending, last = [], None
+                continue
+            m = COMMENTED_KEY_RE.match(line)
+            if m:
+                indent = len(m.group(1))
+                parents = [k for i, k in stack if i < indent]
+                path = ".".join([*parents, m.group(3)])
+                if path in known:
+                    rest = m.group(4) or ""
+                    note = inline_comment("x " + rest) if "#" in rest else ""
+                    put(path, [*pending, note], False)
+                    last = (path, indent)
+                    pending = []
+                    continue
+                pending, last = [], None  # an example value for something else
+                continue
+            body = stripped.lstrip("#").strip()
+            if re.match(r"^-\s", body) or body == "-":
+                continue  # a commented-out list item
+            col = len(line) - len(line.lstrip())
+            if last and col > last[1] + 8 and not pending and last[0] in helps:
+                helps[last[0]] = (tidy_help([helps[last[0]][0], body]), helps[last[0]][1])
+                continue
+            pending.append(body)
+            continue
+        if stripped.startswith("- ") or stripped == "-":
+            continue
+        m = KEY_LINE_RE.match(line)
+        if not m:
+            pending, last = [], None
+            continue
+        indent = len(m.group(1))
+        key = m.group(2).strip('"')
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        path = ".".join([*[k for _, k in stack], key])
+        stack.append((indent, key))
+        note = inline_comment(m.group(3) or "") if m.group(3) else ""
+        if path in known:
+            put(path, [*pending, note], True)
+            last = (path, indent)
+        else:
+            last = None
+        pending = []
+    return {k: v[0] for k, v in helps.items()}
+
+
+def parse_defaults_help(source, known):
+    """{dotted key: help text} from the comments in Hermes' DEFAULT_CONFIG dict literal (hermes_cli/config_defaults.py):
+    the comment block right above a `"key": value` entry plus its trailing comment. Tokenized, never executed."""
+    import io
+    import tokenize
+    helps, stack, pending, depth = {}, [], [], 0  # stack: [(brace depth, key)]
+    last_str, started = None, False
+    entry = None  # (path, line) of the key whose value is being read, for its trailing comment
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return {}
+    for i, tok in enumerate(tokens):
+        typ, text, (row, _), _, _ = tok
+        if not started:
+            if typ == tokenize.NAME and text == "DEFAULT_CONFIG":
+                started = True
+            continue
+        if typ == tokenize.COMMENT:
+            body = text.lstrip("#").strip()
+            if entry and row == entry[1]:
+                if entry[0] in known and body:
+                    helps[entry[0]] = tidy_help([helps.get(entry[0], ""), body])
+            elif body and not RULE_RE.match(text.strip()):
+                pending.append(body)
+            continue
+        if typ in (tokenize.NL, tokenize.NEWLINE):
+            continue
+        if typ == tokenize.OP and text in "{[(":
+            depth += 1
+            if text == "{" and last_str is not None:
+                stack.append((depth, last_str))
+            last_str = None
+            continue
+        if typ == tokenize.OP and text in "}])":
+            pending = []  # a comment before a closing brace documents nothing that follows
+            if stack and stack[-1][0] == depth:
+                stack.pop()
+            depth -= 1
+            if depth <= 0:
+                break
+            continue
+        if typ == tokenize.STRING and i + 1 < len(tokens) and tokens[i + 1].string == ":":
+            try:
+                key = __import__("ast").literal_eval(text)
+            except Exception:  # noqa: BLE001
+                key = None
+            if isinstance(key, str):
+                path = ".".join([*[k for _, k in stack], key])
+                if path in known and pending:
+                    helps[path] = tidy_help(pending)
+                entry = (path, row)
+                last_str = key
+            pending = []
+            continue
+        if typ == tokenize.OP and text == ":":
+            continue
+        last_str = None
+    return helps
+
+
+def example_help(known):
+    """Help texts keyed by dotted key, cached per process ({} when nothing is found): Hermes' annotated
+    cli-config.yaml.example first, then the comments in its DEFAULT_CONFIG source for the keys still missing."""
+    if "h" in _help_cache:
+        return _help_cache["h"]
+    result = {}
+    d = agent_dir()
+    try:
+        if d and (d / "cli-config.yaml.example").is_file():
+            result = parse_example_help((d / "cli-config.yaml.example").read_text(encoding="utf-8", errors="replace"), known)
+    except Exception:  # noqa: BLE001 - help is optional
+        result = {}
+    try:
+        src = d / "hermes_cli" / "config_defaults.py" if d else None
+        if src and src.is_file():
+            for k, v in parse_defaults_help(src.read_text(encoding="utf-8", errors="replace"), known).items():
+                result.setdefault(k, v)
+    except Exception:  # noqa: BLE001 - help is optional
+        pass
+    _help_cache["h"] = result
+    return result
+
+
+def generated_description(key, description):
+    """True when the schema description is only the key path title-cased ('Agent → Max Turns')."""
+    norm = lambda s: re.sub(r"[\s_.→>-]+", " ", s).strip().lower()  # noqa: E731
+    return norm(description) == norm(key)
+
+
 def schema_fields(hc, wsc):
     fields = {}
     for key, entry in wsc.CONFIG_SCHEMA.items():
@@ -115,6 +299,19 @@ def schema_fields(hc, wsc):
         if isinstance(entry.get("options"), list):
             f["options"] = [o for o in entry["options"] if isinstance(o, (str, int, float, bool))]
         fields[key] = f
+    helps = example_help(set(fields))
+    for key, f in fields.items():
+        desc = f["description"]
+        help_text = helps.get(key) or ("" if generated_description(key, desc) else desc)
+        if not help_text and key.startswith("auxiliary."):
+            # the per-task blocks (vision, compression, ...) share their option names: borrow a sibling's text
+            leaf = key.rsplit(".", 1)[-1]
+            help_text = next((helps[k] for k in sorted(helps) if k.startswith("auxiliary.") and k.endswith("." + leaf)), "")
+        if help_text:
+            f["help"] = help_text
+        has, default = lookup(hc.DEFAULT_CONFIG, key)
+        if has and default is not None and not isinstance(default, dict):
+            f["default"] = default
     return fields
 
 

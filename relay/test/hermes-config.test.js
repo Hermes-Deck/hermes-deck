@@ -145,6 +145,16 @@ test("hermes-config.py: schema, read, save with backup, stale revision, unset, s
   assert.deepStrictEqual(schema.profiles, ["default", "ada"]);
   assert.ok(Object.keys(schema.fields).length > 100);
   assert.ok(!Object.keys(schema.fields).some((k) => /(^|[._])(api_key|password|secret|token)$/.test(k)), "secret-like fields are not listed");
+  const di = schema.fields["delegation.max_iterations"];
+  if (fs.existsSync("/usr/local/lib/hermes-agent/cli-config.yaml.example") || process.env.HERMES_AGENT_DIR) {
+    assert.ok(di && typeof di.help === "string" && di.help.length > 10, "a well-known key carries help from the example config");
+    assert.strictEqual(typeof di.default, "number");
+    const sr = schema.fields["display.show_reasoning"];
+    assert.ok(sr && /reasoning/i.test(sr.help || ""), "a key documented only in DEFAULT_CONFIG's comments carries that help");
+    const withHelp = Object.values(schema.fields).filter((f) => f.help).length;
+    assert.ok(withHelp > Object.keys(schema.fields).length / 2, `most fields carry help (${withHelp})`);
+  }
+  assert.ok(Object.values(schema.fields).some((f) => f.help), "some fields carry help");
   const got = await hc.get("ada");
   assert.strictEqual(got.ok, true, got.error);
   assert.strictEqual(got.values["agent.max_turns"], 28);

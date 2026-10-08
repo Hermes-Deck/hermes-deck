@@ -53,3 +53,13 @@
 .tf-more { align-self: flex-start; padding: 2px 0; border: 0; background: none; color: var(--t3); font: 11px var(--mono); cursor: pointer; }
 .tf-more:hover { color: var(--t1); }
 .tf-more:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+
+/* refresh beside the fleet capsule: quiet until hovered, a slow spin while the relay and quotas refresh */
+.tf-refresh { margin-left: auto; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid transparent; border-radius: 7px; background: none; color: var(--t3); font: 13px var(--sans); cursor: pointer; transition: border-color .2s, background .2s; }
+.tf-refresh + .tf-close { margin-left: 0; }
+.tf-refresh:hover { color: var(--t1); border-color: var(--line3); background: var(--l3); }
+.tf-refresh:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+.tf-refresh:disabled { cursor: default; opacity: .7; }
+.tf-refresh.is-busy > span { display: inline-block; animation: tf-refresh-spin 1s linear infinite; }
+@keyframes tf-refresh-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .tf-refresh.is-busy > span { animation: none; } }

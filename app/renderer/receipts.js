@@ -318,6 +318,25 @@
       highlighted = null;
       for (const el of inner.querySelectorAll(".receipt-reveal")) el.classList.remove("receipt-reveal");
     }
+    /**
+     * Last resort when the receipt itself cannot be placed: the loaded user message the call was made under (latest
+     * `data-ts` at or before the call). Needs a real call time and a loaded message that precedes it.
+     */
+    function nearestMessage(ts) {
+      if (!Number.isFinite(ts)) return null;
+      const users = [...inner.querySelectorAll(".msg.out[data-ts]")].map(el => ({ el, at: Number(el.dataset.ts) })).filter(u => Number.isFinite(u.at));
+      return users.filter(u => u.at <= ts).at(-1)?.el || null;
+    }
+    const loadedFrom = () => Math.min(...[...inner.querySelectorAll(".msg.out[data-ts]")].map(el => Number(el.dataset.ts)).filter(Number.isFinite));
+    function giveUp(ts) {
+      const el = nearestMessage(ts);
+      if (!el) { finishReveal("missing"); return; }
+      clearHighlight();
+      el.classList.add("receipt-reveal");
+      root.DeckTimeline?.reveal(el);
+      highlightTimer = root.setTimeout(clearHighlight, 1800);
+      finishReveal("nearby");
+    }
     function revealStep() {
       if (!pendingReveal || pendingReveal.sid !== sidOf()) return;
       const hit = receiptFor(pendingReveal);
@@ -332,17 +351,21 @@
         finishReveal("found");
         return;
       }
+      const known = store.find(pendingReveal.sid, pendingReveal.call)?.call;
+      const ts = Number.isFinite(known?.ts) ? known.ts : pendingReveal.ts;
       const older = inner.querySelector('[data-fk="h-older"]');
-      if (!older || inner.querySelector(".hist-err")) { finishReveal("missing"); return; }
-      // A live receipt knows its anchor; imported calls need a real timestamp. No heuristic association.
-      if (!store.find(pendingReveal.sid, pendingReveal.call)) { finishReveal("missing"); return; }
+      if (!older || inner.querySelector(".hist-err")) { giveUp(ts); return; }
+      // Imported calls need a real timestamp; without one (and unknown to the store) there is nothing to page toward.
+      if (!Number.isFinite(ts)) { finishReveal("missing"); return; }
+      // The call's time is already covered by the loaded messages yet no receipt was placed: paging cannot help.
+      if (loadedFrom() <= ts) { giveUp(ts); return; }
       if (pendingReveal.requested?.isConnected || older.disabled) {
-        if (!pendingReveal.timer) pendingReveal.timer = root.setTimeout(() => finishReveal("missing"), 15000);
+        if (!pendingReveal.timer) pendingReveal.timer = root.setTimeout(() => giveUp(ts), 15000);
         return;
       }
       root.clearTimeout(pendingReveal.timer);
       pendingReveal.requested = older;
-      pendingReveal.timer = root.setTimeout(() => finishReveal("missing"), 15000);
+      pendingReveal.timer = root.setTimeout(() => giveUp(ts), 15000);
       revealResult(pendingReveal, "loading");
       // Reuse app.js's read-only pagination and its cache/offset/merge path. Only this explicit action chains pages.
       older.click();
@@ -354,7 +377,7 @@
       const turn = store.find(d.sid, d.call)?.turn;
       if (turn) turn.open = true;
       controller.select(d.sid, d.call, false, "run");
-      pendingReveal = { sid: d.sid, call: d.call, requested: null, timer: null };
+      pendingReveal = { sid: d.sid, call: d.call, ts: Number.isFinite(Number(d.ts)) && d.ts !== null && d.ts !== "" ? Number(d.ts) : null, requested: null, timer: null };
       refresh();
     });
     function refresh() { if (!scheduled) { scheduled = true; root.requestAnimationFrame(paint); } }

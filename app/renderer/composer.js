@@ -4,8 +4,8 @@
   function via(session = {}, chat = {}) {
     if (session.channel === "sub" || session.subagent) return { key: "conv.subagent", vars: { agent: chat.title || session.id || "" } };
     if (session.channel === "readonly" || session.readOnly) return { key: "conv.readonly", vars: {} };
-    if (session.channel === "telegram" || session.kind === "telegram") return chat.bot ? { key: "conv.telegram", vars: { bot: chat.bot } } : { key: "conv.telegramGroup", vars: {} };
-    return { key: "conv.direct", vars: { profile: session.profile || "default" } };
+    // Telegram and direct sessions show no route line: the composer keeps only the read-only and sub-agent notices.
+    return null;
   }
   const MAX_TRACK_SESSIONS = 16, MAX_TRACK_KEYS = 1000, MAX_SEEN = MAX_TRACK_SESSIONS * MAX_TRACK_KEYS, ALIGN = 8;
   /**
@@ -88,15 +88,20 @@
     const label = h("span", { class: "conv-step" });
     const arg = h("code", { class: "conv-arg" });
     const elapsed = h("span", { class: "conv-elapsed" });
-    const hint = h("span", { class: "conv-hint" });
     const error = h("p", { class: "conv-error", role: "alert", hidden: true });
     const stop = h("button", { class: "btn mini conv-stop", type: "button", onclick: stopNow }, t("conv.stop"));
-    row.append(spinner, label, arg, elapsed, hint, stop);
+    row.append(spinner, label, arg, elapsed, stop);
     const slot = shell.mount("composer-status", row);
     composer.prepend(tray, slot, queue, error, h("div", { class: "conv-filament", "aria-hidden": "true" }));
     const viaEl = h("p", { class: "conv-via" });
     const footer = h("div", { class: "conv-footer" }, doc.getElementById("note"), viaEl);
     composer.after(footer);
+    // The empty part of the composer belongs to the input: a click there focuses the textarea; buttons keep their own action.
+    composer.addEventListener("mousedown", (e) => {
+      if (e.button !== 0 || e.target.closest("button, a, input, textarea, select, .conv-tray, .conv-queue, .conv-error")) return;
+      e.preventDefault();
+      input.focus();
+    });
     function status() {
       const sid = sidOf(), node = snapshots.get(sid) || view?.node;
       if (view && isStopped(sid, node)) view = null;
@@ -109,17 +114,15 @@
         if (label.textContent !== text) label.textContent = text;
         if (arg.textContent !== (view.arg || "")) arg.textContent = view.arg || "";
         elapsed.textContent = `${Math.max(0, Math.floor((Date.now() - view.since) / 1000))}s`;
-        const kind = send.dataset.kind;
-        hint.textContent = t(kind === "steer" ? "conv.steerHint" : steerable(node) ? "conv.queueHint" : "conv.queueOnly");
         stop.disabled = !stoppable(node) || stopping === sid;
       }
       stop.textContent = t("conv.stop");
       const record = shell.service("chat")?.() || {};
       const route = via(session, { ...record, bot: record.bot || (/^@/.test(record.title || "") ? record.title : null) });
-      viaEl.hidden = !session.id;
-      const viaText = t(route.key, route.vars);
+      viaEl.hidden = !session.id || !route;
+      const viaText = route ? t(route.key, route.vars) : "";
       if (viaEl.textContent !== viaText) viaEl.textContent = viaText;
-      viaEl.dataset.channel = session.channel || "";
+      viaEl.dataset.channel = route ? session.channel || "" : "";
     }
     async function stopNow() {
       const sid = sidOf(), node = snapshots.get(sid) || view?.node;

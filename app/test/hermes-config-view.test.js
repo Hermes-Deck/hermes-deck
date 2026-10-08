@@ -45,6 +45,35 @@ test("parseInput: numbers, lists, free (null-default) fields and text", () => {
   assert.deepEqual(HV.parseInput(FIELDS.model, "60"), { ok: true, value: "60" }, "a text field keeps text");
 });
 
+test("labels, sections and groups", () => {
+  assert.equal(HV.humanize("max_iterations"), "Max iterations");
+  assert.equal(HV.labelOf("delegation.max_iterations"), "Max iterations");
+  assert.equal(HV.labelOf("tts.api_url"), "API URL");
+  assert.equal(HV.sectionOf("auxiliary.vision.model", "auxiliary"), "Vision");
+  assert.equal(HV.sectionOf("agent.max_turns", "agent"), "");
+  assert.equal(HV.sectionOf("model", "general"), "");
+  const f = { "a.x": { category: "a" }, "a.sub.y": { category: "a" }, "a.z": { category: "a" } };
+  const g = HV.groupKeys(["a.sub.y", "a.x", "a.z"], f);
+  assert.deepEqual(g.map((x) => [x.section, x.keys]), [["", ["a.x", "a.z"]], ["Sub", ["a.sub.y"]]]);
+});
+
+test("counts, highlight, default text, validation reason, long help", () => {
+  const c = HV.categoryCounts(FIELDS, ["model"], new Map([["zeta.x", { value: 1 }]]));
+  assert.equal(c.counts.general, 2);
+  assert.equal(c.changed, 2);
+  assert.deepEqual(HV.highlightParts("Max Turns", "turns"), [{ t: "Max ", hit: false }, { t: "Turns", hit: true }]);
+  assert.deepEqual(HV.highlightParts("a.b", "."), [{ t: "a", hit: false }, { t: ".", hit: true }, { t: "b", hit: false }]);
+  assert.deepEqual(HV.highlightParts("abc", ""), [{ t: "abc", hit: false }]);
+  assert.equal(HV.defaultText({ default: 250 }), "250");
+  assert.equal(HV.defaultText({ default: false }), "off");
+  assert.equal(HV.defaultText({ default: "" }), null);
+  assert.equal(HV.defaultText({}), null);
+  assert.equal(HV.invalidReason(FIELDS["zeta.x"], "abc"), "hcfg.badNumber");
+  assert.equal(HV.invalidReason(FIELDS["zeta.x"], "3"), null);
+  assert.ok(HV.isLongHelp("x".repeat(200)) && !HV.isLongHelp("short"));
+  assert.deepEqual(HV.visibleKeys({ k: { description: "d", help: "mentions Unicorns", category: "a" } }, { search: "unicorn" }), ["k"], "search reads the help text");
+});
+
 test("showValue / changes / brief", () => {
   assert.equal(HV.showValue(FIELDS.toolsets, ["a", "b"]), "a\nb");
   assert.equal(HV.showValue(FIELDS.model, null), "");

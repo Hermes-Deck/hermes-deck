@@ -306,9 +306,10 @@ button { font: inherit; color: inherit; }
   background: var(--slate); border: 1px solid var(--vein); border-radius: 12px;
 }
 .composer:focus-within { border-color: var(--patina); box-shadow: 0 0 0 1px rgb(var(--patina-rgb) / 0.45); }
+.composer { cursor: text; }
 .composer textarea {
-  display: block; width: 100%; resize: none; min-height: 44px; max-height: var(--composer-max, 220px); padding: 12px 14px 4px;
-  background: none; color: var(--marble); border: 0; border-radius: 12px 12px 0 0; outline: none; overflow-y: auto;
+  display: block; width: 100%; resize: none; min-height: 44px; max-height: var(--composer-max, 220px); padding: 14px 18px 8px;
+  background: none; color: var(--marble); border: 0; border-radius: 0; outline: none; overflow-y: auto;
   font: 14px/1.4 var(--body); scrollbar-gutter: stable;
 }
 /* a scroll cue: the text fades under the card's top edge once it scrolls */

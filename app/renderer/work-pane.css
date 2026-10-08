@@ -26,11 +26,14 @@
 .wk-gantt { display: flex; flex-direction: column; gap: 2px; margin-bottom: 16px; }
 .wk-run-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px; }
 .wk-run-item .wk-run-row { min-width: 0; }
-.wk-reveal { flex: none; min-height: 28px; padding: 4px 6px; border: 0; border-radius: 6px; background: none; color: var(--brass); font: 10px/1.4 var(--sans); white-space: nowrap; cursor: pointer; }
+.wk-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wk-reveal { flex: none; min-width: 28px; min-height: 28px; padding: 4px 6px; border: 0; border-radius: 6px; background: none; color: var(--brass); font: 13px/1.4 var(--sans); white-space: nowrap; cursor: pointer; }
+.wk-run-item .wk-reveal { opacity: 0; }
+.wk-run-item:hover .wk-reveal, .wk-run-item:focus-within .wk-reveal, .wk-run-item:has(.wk-run-row.selected) .wk-reveal { opacity: 1; }
 .wk-reveal:hover { background: var(--brass-a); color: var(--brass-hi); }
 .wk-output > header { align-items: center; flex-wrap: wrap; }
 .wk-output > header code { min-width: 0; }
-.wk-run-row { display: grid; grid-template-columns: 16px minmax(70px, 96px) minmax(0, 1fr) 48px; gap: 10px; align-items: center; min-height: 30px; padding: 4px 8px; border: 0; border-radius: 8px; width: 100%; background: none; text-align: left; color: var(--t2); font: 11.5px var(--mono); cursor: pointer; }
+.wk-run-row { display: grid; grid-template-columns: 16px minmax(90px, 150px) minmax(0, 1fr) 48px; gap: 10px; align-items: center; min-height: 30px; padding: 4px 8px; border: 0; border-radius: 8px; width: 100%; background: none; text-align: left; color: var(--t2); font: 11.5px var(--mono); cursor: pointer; }
 .wk-run-row:hover { background: var(--l3); }
 .wk-run-row.selected { background: var(--teal-a); }
 .wk-status, .wk-add { color: var(--teal); }
@@ -86,7 +89,7 @@
 .wk-surface-chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line2); background: none; color: var(--t3); padding: 2px 6px; border-radius: 5px; font: 10px var(--sans); cursor: pointer; }
 .wk-surface-chip:hover { color: var(--teal); border-color: var(--teal); }
 .wk-surface-chip i { width: 4px; height: 4px; background: var(--teal); border-radius: 50%; }
-@media (max-width: 768px) { .wk-content { padding: 8px; } .wk-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .wk-run-row { gap: 6px; grid-template-columns: 14px minmax(60px, 84px) minmax(0, 1fr) 44px; } }
+@media (max-width: 768px) { .wk-content { padding: 8px; } .wk-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .wk-run-row { gap: 6px; grid-template-columns: 14px minmax(70px, 110px) minmax(0, 1fr) 44px; } }
 
 
 /* top bar surface chips */

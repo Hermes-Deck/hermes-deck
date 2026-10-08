@@ -26,9 +26,9 @@ test("relocation moves approval and queue nodes without replacing their action h
   tray.kids[0].onclick(); queue.kids[0].onclick(); assert.equal(called, 2);
 });
 const C = require("../renderer/composer");
-test("via line distinguishes direct, Telegram, gateway and sub-agent routes", () => {
-  assert.deepEqual(C.via({ channel: "hermes", profile: "lab" }), { key: "conv.direct", vars: { profile: "lab" } });
-  assert.deepEqual(C.via({ channel: "telegram" }, { bot: "ExampleBot" }), { key: "conv.telegram", vars: { bot: "ExampleBot" } });
+test("via line is kept only for read-only and sub-agent routes", () => {
+  assert.equal(C.via({ channel: "hermes", profile: "lab" }), null);
+  assert.equal(C.via({ channel: "telegram" }, { bot: "ExampleBot" }), null);
   assert.equal(C.via({ channel: "readonly" }).key, "conv.readonly");
   assert.deepEqual(C.via({ channel: "sub", id: "s" }, { title: "Review" }), { key: "conv.subagent", vars: { agent: "Review" } });
 });

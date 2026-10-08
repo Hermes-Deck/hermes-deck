@@ -89,6 +89,7 @@
       elapsedNodes.clear();
       const kids = [h("header", { class: "tf-head" }, h("b", null, t("triage.fleet")),
         h("span", null, t("triage.runningCount", { n: running })),
+        ctx.refreshButton ? ctx.refreshButton() : null,
         h("button", { type: "button", class: "tf-close te-btn", "aria-label": t("triage.close"), dataset: { fk: "fleet-close" }, onclick: () => close() }, "×"))];
       if (!agents.length) kids.push(h("div", { class: "tf-empty" }, t("triage.fleetEmpty")));
       for (const a of agents) {
@@ -143,10 +144,30 @@
     doc.dispatchEvent(new CustomEvent("deck-agent-select", { detail }));
     return true;
   }
+  // Re-reads the relay snapshot (the same "ready" resync main.js runs) and the quota windows (as the Usage refresh does).
+  let refreshing = null;
+  function refreshAll(button, t) {
+    if (refreshing) return refreshing;
+    button.disabled = true; button.classList.add("is-busy"); button.setAttribute("aria-busy", "true");
+    refreshing = (async () => {
+      try { await root.deck?.ready?.(); await root.deck?.quotaRefresh?.(); button.title = t("triage.refreshTip"); }
+      catch { button.title = t("usage.refreshFailed"); }
+      finally { refreshing = null; button.disabled = false; button.classList.remove("is-busy"); button.removeAttribute("aria-busy"); }
+    })();
+    return refreshing;
+  }
   function boot() {
     const shell = root.DeckShell, inbox = I(), store = inbox?.store, h = shell?.service("h");
     if (!h || !store || api.view) return;
-    api.view = createFleet({ h, shell, store, doc: root.document, win: root, t: root.DeckI18n.t, usage: root.DeckUsage, openChat: inbox.openChat,
+    const t = root.DeckI18n.t;
+    // the fleet panel's header refresh (built on each redraw; a running refresh keeps its busy state)
+    const refreshButton = () => {
+      const b = h("button", { type: "button", class: "tf-refresh te-btn", title: t("triage.refreshTip"), "aria-label": t("triage.refresh"), dataset: { fk: "fleet-refresh" },
+        onclick: () => refreshAll(b, t).then(() => api.view?.redraw()) }, h("span", { "aria-hidden": "true" }, "↻"));
+      if (refreshing) { b.disabled = true; b.classList.add("is-busy"); b.setAttribute("aria-busy", "true"); }
+      return b;
+    };
+    api.view = createFleet({ h, shell, store, doc: root.document, win: root, t, usage: root.DeckUsage, openChat: inbox.openChat, refreshButton,
       selectAgent: selection => selectAgent(root.document, selection) });
     shell.mount("capsule", api.view.button);
     shell.on("fleet", api.view.toggle);

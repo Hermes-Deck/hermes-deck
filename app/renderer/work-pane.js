@@ -244,9 +244,10 @@
     }
     function showInChat(sid, call) {
       selectTool({ sid, call }, { open: false });
-      emitReveal({ sid, call });
+      const ts = Number(record(sid).tools.find(c => c.call === call)?.ts ?? record(sid).extra?.ts);
+      emitReveal(Number.isFinite(ts) ? { sid, call, ts } : { sid, call });
     }
-    const revealButton = (sid, call) => h("button", { class: "wk-reveal", type: "button", onclick: () => showInChat(sid, call) }, t("work.showInChat"));
+    const revealButton = (sid, call) => h("button", { class: "wk-reveal", type: "button", onclick: () => showInChat(sid, call), title: t("work.showInChat"), "aria-label": t("work.showInChat") }, "↗");
     function output(c, r, note, sid) {
       return h("section", { class: `wk-output${failed(c) ? " fail" : ""}` }, h("header", null, c.tool, h("code", null, c.call), revealButton(sid, c.call)),
         note ? h("p", { class: "wk-note", role: "status" }, note) : null,
@@ -265,9 +266,9 @@
         r.revealNotice?.call === r.selected ? h("p", { class: "wk-note", role: "status" }, t(r.revealNotice.key)) : null,
         r.tools.length ? h("div", { class: "wk-gantt" }, r.tools.map((c, i) => h("div", { class: "wk-run-item" }, h("button", {
           class: `wk-run-row${c.call === r.selected ? " selected" : ""}${failed(c) ? " fail" : ""}`, type: "button", "aria-pressed": c.call === r.selected ? "true" : "false",
-          title: c.args || c.tool, onclick: () => selectTool({ sid, call: c.call }, { open: false }) },
+          title: c.args || c.tool, onclick: () => showInChat(sid, c.call) },
           h("span", { class: "wk-status", "aria-label": t(c.status === "running" ? "work.running" : failed(c) ? "work.failed" : "work.state.done") }, c.status === "running" ? "◌" : failed(c) ? "×" : "✓"),
-          c.tool, h("span", { class: "wk-bar" }, h("i", { style: { left: `${bars[i].left}%`, width: `${bars[i].width}%` } })), h("span", { class: "wk-time" }, duration(c.ms))), revealButton(sid, c.call)))) : shell.empty(t(r.toolsLoading ? "work.loading" : "work.noTools")),
+          h("span", { class: "wk-name", title: c.tool }, c.tool), h("span", { class: "wk-bar" }, h("i", { style: { left: `${bars[i].left}%`, width: `${bars[i].width}%` } })), h("span", { class: "wk-time" }, duration(c.ms))), revealButton(sid, c.call)))) : shell.empty(t(r.toolsLoading ? "work.loading" : "work.noTools")),
         inList ? output(inList, r, null, sid) : outside ? output(outside, r, t("work.selectedOutside"), sid)
           : r.selected ? h("p", { class: "wk-note", role: "status" }, t("work.selectedUnavailable")) : null));
     }
@@ -490,7 +491,7 @@
       if (disposed || !d || d.sid !== current()) return;
       const r = record(d.sid);
       if (d.call !== r.selected) return;
-      const key = d.status === "loading" ? "work.historyLoading" : d.status === "missing" ? "work.historyMissing" : null;
+      const key = d.status === "loading" ? "work.historyLoading" : d.status === "missing" ? "work.historyMissing" : d.status === "nearby" ? "work.historyNearby" : null;
       r.revealNotice = key ? { call: d.call, key } : null;
       redraw();
     };
@@ -538,12 +539,12 @@
     const pane = create({ shell: root.DeckShell, deck: root.deck });
     const surfaces = createSurfaces({ shell: root.DeckShell });
     root.DeckSurfaces = Object.freeze(surfaces);
-    // top bar: a live Browser / Screen chip for the open session's agent, rebuilt when a surface or the language changes
+    // top bar: a live Screen chip for the open session's agent, rebuilt when a surface or the language changes
     const shell = root.DeckShell, doc = root.document;
     const crumb = () => {
       if (typeof shell.mount !== "function") return;
       const profile = shell.last?.("session")?.profile || undefined;
-      const chips = ["browser", "screen"].map(k => surfaces.chip(k, { profile })).filter(Boolean);
+      const chips = [surfaces.chip("screen", { profile })].filter(Boolean);
       if (!chips.length) { shell.mount("crumb-extra", null); return; }
       const box = doc.createElement("span");
       box.className = "wk-surface-chips";

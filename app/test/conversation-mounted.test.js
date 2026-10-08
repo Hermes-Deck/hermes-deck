@@ -19,7 +19,7 @@ test("boot registers every conversation module and mounts the status row and rai
   assert.ok(env.composer.contains(env.input) && env.composer.contains(env.send), "original input and send survive");
   assert.equal(env.input.value, "Retained draft");
   assert.ok(env.doc.querySelector(".conv-footer .conv-via"));
-  assert.equal(env.doc.querySelector(".conv-via").textContent, "Hermes direct · default profile");
+  assert.equal(env.doc.querySelector(".conv-via").hidden, true, "direct session: no route line");
   assert.equal(env.doc.getElementById("timeline").querySelectorAll(".conv-tick").length, 1, "one user tick");
 });
 
@@ -61,8 +61,8 @@ test("session switching clears receipts of the other session and resets the via 
   env.inner.replaceChildren(env.user("hi"));
   env.flush();
   assert.equal(env.inner.querySelectorAll(".receipt").length, 0);
-  assert.equal(env.doc.querySelector(".conv-via").textContent, "Sends as you in Telegram");
-  assert.equal(env.doc.querySelector(".conv-via").dataset.channel, "telegram");
+  assert.equal(env.doc.querySelector(".conv-via").hidden, true, "telegram session: no route line");
+  assert.equal(env.doc.querySelector(".conv-via").textContent, "");
 });
 
 test("approval and question cards move into the composer tray with handlers and focus intact", () => {
