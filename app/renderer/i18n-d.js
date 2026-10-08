@@ -3,6 +3,9 @@
 (function (root) {
   const strings = {
   "en": {
+    "work.showInChat": "Show in chat",
+    "work.historyLoading": "Loading earlier history…",
+    "work.historyMissing": "Not in the loaded history",
     "work.noSession": "Select a session",
     "work.loading": "Loading…",
     "work.noPlan": "This agent did not publish a plan",
@@ -21,6 +24,8 @@
     "work.calls": "Tool calls",
     "work.toolTime": "Tool time",
     "work.failed": "Failed",
+    "work.moreFailed": "{n} more failed sub-agents",
+    "work.stoppedAgents": "{n} sub-agents were stopped",
     "work.cost": "Session cost",
     "work.arguments": "Arguments",
     "work.running": "Running…",
@@ -84,6 +89,9 @@
     "work.agentMissing": "The selected sub-agent is not in the live list; it may have ended"
   },
   "tr": {
+    "work.showInChat": "Sohbette göster",
+    "work.historyLoading": "Önceki geçmiş yükleniyor…",
+    "work.historyMissing": "Yüklenen geçmişte yok",
     "work.noSession": "Bir oturum seçin",
     "work.loading": "Yükleniyor…",
     "work.noPlan": "Bu ajan bir plan yayımlamadı",
@@ -102,6 +110,8 @@
     "work.calls": "Araç çağrıları",
     "work.toolTime": "Araç süresi",
     "work.failed": "Başarısız",
+    "work.moreFailed": "{n} başarısız alt ajan daha",
+    "work.stoppedAgents": "{n} alt ajan durduruldu",
     "work.cost": "Oturum maliyeti",
     "work.arguments": "Argümanlar",
     "work.running": "Çalışıyor…",

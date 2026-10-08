@@ -131,16 +131,26 @@ test("Diff extracts successful writes without inventing paths, counts or diffs",
     { call: "e", tool: "terminal", status: "ok", args: '{"command":"touch not-evidence.js"}' },
     { call: "f", tool: "write_file", status: "ok", args: '{"path":"hidden.js"}', result: '{"success":false}' }
   ];
-  assert.deepEqual(W.changedFiles(calls), [{ name: "src/example.js", added: 1, removed: 1 }]);
+  assert.deepEqual(W.changedFiles(calls), [{ name: "example.js", added: 1, removed: 1 }]);
   assert.deepEqual(W.changedFiles([{ tool: "write_file", status: "ok", args: '{"path":"/srv/example/private.js"}' }]), [{ name: "private.js", added: null, removed: null }]);
 });
 
 test("Diff retains observed files across replacement windows and labels missing real diffs", async () => {
   const b = harness(); b.shell.openRight("work", "diff"); await b.settle(); assert.match(b.text(), /No changed files/);
-  b.event({ type: "deck.tools", sid: "session-a", payload: { tools: [{ call: "write-1", tool: "patch", status: "ok", args: '{"path":"example.js"}', result: '{"added":3,"removed":2}' }] } });
+  b.event({ type: "deck.tools", sid: "session-a", payload: { tools: [{ call: "write-1", tool: "patch", status: "ok", args: '{"path":"example.js"}', result: JSON.stringify({ diff: "--- a/example.js\n+++ b/example.js\n@@ -1,2 +1,3 @@\n-one\n-two\n+first\n+second\n+third" }) }] } });
   await b.settle(); assert.match(b.text(), /example.js.*\+3.*−2/); assert.match(b.text(), /No complete diff/);
   b.event({ type: "deck.tools", sid: "session-a", payload: { tools: [] } }); await b.settle(); assert.match(b.text(), /example.js/);
   b.session({ sid: "session-b" }); await b.settle(); assert.doesNotMatch(b.text(), /example.js/); b.app.dispose();
+});
+
+test("Diff renders basenames for clipped write arguments and never shows invented line counts", async () => {
+  const b = harness(); b.shell.openRight("work", "diff"); await b.settle();
+  const args = JSON.stringify({ path: "src/large-output.js", content: "x".repeat(600) }).slice(0, 300) + "…";
+  b.event({ type: "deck.tools", sid: "session-a", payload: { tools: [{ call: "large-write", tool: "write_file", status: "ok", args, result: "Written" }] } });
+  await b.settle();
+  assert.match(b.text(), /large-output\.js/);
+  assert.doesNotMatch(b.text(), /src\/|No changed files|\+\d|−\d/);
+  b.app.dispose();
 });
 
 test("agent tree includes orphans once and bounds cycles", () => {
@@ -274,6 +284,35 @@ test("plan summary distinguishes absent, cleared and truncated plans", () => {
   assert.deepEqual(W.planSummary({ items: [] }), { done: 0, total: 0, shown: 0, active: false });
   assert.deepEqual(W.planSummary({ total: 80, items: [{ state: "done" }, { state: "active" }, { state: "cancelled" }] }),
     { done: 1, total: 80, shown: 3, active: true });
+});
+
+test("every Run row and the selected output header reveal their call through the document contract", async () => {
+  const revealed = [];
+  const b = harness({ toolCalls: async () => [{ call: "a", tool: "terminal", status: "ok" }, { call: "b", tool: "patch", status: "ok" }] }, {},
+    { emitReveal: detail => revealed.push(detail) });
+  b.shell.openRight("work", "run"); await b.settle();
+  const actions = b.nodes().filter(n => n.tag === "button" && n.children.includes("Show in chat"));
+  assert.equal(actions.length, 3, "two row actions plus the output header action");
+  actions[0].attrs.onclick(); await b.settle();
+  assert.deepEqual(revealed, [{ sid: "session-a", call: "a" }]);
+  b.nodes().find(n => n.tag === "header").children.find(n => n.tag === "button").attrs.onclick();
+  assert.deepEqual(revealed.at(-1), { sid: "session-a", call: "a" });
+  assert.ok(b.nodes().filter(n => n.tag === "button").every(n => !n.children.some(c => c?.tag === "button")), "no nested buttons");
+  b.app.dispose();
+});
+
+test("Run reports unavailable chat history honestly and only for the matching selected call", async () => {
+  const b = harness({ toolCalls: async () => [{ call: "a", tool: "terminal", status: "ok" }] });
+  b.shell.openRight("work", "run"); await b.settle();
+  b.doc.dispatchEvent({ type: "deck-tool-reveal-result", detail: { sid: "session-a", call: "a", status: "loading" } });
+  await b.settle(); assert.match(b.text(), /Loading earlier history/);
+  b.doc.dispatchEvent({ type: "deck-tool-reveal-result", detail: { sid: "other", call: "a", status: "missing" } });
+  await b.settle(); assert.doesNotMatch(b.text(), /Not in the loaded history/);
+  b.doc.dispatchEvent({ type: "deck-tool-reveal-result", detail: { sid: "session-a", call: "a", status: "missing" } });
+  await b.settle(); assert.match(b.text(), /Not in the loaded history/);
+  b.doc.dispatchEvent({ type: "deck-tool-reveal-result", detail: { sid: "session-a", call: "a", status: "found" } });
+  await b.settle(); assert.doesNotMatch(b.text(), /Not in the loaded history|Loading earlier history/);
+  b.app.dispose();
 });
 
 const ticks = async () => { for (let n = 0; n < 12; n++) await Promise.resolve(); };
@@ -429,4 +468,18 @@ test("renderer module mounts live Browser/Screen chips into the top bar and clea
   assert.deepEqual(mounted.at(-1), ["crumb-extra", null]);
   window.DeckWorkPane.dispose(); b.app.dispose();
   assert.equal(listeners.has("deck-surfaces"), false, "dispose removes the top-bar listeners");
+});
+
+test("Agents lists real failures and folds sub-agents that were stopped on purpose into one muted line", async () => {
+  const failed = [
+    { delegationId: "x1", goal: "Broke", status: "failed", error: "Timeout" },
+    ...Array.from({ length: 3 }, (_, i) => ({ delegationId: `s${i}`, goal: `Stopped ${i}`, status: "interrupted", error: "Operation interrupted" })),
+  ];
+  const b = harness({ subagents: async () => ({ subagents: [], failed }) });
+  b.shell.openRight("work", "agents"); await b.settle();
+  const text = b.text();
+  assert.match(text, /Broke/); assert.match(text, /Timeout/);
+  assert.doesNotMatch(text, /Stopped 0|Operation interrupted/);
+  assert.ok(b.nodes().some(n => n.attrs?.class === "wk-note wk-stopped"));
+  b.app.dispose();
 });

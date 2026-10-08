@@ -96,7 +96,7 @@
       for (const row of incoming) {
         if (!row || !row.call) continue;
         const hit = find(sid, String(row.call));
-        const ts = Number.isFinite(Number(row.ts)) && row.ts != null ? Number(row.ts) : at / 1000;
+        const ts = row.ts != null && row.ts !== "" && Number.isFinite(Number(row.ts)) ? Number(row.ts) : null;
         const call = { call: String(row.call), tool: preview(row.tool), args: preview(row.args), ts,
           status: typeof row.status === "string" && row.status ? row.status.slice(0, 32) : "ok", ms: Number.isFinite(row.ms) ? Math.max(0, row.ms) : null,
           result: preview(row.result) || null, err: preview(row.err) || null };
@@ -112,7 +112,7 @@
         // A running call belongs to the live turn even when that turn was first seen after the call began.
         if (live && (ts * 1000 >= live.since || (!live.measured && call.status === "running"))) { live.calls.push(call); continue; }
         if (!imported) {
-          imported = { id: `receipt-${++seq}`, since: ts * 1000, end: null, open: false, calls: [], anchor: null, measured: false, imported: true };
+          imported = { id: `receipt-${++seq}`, since: (ts ?? at / 1000) * 1000, end: null, open: false, calls: [], anchor: null, measured: false, imported: true };
           let i = list.length;
           while (i > 0 && list[i - 1].since > imported.since) i--;
           list.splice(i, 0, imported);
@@ -219,7 +219,7 @@
     const store = createStore(), subscribers = new Set(), nodes = new Map();
     const controller = createController({ openRight: (...a) => shell.openRight(...a),
       emit: detail => doc.dispatchEvent(new root.CustomEvent("deck-tool-select", { detail })) });
-    let session = shell.last("session") || {}, scheduled = false;
+    let session = shell.last("session") || {}, scheduled = false, pendingReveal = null, highlighted = null, highlightTimer = null;
     const sidOf = () => session.sid || (session.kind === "hermes" ? session.id : null);
     const changed = () => { for (const fn of subscribers) { try { fn(); } catch (e) { console.warn("Receipt listener failed", e); } } refresh(); };
     /**
@@ -230,18 +230,24 @@
     function placements(sid, users) {
       const out = [];
       const stamps = users.map(el => Number(el.dataset.ts));
-      const userAt = ts => { let hit = null; users.forEach((el, i) => { if (Number.isFinite(stamps[i]) && stamps[i] <= ts + 1) hit = el; }); return hit; };
+      const userAt = ts => {
+        if (!Number.isFinite(ts)) return null;
+        let hit = null;
+        users.forEach((el, i) => { if (el.dataset.ts && Number.isFinite(stamps[i]) && stamps[i] <= ts) hit = el; });
+        return hit;
+      };
       for (const turn of store.turns(sid)) {
         if (!turn.calls.length) continue;
         if (!turn.imported) {
           // Fixed at first placement (calls arrive after the user's message is on screen), so a later steer or
           // queued message never pulls an earlier turn's receipt; a turn seen only via snapshots uses timestamps.
           if (!turn.anchor) {
-            const el = turn.measured ? users.at(-1) : userAt(turn.since / 1000) || users.at(-1);
+            const times = turn.calls.map(call => call.ts).filter(Number.isFinite);
+            const el = turn.measured ? users.at(-1) : times.length ? userAt(Math.min(...times)) : null;
             if (el) turn.anchor = el.dataset.convKey;
           }
           const anchor = users.find(el => el.dataset.convKey === turn.anchor);
-          if (anchor || !users.length) out.push({ key: turn.id, turn, anchor, calls: turn.calls });
+          if (anchor || (turn.measured && !users.length)) out.push({ key: turn.id, turn, anchor, calls: turn.calls });
           continue;
         }
         const groups = new Map();
@@ -285,7 +291,72 @@
       }
       for (const el of inner.querySelectorAll(".receipt")) if (!keep.has(el)) el.remove();
       doc.dispatchEvent(new root.CustomEvent("deck-receipts-render"));
+      if (highlighted) receiptFor(highlighted)?.el.classList.add("receipt-reveal");
+      revealStep();
     }
+    // Compare opaque call ids as strings, never interpolate them into a selector.
+    function receiptFor({ sid, call }) {
+      for (const el of inner.querySelectorAll(".receipt")) {
+        if (el.dataset.sid !== sid) continue;
+        const row = [...el.querySelectorAll(".receipt-call")].find(node => node.dataset.call === call);
+        if (row) return { el, row };
+      }
+      return null;
+    }
+    function revealResult(detail, status) {
+      doc.dispatchEvent(new root.CustomEvent("deck-tool-reveal-result", { detail: { sid: detail.sid, call: detail.call, status } }));
+    }
+    function finishReveal(status) {
+      const want = pendingReveal;
+      if (!want) return;
+      root.clearTimeout(want.timer);
+      pendingReveal = null;
+      revealResult(want, status);
+    }
+    function clearHighlight() {
+      root.clearTimeout(highlightTimer);
+      highlighted = null;
+      for (const el of inner.querySelectorAll(".receipt-reveal")) el.classList.remove("receipt-reveal");
+    }
+    function revealStep() {
+      if (!pendingReveal || pendingReveal.sid !== sidOf()) return;
+      const hit = receiptFor(pendingReveal);
+      if (hit) {
+        hit.el.querySelector(".receipt-fold").open = true;
+        hit.row.open = true;
+        clearHighlight();
+        highlighted = { sid: pendingReveal.sid, call: pendingReveal.call };
+        hit.el.classList.add("receipt-reveal");
+        root.DeckTimeline?.reveal(hit.el);
+        highlightTimer = root.setTimeout(clearHighlight, 1800);
+        finishReveal("found");
+        return;
+      }
+      const older = inner.querySelector('[data-fk="h-older"]');
+      if (!older || inner.querySelector(".hist-err")) { finishReveal("missing"); return; }
+      // A live receipt knows its anchor; imported calls need a real timestamp. No heuristic association.
+      if (!store.find(pendingReveal.sid, pendingReveal.call)) { finishReveal("missing"); return; }
+      if (pendingReveal.requested?.isConnected || older.disabled) {
+        if (!pendingReveal.timer) pendingReveal.timer = root.setTimeout(() => finishReveal("missing"), 15000);
+        return;
+      }
+      root.clearTimeout(pendingReveal.timer);
+      pendingReveal.requested = older;
+      pendingReveal.timer = root.setTimeout(() => finishReveal("missing"), 15000);
+      revealResult(pendingReveal, "loading");
+      // Reuse app.js's read-only pagination and its cache/offset/merge path. Only this explicit action chains pages.
+      older.click();
+    }
+    doc.addEventListener("deck-tool-reveal", e => {
+      const d = e.detail;
+      if (!d?.sid || !d.call || d.sid !== sidOf()) return;
+      finishReveal("cancelled");
+      const turn = store.find(d.sid, d.call)?.turn;
+      if (turn) turn.open = true;
+      controller.select(d.sid, d.call, false, "run");
+      pendingReveal = { sid: d.sid, call: d.call, requested: null, timer: null };
+      refresh();
+    });
     function refresh() { if (!scheduled) { scheduled = true; root.requestAnimationFrame(paint); } }
     function ingest(sid, type, payload, at) {
       store.event(sid, type, payload, at);
@@ -337,7 +408,7 @@
         } catch (e) { console.warn("Receipt previews unavailable", e); }
       }
     }
-    shell.on("session", s => { session = s; refresh(); load(); });
+    shell.on("session", s => { finishReveal("cancelled"); clearHighlight(); session = s; refresh(); load(); });
     const publicApi = { refresh, turns: store.turns, calls: sid => store.turns(sid).flatMap(turn => turn.calls), selection: controller.selection,
       subscribe(fn) { subscribers.add(fn); return () => subscribers.delete(fn); } };
     refresh(); load();

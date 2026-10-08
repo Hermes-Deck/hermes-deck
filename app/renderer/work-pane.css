@@ -24,6 +24,12 @@
 .wk-stats b { display: block; margin-top: 2px; font: 500 16px var(--mono); letter-spacing: -.02em; overflow-wrap: anywhere; }
 .wk-stats b.bad, .wk-del, .wk-output.fail pre, .wk-tool.fail pre { color: var(--red); }
 .wk-gantt { display: flex; flex-direction: column; gap: 2px; margin-bottom: 16px; }
+.wk-run-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px; }
+.wk-run-item .wk-run-row { min-width: 0; }
+.wk-reveal { flex: none; min-height: 28px; padding: 4px 6px; border: 0; border-radius: 6px; background: none; color: var(--brass); font: 10px/1.4 var(--sans); white-space: nowrap; cursor: pointer; }
+.wk-reveal:hover { background: var(--brass-a); color: var(--brass-hi); }
+.wk-output > header { align-items: center; flex-wrap: wrap; }
+.wk-output > header code { min-width: 0; }
 .wk-run-row { display: grid; grid-template-columns: 16px minmax(70px, 96px) minmax(0, 1fr) 48px; gap: 10px; align-items: center; min-height: 30px; padding: 4px 8px; border: 0; border-radius: 8px; width: 100%; background: none; text-align: left; color: var(--t2); font: 11.5px var(--mono); cursor: pointer; }
 .wk-run-row:hover { background: var(--l3); }
 .wk-run-row.selected { background: var(--teal-a); }
@@ -85,3 +91,4 @@
 
 /* top bar surface chips */
 .wk-surface-chips { display: inline-flex; gap: 6px; align-items: center; }
+.wk-stopped { padding: 10px; border-top: 1px solid var(--line); color: var(--t3); }

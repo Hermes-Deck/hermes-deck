@@ -29,18 +29,40 @@
     try { const parsed = JSON.parse(value); return parsed && typeof parsed === "object" ? parsed : {}; }
     catch { return {}; }
   }
+  // A clipped JSON document may still contain a complete path string. Decode only a closed JSON string token.
+  function previewPath(value, fields = "path|file_path", array = false) {
+    if (typeof value !== "string") return null;
+    const pattern = new RegExp('"(?:' + fields + ')"\\s*:\\s*' + (array ? '\\[\\s*' : '') + '"((?:[^"\\\\]|\\\\.)*)"');
+    const match = pattern.exec(value.slice(0, 300));
+    if (!match) return null;
+    try { return JSON.parse(`"${match[1]}"`); } catch { return null; }
+  }
+  function diffPathPreview(value) {
+    if (typeof value !== "string") return null;
+    let text = value;
+    // Serialized diffs contain escaped newlines. Decode the complete prefix only, and discard its last partial line.
+    const encoded = /"diff"\s*:\s*"((?:[^"\\]|\\(?:["\\/bfnrt]|u[\da-fA-F]{4}))*)/.exec(value);
+    if (encoded) {
+      try { text = JSON.parse(`"${encoded[1]}"`).split("\n").slice(0, -1).join("\n"); }
+      catch { return null; }
+    }
+    return /^(?:--- a\/|\+\+\+ b\/)([^\r\n\t]+)/m.exec(text)?.[1] || null;
+  }
   function changedFiles(calls) {
     const files = new Map();
     for (const c of calls) {
       if (c.status !== "ok" || !/(^|[.:_])(?:patch|write_file)$/.test(c.tool || "")) continue;
       const args = object(c.args), result = object(c.result);
       if (result.success === false || result.error || result.isError === true) continue;
-      const path = args.path || args.file_path || result.path;
-      if (typeof path !== "string" || !path || /[\n\r\0…<>]/.test(path)) continue;
-      // Absolute local locations are not exposed by this view; keep only the file label.
-      const name = /^(\/|[A-Za-z]:[\\/])/.test(path) ? path.split(/[\\/]/).pop() : path;
+      const path = [args.path, args.file_path, previewPath(c.args), result.files_modified?.[0],
+        previewPath(c.result, "files_modified", true), result.resolved_path, previewPath(c.result, "resolved_path"),
+        result.path, previewPath(c.result, "path"), diffPathPreview(result.diff || c.result)]
+        .find(value => typeof value === "string" && value && !/[\n\r\0…<>]/.test(value));
+      if (!path) continue;
+      // Paths stay text and only basenames are displayed, whether relative or absolute.
+      const name = path.split(/[\\/]/).pop();
       if (!name) continue;
-      let added = number(result.added ?? result.additions), removed = number(result.removed ?? result.deletions);
+      let added = null, removed = null;
       const diff = typeof result.diff === "string" ? result.diff : typeof c.result === "string" && /^--- /m.test(c.result) ? c.result : "";
       if (diff && !diff.includes("…") && /^@@ /m.test(diff)) {
         added = diff.split("\n").filter(l => l.startsWith("+") && !l.startsWith("+++")).length;
@@ -72,6 +94,7 @@
   function create({ shell, deck, doc = root.document, h = shell.service("h"), t = root.DeckI18n.t,
     setTimer = root.setTimeout.bind(root), clearTimer = root.clearTimeout.bind(root),
     emit = detail => doc.dispatchEvent(new root.CustomEvent("deck-tool-select", { detail })),
+    emitReveal = detail => doc.dispatchEvent(new root.CustomEvent("deck-tool-reveal", { detail })),
     receipts = () => root.DeckReceipts }) {
     let session = shell.last("session") || shell.state().session || {};
     let disposed = false, timer = null, pendingAgent = null, agentNotice = null;
@@ -157,6 +180,7 @@
       const known = r.tools.some(c => c.call === call), given = tool && tool.call === call ? tool : null;
       // A live call is genuinely recent; an explicit older selection is shown beside the list, never merged into it.
       if (!known && given && source === "live") replaceTools(sid, [...r.tools, given]);
+      if (r.selected !== call) r.revealNotice = null;
       r.selected = call; r.pinned = source !== "live";
       if (!r.tools.some(c => c.call === call)) {
         let found = given;
@@ -202,8 +226,13 @@
           while (r.expanded.size > 200) r.expanded.delete(r.expanded.keys().next().value);
         } }, summaryKids), body);
     }
-    function output(c, r, note) {
-      return h("section", { class: `wk-output${failed(c) ? " fail" : ""}` }, h("header", null, c.tool, h("code", null, c.call)),
+    function showInChat(sid, call) {
+      selectTool({ sid, call }, { open: false });
+      emitReveal({ sid, call });
+    }
+    const revealButton = (sid, call) => h("button", { class: "wk-reveal", type: "button", onclick: () => showInChat(sid, call) }, t("work.showInChat"));
+    function output(c, r, note, sid) {
+      return h("section", { class: `wk-output${failed(c) ? " fail" : ""}` }, h("header", null, c.tool, h("code", null, c.call), revealButton(sid, c.call)),
         note ? h("p", { class: "wk-note", role: "status" }, note) : null,
         c.args ? disclosure(r, `run:${c.call}`, null, t("work.arguments"), h("pre", null, c.args)) : null,
         h("pre", null, c.err || c.result || t(c.status === "running" ? "work.running" : "work.noOutput")), h("p", { class: "wk-note" }, t("work.preview")));
@@ -217,12 +246,13 @@
       el.replaceChildren(h("section", { class: "wk-content" }, r.toolError ? h("p", { class: "wk-error", role: "alert" }, r.toolError) : null,
         h("div", { class: "wk-stats" }, stat("work.calls", String(stats.calls)), stat("work.toolTime", duration(stats.time)), stat("work.failed", String(stats.failed), !!stats.failed), stat("work.cost", money(stats.cost, r.data.cost_estimated || r.data.costStatus === "estimated"))),
         h("p", { class: "wk-note" }, t("work.recentCalls")),
-        r.tools.length ? h("div", { class: "wk-gantt" }, r.tools.map((c, i) => h("button", {
+        r.revealNotice?.call === r.selected ? h("p", { class: "wk-note", role: "status" }, t(r.revealNotice.key)) : null,
+        r.tools.length ? h("div", { class: "wk-gantt" }, r.tools.map((c, i) => h("div", { class: "wk-run-item" }, h("button", {
           class: `wk-run-row${c.call === r.selected ? " selected" : ""}${failed(c) ? " fail" : ""}`, type: "button", "aria-pressed": c.call === r.selected ? "true" : "false",
           title: c.args || c.tool, onclick: () => selectTool({ sid, call: c.call }, { open: false }) },
           h("span", { class: "wk-status", "aria-label": t(c.status === "running" ? "work.running" : failed(c) ? "work.failed" : "work.state.done") }, c.status === "running" ? "◌" : failed(c) ? "×" : "✓"),
-          c.tool, h("span", { class: "wk-bar" }, h("i", { style: { left: `${bars[i].left}%`, width: `${bars[i].width}%` } })), h("span", { class: "wk-time" }, duration(c.ms))))) : shell.empty(t(r.toolsLoading ? "work.loading" : "work.noTools")),
-        inList ? output(inList, r) : outside ? output(outside, r, t("work.selectedOutside"))
+          c.tool, h("span", { class: "wk-bar" }, h("i", { style: { left: `${bars[i].left}%`, width: `${bars[i].width}%` } })), h("span", { class: "wk-time" }, duration(c.ms))), revealButton(sid, c.call)))) : shell.empty(t(r.toolsLoading ? "work.loading" : "work.noTools")),
+        inList ? output(inList, r, null, sid) : outside ? output(outside, r, t("work.selectedOutside"), sid)
           : r.selected ? h("p", { class: "wk-note", role: "status" }, t("work.selectedUnavailable")) : null));
     }
     function renderPlan(el) {
@@ -363,6 +393,15 @@
       form.note.className = message?.error ? "wk-error" : "wk-note";
       form.note.setAttribute?.("role", message?.error ? "alert" : "status");
     }
+    // Recently ended delegations: real failures in red; ones that were stopped on purpose (interrupted) fold into one
+    // muted line, since Hermes lists them among its "failed" rows.
+    function failedRows(r) {
+      const stopped = r.failed.filter(f => f.status === "interrupted"), failures = r.failed.filter(f => f.status !== "interrupted");
+      const rows = failures.slice(0, 8).map(f => h("div", { class: "wk-failed" }, h("b", null, f.goal), h("p", { class: "wk-error" }, f.error || t("work.failed"))));
+      if (failures.length > 8) rows.push(h("p", { class: "wk-note" }, t("work.moreFailed", { n: failures.length - 8 })));
+      if (stopped.length) rows.push(h("p", { class: "wk-note wk-stopped" }, t("work.stoppedAgents", { n: stopped.length })));
+      return rows;
+    }
     function renderAgents(el) {
       const sid = current();
       if (!sid) return el.replaceChildren(shell.empty(t("work.noSession")));
@@ -374,7 +413,7 @@
         el.replaceChildren(h("section", { class: "wk-content" }, error, notice, rows.length ? h("div", { class: "wk-agents" }, rows.map(({ agent, depth }) => h("button", {
           class: `wk-agent depth-${depth}${agent.status === "running" ? " live" : ""}`, type: "button", "data-agent": agent.id, onclick: () => openAgent(agent.id) },
           h("span", { class: "wk-agent-dot", "aria-hidden": "true" }), h("span", null, h("b", null, agent.goal || agent.id), h("small", null, [agent.model, agent.effort, agentState(agent), duration(number(agent.elapsedS) === null ? null : agent.elapsedS * 1000)].filter(Boolean).join(" · ")))))) : shell.empty(t(r.agentLoading ? "work.loading" : "work.noAgents")),
-          r.failed.map(f => h("div", { class: "wk-failed" }, h("b", null, f.goal), h("p", { class: "wk-error" }, f.error || t("work.failed"))))));
+          ...failedRows(r)));
         return;
       }
       const message = r.agentMessages.get(a.id) || controlNotice(a), busy = r.busy.has(a.id), tokens = a.tokens;
@@ -427,6 +466,16 @@
     if (typeof unsubRelay === "function") off.push(unsubRelay);
     const receiptSelection = e => { if (e.detail && e.detail.source !== "run") selectTool(e.detail, { open: false, notify: false }); };
     doc.addEventListener("deck-tool-select", receiptSelection);
+    const revealStatus = e => {
+      const d = e.detail;
+      if (disposed || !d || d.sid !== current()) return;
+      const r = record(d.sid);
+      if (d.call !== r.selected) return;
+      const key = d.status === "loading" ? "work.historyLoading" : d.status === "missing" ? "work.historyMissing" : null;
+      r.revealNotice = key ? { call: d.call, key } : null;
+      redraw();
+    };
+    doc.addEventListener("deck-tool-reveal-result", revealStatus);
     const agentSelection = e => selectAgent(e.detail);
     doc.addEventListener("deck-agent-select", agentSelection);
     const language = () => redraw();
@@ -435,7 +484,7 @@
     const initialSelection = root.DeckReceipts?.selection?.();
     if (initialSelection) selectTool(initialSelection, { open: false, notify: false });
     redraw();
-    return { selectTool, selectAgent, openAgent, poll, dispose() { disposed = true; if (timer !== null) clearTimer(timer); off.forEach(f => f()); doc.removeEventListener("deck-language", language); doc.removeEventListener("deck-agent-select", agentSelection); doc.removeEventListener("deck-tool-select", receiptSelection); } };
+    return { selectTool, selectAgent, openAgent, poll, dispose() { disposed = true; if (timer !== null) clearTimer(timer); off.forEach(f => f()); doc.removeEventListener("deck-language", language); doc.removeEventListener("deck-agent-select", agentSelection); doc.removeEventListener("deck-tool-select", receiptSelection); doc.removeEventListener("deck-tool-reveal-result", revealStatus); } };
   }
   function createSurfaces({ shell, h = shell.service("h"), t = root.DeckI18n.t, doc = root.document,
     setTimer = root.setTimeout.bind(root), clearTimer = root.clearTimeout.bind(root),

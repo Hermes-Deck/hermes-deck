@@ -114,7 +114,7 @@
     msgs.addEventListener("scroll", updateView, { passive: true });
     const resize = new root.ResizeObserver(refresh); resize.observe(msgs); resize.observe(inner);
     refresh();
-    return { refresh };
+    return { refresh, reveal: el => jump({ el }) };
   }
   const api = { positions, nearest, sample, keyOf, mount, MAX_TICKS };
   if (typeof module === "object" && module.exports) module.exports = api;

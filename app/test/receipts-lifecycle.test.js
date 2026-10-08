@@ -99,6 +99,8 @@ test("a live receipt stays with its own turn when a steer message follows", () =
 
 test("a bridge snapshot folds the visible receipt once and a disconnect folds without counting failures", () => {
   const env = boot();
+  // Elsewhere-driven calls need the same timestamp anchor that stored transcript users carry.
+  env.inner.querySelector(".msg.out").dataset.ts = String(env.clock / 1000 - 1);
   env.bridgeEvent({ t: "snapshot", snapshot: { nodes: [live()] } });
   env.bridgeEvent({ t: "event", type: "deck.tools", sid: "s", payload: { tools: [{ call: "a", tool: "x", ts: env.clock / 1000, status: "running" }] } });
   env.flush();

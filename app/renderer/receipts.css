@@ -1,6 +1,7 @@
 /* One quiet receipt per turn, text-only previews inside native disclosures. */
 .receipt { position: relative; width: 100%; margin: 0 0 18px; padding-right: 100px; min-width: 0; color: var(--t3); font: 12px/1.6 var(--mono); }
 .receipt-fold { min-width: 0; }
+.receipt.receipt-reveal { background: var(--brass-a); outline: 1px solid var(--brass); outline-offset: 4px; border-radius: 8px; }
 .receipt summary { cursor: pointer; border-radius: 6px; }
 .receipt summary:hover { color: var(--t1); }
 .receipt-summary { min-height: 26px; padding: 3px 6px; margin-left: -6px; }
