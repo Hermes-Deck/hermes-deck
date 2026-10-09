@@ -1,6 +1,6 @@
 name: hermes-deck
 kind: standalone
-version: "1.2.3"
+version: "1.2.4"
 description: >-
   Live sessions and controls over SSH/WSL, plus relay events and an opt-in desktop-control fence.
   Private runtime files under <HERMES_HOME>/hermes-deck/. No network listener.

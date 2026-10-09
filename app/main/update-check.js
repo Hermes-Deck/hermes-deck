@@ -8,6 +8,10 @@
 //              Otherwise, only with the opt-in developer setting (updates.fromSource) and when main is ahead and
 //              this machine has git and npm: build main in <userData>/update-src (its own clone, never the user's
 //              checkout), then install that build the same way.
+//   macOS      both paths end in a .app (the verified release zip unpacked, or the fresh build for this arch). It is
+//              staged beside the running bundle, then a detached /bin/sh helper waits for this process to exit, swaps
+//              the bundles and reopens the app; the old bundle comes back unless the new app is still running 10 s later. A dev
+//              run, a translocated or read-only bundle never gets replaced: the file is shown in Finder instead.
 //
 // The built commit comes from main/build-info.json (scripts/build-info.js, packaged builds) or from git in a dev
 // checkout. GitHub access uses a token from GH_TOKEN / GITHUB_TOKEN, the saved one (Settings, encrypted), or the
@@ -23,6 +27,29 @@ const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
 const SHA_RE = /^[0-9a-f]{40}$/;
 const BRANCH_RE = /^[\w./-]{1,100}$/;
 const MAX_COMMITS = 20;
+const APP_NAME = "Hermes Deck.app";
+const BUNDLE_ID = "io.github.hermes-deck"; // electron-builder.yml appId
+// argv: <pid> <bundle> <staged>. Waits up to 60 s for the app to exit (else changes nothing), moves the old bundle to a
+// per-run backup (never touching an older leftover), moves the new one in and opens it. The backup is deleted only
+// when the new app is still running DECK_SETTLE (10) s after it started; otherwise the new bundle is set aside as
+// .failed-<pid> and the old one goes back and is opened. A backup that cannot be moved back is kept, never deleted.
+const SWAP_SH = `#!/bin/sh
+pid="$1"; target="$2"; staged="$3"; old="$target.old-$$"; failed="$target.failed-$$"; i=0
+alive() { if [ -n "$DECK_ALIVE" ]; then "$DECK_ALIVE" "$target"; else pgrep -f "$target/Contents/MacOS/" >/dev/null 2>&1; fi; }
+while kill -0 "$pid" 2>/dev/null; do
+  i=$((i + 1)); if [ "$i" -gt 600 ]; then rm -rf "$staged"; exit 1; fi
+  sleep 0.1
+done
+if [ -e "$target" ] && ! mv "$target" "$old"; then rm -rf "$staged"; "\${DECK_OPEN:-open}" "$target"; exit 1; fi
+if ! mv "$staged" "$target"; then [ -e "$old" ] && mv "$old" "$target"; rm -rf "$staged"; "\${DECK_OPEN:-open}" "$target"; exit 1; fi
+"\${DECK_OPEN:-open}" "$target"
+i=0; while ! alive; do i=$((i + 1)); [ "$i" -gt "\${DECK_START_WAIT:-300}" ] && break; sleep 0.1; done
+sleep "\${DECK_SETTLE:-10}"
+if alive; then rm -rf "$old"; exit 0; fi
+[ -e "$old" ] || exit 1
+mv "$target" "$failed" && mv "$old" "$target" && "\${DECK_OPEN:-open}" "$target"
+exit 1
+`;
 
 /** The commit/branch/repo this app was built from: build-info.json, else git in the source tree. */
 function buildInfo({ dir, readFile = fs.readFileSync, git = () => "" }) {
@@ -153,7 +180,7 @@ class UpdateChecker {
       // Building unreleased source runs npm install scripts and an unreviewed branch on this computer: only on the
       // opt-in developer setting (Settings > Updates > Advanced). Never "update" to a branch that lacks this build's
       // own commits (a feature branch build): that would undo them.
-      out.canBuild = this.platform === "win32" && this._fromSource() && out.behind > 0 && !out.ahead && (await this.has("git")) && (await this.has("npm"));
+      out.canBuild = (this.platform === "win32" || (this.platform === "darwin" && !!this.appBundle)) && this._fromSource() && out.behind > 0 && !out.ahead && (await this.has("git")) && (await this.has("npm"));
       out.action = out.release && out.release.newer && out.release.asset ? "release" : out.canBuild ? "build" : out.release && out.release.newer ? "download" : "none";
       return (this.status = out);
     } catch (e) {
@@ -213,8 +240,15 @@ class UpdateChecker {
     await step("checkout", "git", ["checkout", "--detach", "--force", `origin/${branch}`], src);
     const app = path.join(src, "app");
     await step("deps", "npm", ["ci", "--no-audit", "--no-fund"], app);
-    await step("build", "npm", ["run", this.platform === "win32" ? "dist:win" : "dist"], app);
     const dist = path.join(app, "dist");
+    fs.rmSync(dist, { recursive: true, force: true }); // never pick up an installer from an earlier build
+    await step("build", "npm", ["run", this.platform === "win32" ? "dist:win" : "dist"], app);
+    if (this.platform === "darwin") {
+      // electron-builder: dist/mac (x64, the default arch) and dist/mac-arm64
+      const built = path.join(dist, this.arch === "arm64" ? "mac-arm64" : "mac", APP_NAME);
+      if (!fs.existsSync(path.join(built, "Contents", "Info.plist"))) throw Object.assign(new Error("updates.buildFailed"), { detail: `no ${APP_NAME} in dist/` });
+      return this._launch(built, st);
+    }
     const setup = fs.readdirSync(dist).filter((n) => /-Setup\.exe$/i.test(n)).map((n) => path.join(dist, n))
       .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
     if (!setup) throw Object.assign(new Error("updates.buildFailed"), { detail: "no installer in dist/" });
@@ -223,12 +257,55 @@ class UpdateChecker {
 
   /** Starts the installer detached; the caller quits the app so the installer can replace it. */
   async _launch(file) {
-    // macOS (no notarization): no silent install. The verified download is kept; the caller shows it in Finder.
-    if (this.platform !== "win32") throw Object.assign(new Error(this.platform === "darwin" ? "updates.manualDownloaded" : "updates.manual"), { file });
+    if (this.platform === "darwin") return this._macSwap(file);
+    if (this.platform !== "win32") throw Object.assign(new Error("updates.manual"), { file });
     this.progress({ phase: "install", text: path.basename(file) });
     await this.run(file, ["/S", "--force-run"], { detached: true });
     return file;
   }
 }
 
-module.exports = { UpdateChecker, buildInfo, installerAsset, sumFor, REPO_RE };
+Object.assign(UpdateChecker.prototype, {
+  /** macOS: stage the new .app beside the running one and start the swap helper (see the header). */
+  async _macSwap(file) {
+    const manual = Object.assign(new Error(/\.zip$/i.test(file) ? "updates.manualDownloaded" : "updates.manualBuilt"), { file });
+    const target = this.appBundle;
+    if (!target || !/\.app$/.test(target) || target.includes("/AppTranslocation/")) throw manual;
+    const dir = path.dirname(target);
+    try {
+      fs.accessSync(dir, fs.constants.W_OK);
+    } catch {
+      throw manual; // never ask for an admin password
+    }
+    let app = file;
+    if (/\.zip$/i.test(file)) {
+      const out = path.join(this.workDir, "update-unzip");
+      fs.rmSync(out, { recursive: true, force: true });
+      const r = await this.run("ditto", ["-x", "-k", file, out], {});
+      const name = r.code === 0 && fs.existsSync(out) ? fs.readdirSync(out).find((n) => n.endsWith(".app")) : "";
+      if (!name) throw manual;
+      app = path.join(out, name);
+    }
+    const staged = path.join(dir, `.${path.basename(target)}.update`);
+    fs.rmSync(staged, { recursive: true, force: true });
+    this.progress({ phase: "install", text: path.basename(target) });
+    const copied = await this.run("ditto", [app, staged], {});
+    const id = copied.code === 0 ? await this.run("plutil", ["-extract", "CFBundleIdentifier", "raw", "-o", "-", path.join(staged, "Contents", "Info.plist")], {}) : { code: 1, out: "" };
+    // an ad-hoc signature still has to be intact, else Apple Silicon refuses to start the swapped-in app
+    const signed = id.code === 0 ? await this.run("codesign", ["--verify", "--deep", staged], {}) : id;
+    if (id.code !== 0 || String(id.out).trim() !== BUNDLE_ID || signed.code !== 0) {
+      fs.rmSync(staged, { recursive: true, force: true });
+      throw Object.assign(new Error("updates.badBundle"), { detail: String(id.out || copied.out || "").slice(-200) });
+    }
+    const script = path.join(this.workDir, "update-swap.sh");
+    fs.writeFileSync(script, SWAP_SH, { mode: 0o700 });
+    const r = await this.run("/bin/sh", [script, String(this.pid || process.pid), target, staged], { detached: true });
+    if (r.code !== 0) {
+      fs.rmSync(staged, { recursive: true, force: true });
+      throw Object.assign(new Error("updates.failed"), { detail: r.out });
+    }
+    return target;
+  },
+});
+
+module.exports = { UpdateChecker, SWAP_SH, BUNDLE_ID, buildInfo, installerAsset, sumFor, REPO_RE };

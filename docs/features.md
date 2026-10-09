@@ -424,5 +424,5 @@ updates.
 [updating.md](updating.md).
 
 **Developer option.** **Advanced → Offer builds from unreleased source (developers)** (off by default) lets a computer
-with git and npm build `main` and install that build. **Repository**, **Branch** and **GitHub token** (only for a
+with git and npm build `main` and install that build (Windows, and a packaged macOS app: the new app replaces the running one after it quits, with the old one kept until the swap succeeds). **Repository**, **Branch** and **GitHub token** (only for a
 private fork) are under **Advanced** too.

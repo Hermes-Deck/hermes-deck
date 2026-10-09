@@ -7,7 +7,8 @@ const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { UpdateChecker, buildInfo, installerAsset, sumFor } = require("../main/update-check");
+const { UpdateChecker, buildInfo, installerAsset, sumFor, SWAP_SH, BUNDLE_ID } = require("../main/update-check");
+const { execFileSync } = require("child_process");
 
 const BUILT = "a".repeat(40);
 const HEAD = "b".repeat(40);
@@ -73,7 +74,11 @@ test("check: no newer release -> build from main when git and npm exist; none wh
   assert.equal(up.behind, 0);
   assert.equal(up.action, "none");
   const mac = await checker({ fetch: github({ tag: "v0.3.0" }).fetch, platform: "darwin" }).c.check();
-  assert.equal(mac.action, "none", "macOS never builds; it opens the release page when there is one");
+  assert.equal(mac.action, "none", "a macOS dev run (no app bundle) never builds");
+  const macApp = await checker({ fetch: github({ tag: "v0.3.0" }).fetch, platform: "darwin", appBundle: "/Applications/Hermes Deck.app" }).c.check();
+  assert.equal(macApp.action, "build", "a packaged macOS app builds main like Windows");
+  const linux = await checker({ fetch: github({ tag: "v0.3.0" }).fetch, platform: "linux", appBundle: "/x/Hermes Deck.app" }).c.check();
+  assert.equal(linux.action, "none");
 });
 
 test("macOS: a newer release is downloaded and verified, then handed over as a file (no silent install)", async () => {
@@ -182,4 +187,81 @@ test("check: building unreleased source is opt-in (updates.fromSource)", async (
   assert.equal(off.action, "none");
   const on = await checker({ fetch: github({ tag: "v0.3.0" }).fetch, settings: () => ({ fromSource: true }) }).c.check();
   assert.equal(on.action, "build");
+});
+
+function fakeApp(dir, id = BUNDLE_ID, mark = "new") {
+  fs.mkdirSync(path.join(dir, "Contents"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "Contents", "Info.plist"), id);
+  fs.writeFileSync(path.join(dir, "mark"), mark);
+}
+
+test("macOS: building main picks this arch's .app, stages it beside the running bundle and starts the swap", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "deck-mac-"));
+  const target = path.join(root, "Hermes Deck.app");
+  fakeApp(target, BUNDLE_ID, "old");
+  fs.mkdirSync(path.join(root, "work"));
+  const ran = [];
+  const { c } = checker({ fetch: github({ tag: "v0.3.0" }).fetch, platform: "darwin", arch: "arm64", appBundle: target, pid: 4242, workDir: path.join(root, "work"),
+    run: async (cmd, args, opts) => {
+      ran.push({ cmd, args, opts });
+      if (args[0] === "clone") fs.mkdirSync(path.join(args[3], ".git"), { recursive: true });
+      if (args[1] === "dist") { fakeApp(path.join(opts.cwd, "dist", "mac", "Hermes Deck.app"), BUNDLE_ID, "x64"); fakeApp(path.join(opts.cwd, "dist", "mac-arm64", "Hermes Deck.app"), BUNDLE_ID, "arm64"); }
+      if (cmd === "ditto") fs.cpSync(args[0], args[1], { recursive: true });
+      if (cmd === "plutil") return { code: 0, out: fs.readFileSync(args.at(-1), "utf8") };
+      return { code: 0, out: "" };
+    } });
+  await c.check();
+  assert.equal(await c.install(), target);
+  const staged = path.join(root, ".Hermes Deck.app.update");
+  assert.equal(fs.readFileSync(path.join(staged, "mark"), "utf8"), "arm64", "the arm64 build, not x64");
+  assert.equal(fs.readFileSync(path.join(target, "mark"), "utf8"), "old", "the running app is untouched until it quits");
+  const swap = ran.at(-1);
+  assert.equal(swap.cmd, "/bin/sh");
+  assert.deepEqual(swap.args.slice(1), ["4242", target, staged]);
+  assert.equal(swap.opts.detached, true);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("macOS: a foreign bundle, a dev run or a read-only folder never gets swapped", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "deck-mac-"));
+  const target = path.join(root, "Hermes Deck.app");
+  fakeApp(target);
+  const newApp = path.join(root, "New.app");
+  fakeApp(newApp, "com.example.other");
+  const ran = [];
+  const run = async (cmd, args) => { ran.push(cmd); if (cmd === "ditto") fs.cpSync(args[0], args[1], { recursive: true }); return cmd === "plutil" ? { code: 0, out: fs.readFileSync(args.at(-1), "utf8") } : { code: 0, out: "" }; };
+  const c = checker({ platform: "darwin", appBundle: target, run }).c;
+  await assert.rejects(c._launch(newApp), /updates\.badBundle/);
+  assert.equal(fs.existsSync(path.join(root, ".Hermes Deck.app.update")), false, "the staged copy is removed");
+  assert.equal(ran.includes("/bin/sh"), false);
+  await assert.rejects(checker({ platform: "darwin", appBundle: "", run }).c._launch(newApp), /updates\.manualBuilt/);
+  await assert.rejects(checker({ platform: "darwin", appBundle: "/private/var/folders/x/AppTranslocation/y/Hermes Deck.app", run }).c._launch(newApp), /updates\.manualBuilt/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("macOS swap script: keeps the old app until the new one runs, restores it when the new one does not start", { skip: process.platform === "win32" }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "deck swap "));
+  const script = path.join(root, "swap.sh");
+  fs.writeFileSync(script, SWAP_SH);
+  const target = path.join(root, "Hermes Deck.app"), staged = path.join(root, ".Hermes Deck.app.update");
+  const env = (alive) => ({ ...process.env, DECK_OPEN: "true", DECK_ALIVE: alive, DECK_SETTLE: "0", DECK_START_WAIT: "2" });
+  const gone = "999999"; // no such process: the wait ends at once
+  const left = () => fs.readdirSync(root).filter((n) => /\.(old|failed)-\d+$/.test(n));
+  fakeApp(path.join(root, "Hermes Deck.app.old"), BUNDLE_ID, "leftover"); // an older leftover is never touched
+  fakeApp(target, BUNDLE_ID, "old");
+  fakeApp(staged, BUNDLE_ID, "new");
+  execFileSync("/bin/sh", [script, gone, target, staged], { env: env("true") });
+  assert.equal(fs.readFileSync(path.join(target, "mark"), "utf8"), "new");
+  assert.deepEqual(left(), [], "the backup goes once the new app runs");
+  assert.equal(fs.existsSync(staged), false);
+  assert.equal(fs.readFileSync(path.join(root, "Hermes Deck.app.old", "mark"), "utf8"), "leftover");
+  fakeApp(staged, BUNDLE_ID, "broken");
+  assert.throws(() => execFileSync("/bin/sh", [script, gone, target, staged], { env: env("false"), stdio: "ignore" }));
+  assert.equal(fs.readFileSync(path.join(target, "mark"), "utf8"), "new", "the working app is back");
+  const kept = left();
+  assert.equal(kept.length, 1);
+  assert.match(kept[0], /\.failed-\d+$/, "the bundle that did not start is set aside for a look");
+  assert.throws(() => execFileSync("/bin/sh", [script, gone, target, staged], { env: env("true"), stdio: "ignore" }), "a missing staged bundle fails");
+  assert.equal(fs.readFileSync(path.join(target, "mark"), "utf8"), "new", "and changes nothing");
+  fs.rmSync(root, { recursive: true, force: true });
 });

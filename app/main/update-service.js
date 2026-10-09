@@ -15,6 +15,13 @@ const GH_PATHS = process.platform === "win32"
   ? [path.join(process.env.ProgramFiles || "C:\\Program Files", "GitHub CLI", "gh.exe"), "gh"]
   : ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh", "gh"];
 
+// A Mac app started from Finder or the Dock gets PATH=/usr/bin:/bin:/usr/sbin:/sbin: no Homebrew npm/node/gh, so a
+// source build would never be offered. Add the usual install folders (git, npm and the build inherit this PATH).
+if (process.platform === "darwin") {
+  const extra = ["/opt/homebrew/bin", "/usr/local/bin"].filter((d) => !(process.env.PATH || "").split(":").includes(d));
+  if (extra.length) process.env.PATH = [process.env.PATH || "/usr/bin:/bin:/usr/sbin:/sbin", ...extra].join(":");
+}
+
 const execOut = (cmd, args, opts = {}) => new Promise((resolve) => {
   execFile(cmd, args, { timeout: 8000, windowsHide: true, ...opts }, (err, stdout) => resolve(err ? "" : String(stdout).trim()));
 });
@@ -90,6 +97,9 @@ function initUpdates({ ipc, settings, send, notify, quit, openSettings = () => {
     fetch: (url, opts) => fetch(url, opts),
     platform: process.platform,
     arch: process.arch,
+    pid: process.pid,
+    // the running bundle (…/Hermes Deck.app/Contents/MacOS/…); a dev run (electron .) has none
+    appBundle: process.platform === "darwin" && app.isPackaged ? ((/^(.+?\.app)\/Contents\/MacOS\//.exec(process.execPath) || [])[1] || "") : "",
     workDir: app.getPath("userData"),
     run,
     has,
@@ -141,7 +151,7 @@ function initUpdates({ ipc, settings, send, notify, quit, openSettings = () => {
     } catch (e) {
       announce();
       // macOS: the checksum-verified zip is downloaded; open its folder so the user can install it by hand
-      if (e.message === "updates.manualDownloaded" && e.file && fs.existsSync(e.file)) shell.showItemInFolder(e.file);
+      if (/^updates\.manual(Downloaded|Built)$/.test(e.message) && e.file && fs.existsSync(e.file)) shell.showItemInFolder(e.file);
       return { ok: false, error: /^updates\./.test(e.message) ? e.message : "updates.failed", detail: e.detail || (/^updates\./.test(e.message) ? "" : e.message) };
     }
   });
