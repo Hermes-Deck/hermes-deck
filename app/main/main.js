@@ -23,6 +23,7 @@ const theme = require("./theme"); // Settings > Appearance: which colour theme e
 const wallpaper = require("./wallpaper"); // Settings > Appearance: the chat background picture
 const { initUpdates } = require("./update-service"); // Settings > General > Updates
 const { HostVersions } = require("./host-versions"); // relay / plugin older than this app, protocol mismatch
+const { createHostUpdater } = require("./host-update"); // Settings › Update the host (relay /host/update)
 const { initSpaces } = require("./spaces"); // Bot screen: the agents' own desktop (agent spaces)
 const { initDesktops } = require("./desktops"); // agent spaces phase 2: this computer as an agent-desktop host
 const { virtualizingPackage } = require("./launch-context"); // Windows: started inside a packaged app's AppData copy
@@ -155,13 +156,17 @@ const httpUrl = (u) => {
 // The relay's hello and the direct connection's deck.version tell which relay / plugin versions run on the host.
 // Drift is shown in Settings and told once; a protocol mismatch stops only that connection until settings change.
 let hostVersions = null;
+let hostUpdater = null; // set once the device presence exists (whenReady)
 const hostState = () => (hostVersions ? hostVersions.state() : null);
 function initHostVersions() {
   hostVersions = new HostVersions({
     app: app.getVersion(),
     file: path.join(app.getPath("userData"), "host-versions.json"),
     notify: (key, vars, section) => !!desktop.notify("update", { title: i18nText("hostupd.title"), body: i18nText(key, vars), quiet: true, onClick: () => desktop.openSettings(section) }),
-    onChange: (state) => send("hostver", state),
+    onChange: (state) => {
+      send("hostver", state);
+      if (hostUpdater) hostUpdater.maybeAuto(state).catch(() => {}); // Settings › Updates › update the host automatically
+    },
   });
 }
 
@@ -172,6 +177,7 @@ function setRelay(s) {
 }
 
 function relayMsg(r, m) {
+  if (m && m.t === "hostUpdate" && hostVersions) { hostVersions.hostUpdate(m); return; } // update progress, restart rows
   if (m && m.t === "hello" && hostVersions && !hostVersions.relayHello(m)) {
     // a relay speaking another wire protocol: stop this connection only (the banner says why); version drift never stops it.
     // The hello still goes out: its `v` may announce a newer app that speaks the relay's protocol (desktop.js).
@@ -1194,6 +1200,10 @@ app.whenReady().then(() => {
     device._save();
   }
   device.registerIpc();
+  // Settings › Update the host: the relay token and this device's key, before the desktop shell like every channel
+  hostUpdater = createHostUpdater({ relay: () => relay, settings, deviceId: () => device.id, app: app.getVersion(), file: path.join(app.getPath("userData"), "host-update.json") });
+  ipc.handle("hostupdate:update", () => hostUpdater.update());
+  ipc.handle("hostupdate:restart", (_e, profile) => hostUpdater.restart(profile));
   const demoUrl = SHOT && typeof arg("workspace-demo") === "string" ? arg("workspace-demo") : null;
   // robot checks on an agent's page raise one desktop notification (desktop.notify works once desktop.init ran)
   workspace = initWorkspace({ send, presence: device, settings, notify: desktop.notify, shot: !!SHOT, demoUrl, demoAgent: arg("workspace-agent"), demoScene: arg("workspace-scene") });

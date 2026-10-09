@@ -22,6 +22,13 @@ const MAX_PROFILES = 64;
 const MAX_KEYS = 200;
 
 const cleanVersion = (v) => (typeof v === "string" && SEMVER.test(v) ? v.replace(/^v/, "") : null);
+/** The relay's hostUpdate (relay 1.3+), kept as plain data for the renderer; null when the relay has none. */
+const cleanUpdate = (u) => (u && typeof u === "object" && !Array.isArray(u)
+  ? { remote: u.remote && typeof u.remote === "object" ? { enabled: u.remote.enabled === true, managed: u.remote.managed === true } : null,
+    status: u.status && typeof u.status === "object" ? u.status : null,
+    restarts: Array.isArray(u.restarts) ? u.restarts.slice(0, MAX_PROFILES) : [],
+    queueError: typeof u.queueError === "string" ? u.queueError : null }
+  : null);
 const cleanProtocol = (p) => (Number.isInteger(p) && p > 0 && p < 1e6 ? p : null);
 
 /** The relay part of a hello: {version, protocol, older, mismatch}, or null when it carries no version. */
@@ -69,6 +76,7 @@ class HostVersions {
     this.relay = null; // {version, protocol, older, mismatch}
     this.relayPlugins = {};
     this.bridge = null; // {version, protocol, legacy}
+    this.update = null; // the relay's hostUpdate: {remote, status, restarts, queueError} (relay/src/host-update.js)
     let saved = {};
     try {
       saved = JSON.parse(fs.readFileSync(file, "utf8")) || {};
@@ -109,6 +117,7 @@ class HostVersions {
       plugins,
       blocked: { relay: !!(this.relay && this.relay.mismatch), bridge: !!(bridgeRow && bridgeRow.mismatch) },
       commands: { relay: RELAY_CMD, plugin: PLUGIN_CMD },
+      update: this.update,
     };
   }
 
@@ -116,6 +125,8 @@ class HostVersions {
   relayHello(hello) {
     this.relay = relayInfo(hello, this.app, this.protocol);
     this.relayPlugins = hello && hello.plugins && typeof hello.plugins === "object" ? hello.plugins : {};
+    this.update = cleanUpdate(hello && hello.hostUpdate);
+    this._longWaits();
     const r = this.relay;
     if (r && r.mismatch) {
       this._once(`relay-protocol:${r.protocol}:${this.protocol}`, "hostupd.protocolRelay", { theirs: r.protocol, ours: this.protocol }, "relay");
@@ -131,10 +142,29 @@ class HostVersions {
 
   /** The relay connection went away or was turned off: forget what it reported. */
   relayGone() {
-    if (!this.relay && !Object.keys(this.relayPlugins).length) return;
+    if (!this.relay && !Object.keys(this.relayPlugins).length && !this.update) return;
     this.relay = null;
     this.relayPlugins = {};
+    this.update = null;
     this.onChange(this.state());
+  }
+
+  /** A {t:"hostUpdate"} push from the relay: update progress, gateway restart rows, what the host allows. */
+  hostUpdate(info) {
+    this.update = cleanUpdate(info);
+    // the relay sends the profiles' plugin versions with each push, so a finished plugin step shows without a new hello
+    if (info && info.plugins && typeof info.plugins === "object" && !Array.isArray(info.plugins)) this.relayPlugins = info.plugins;
+    this._longWaits();
+    this.onChange(this.state());
+  }
+
+  /** One notification per gateway that has waited over 2 hours for its restart (Settings › Hermes has Restart now). */
+  _longWaits() {
+    for (const r of (this.update && this.update.restarts) || []) {
+      if (r && r.longWait === true && typeof r.profile === "string" && PROFILE_RE.test(r.profile)) {
+        this._once(`restart-wait:${r.profile}:${String(r.since || "")}`, "hostupd.row.longWait", { profile: r.profile }, "hermes");
+      }
+    }
   }
 
   /**

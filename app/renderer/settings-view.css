@@ -140,6 +140,7 @@
 .hostver.block { color: var(--amphora); }
 .hostver-cmd { margin: 4px 0 0; font-size: 12px; color: var(--marble-dim); user-select: text; }
 .hostver-cmd code { user-select: all; }
+.hostver-step { font-variant-numeric: tabular-nums; }
 /* in the top bar (a flex row with a fixed height): one line, clipped, clickable inside the drag region */
 .hostver-banner { min-width: 0; flex: 0 1 auto; display: flex; gap: 12px; color: var(--amphora); font-size: 12px; -webkit-app-region: no-drag; }
 .hostver-banner p { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

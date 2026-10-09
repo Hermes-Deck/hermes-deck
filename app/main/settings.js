@@ -51,7 +51,7 @@ const DEFAULTS = {
   desktops: { host: false, limit: 3, memory: "1.5g", cpus: 2, idleMin: 20, homeWarnGB: 10 },
   // updates (main/update-check.js): auto = check on start and every 6 h; repo/branch override the build's own
   // ("" = where it was built from, main); token: a GitHub token when neither GH_TOKEN nor the gh CLI has one
-  updates: { auto: true, repo: "", branch: "main", token: "", fromSource: false },
+  updates: { auto: true, host: false, repo: "", branch: "main", token: "", fromSource: false },
 };
 const BUSY_SEND = ["queue", "steer"];
 const READING = { agentMessages: ["plain", "bubble"], font: ["newsreader", "geist", "atkinson"] };
@@ -247,7 +247,7 @@ class Settings {
       firstRunDone: d.firstRunDone,
       language: d.language,
       theme: THEMES.includes(d.theme) ? d.theme : "basalt",
-      updates: { auto: d.updates.auto !== false, repo: d.updates.repo || "", branch: d.updates.branch || "main", hasToken: !!d.updates.token, fromSource: d.updates.fromSource === true },
+      updates: { auto: d.updates.auto !== false, host: d.updates.host === true, repo: d.updates.repo || "", branch: d.updates.branch || "main", hasToken: !!d.updates.token, fromSource: d.updates.fromSource === true },
       wallpaper: wallpaper.normalize(d.wallpaper),
       composer: { busySend: BUSY_SEND.includes(d.composer && d.composer.busySend) ? d.composer.busySend : "queue" },
       reading: normalizeReading(d.reading),
@@ -326,6 +326,7 @@ class Settings {
       if (!u || typeof u !== "object" || Array.isArray(u) ||
           (u.auto !== undefined && typeof u.auto !== "boolean") ||
           (u.fromSource !== undefined && typeof u.fromSource !== "boolean") ||
+          (u.host !== undefined && typeof u.host !== "boolean") ||
           (u.repo !== undefined && !(u.repo === "" || /^[\w.-]+\/[\w.-]+$/.test(u.repo))) ||
           (u.branch !== undefined && !/^[\w./-]{1,100}$/.test(u.branch)) ||
           (u.token !== undefined && u.token !== null && (typeof u.token !== "string" || u.token.length > 400))) throw new Error(i18nText("updates.badSetting"));
@@ -413,6 +414,7 @@ class Settings {
       d.updates = { ...d.updates,
         ...(u.auto !== undefined ? { auto: u.auto } : {}),
         ...(u.fromSource !== undefined ? { fromSource: u.fromSource } : {}),
+        ...(u.host !== undefined ? { host: u.host } : {}),
         ...(u.repo !== undefined ? { repo: u.repo } : {}),
         ...(u.branch !== undefined ? { branch: u.branch } : {}),
         ...(typeof u.token === "string" && u.token.trim() ? { token: u.token.trim() } : {}),

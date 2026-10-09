@@ -135,3 +135,31 @@ test("deck.version over the direct connection: a 0.3.6+ plugin answers, an older
   assert.deepEqual(await versionOf(t, ["--plugin-version", "0.3.6:2"]), { version: "0.3.6", protocol: 2 });
   assert.deepEqual(await versionOf(t, []), { legacy: true });
 });
+
+test("hostUpdate from the hello and from relay pushes reaches state().update; a lost relay clears it", () => {
+  const states = [];
+  const hv = new HostVersions({ app: "1.3.0", onChange: (s) => states.push(s) });
+  const info = { remote: { enabled: true, managed: true }, status: { version: "1.3.0", step: "download", state: "running" }, restarts: [], queueError: null };
+  hv.relayHello({ t: "hello", v: "1.2.0", protocol: 1, plugins: {}, hostUpdate: info });
+  assert.deepEqual(hv.state().update, info);
+  hv.hostUpdate({ t: "hostUpdate", ...info, status: { ...info.status, step: "done", state: "done" } });
+  assert.equal(states.at(-1).update.status.state, "done");
+  hv.relayHello({ t: "hello", v: "1.2.0", protocol: 1, plugins: {} });
+  assert.equal(hv.state().update, null, "a relay without host updates reports none");
+  hv.hostUpdate(info);
+  hv.relayGone();
+  assert.equal(hv.state().update, null);
+});
+
+test("a hostUpdate push refreshes the profiles' plugin versions and tells a 2-hour restart wait once", () => {
+  const told = [];
+  const hv = new HostVersions({ app: "1.3.0", file: tmpFile(), notify: (key, vars, section) => { told.push([key, vars.profile, section]); return true; } });
+  hv.relayHello({ t: "hello", v: "1.3.0", protocol: 1, plugins: { default: "1.2.0" }, hostUpdate: { remote: { enabled: true, managed: true }, status: null, restarts: [] } });
+  assert.equal(hv.state().plugins.find((p) => p.profile === "default").older, true);
+  hv.hostUpdate({ remote: { enabled: true, managed: true }, status: { version: "1.3.0", step: "done", state: "done" }, restarts: [], plugins: { default: "1.3.0" } });
+  assert.equal(hv.state().plugins.find((p) => p.profile === "default").older, false, "a finished plugin step shows without a new hello");
+  const wait = { remote: { enabled: true, managed: true }, status: null, restarts: [{ profile: "default", state: "busy", since: "2026-10-09T01:00:00Z", longWait: true }], plugins: { default: "1.3.0" } };
+  hv.hostUpdate(wait);
+  hv.hostUpdate(wait);
+  assert.deepEqual(told.filter(([k]) => k === "hostupd.row.longWait"), [["hostupd.row.longWait", "default", "hermes"]]);
+});

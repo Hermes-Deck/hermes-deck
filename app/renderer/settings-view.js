@@ -191,13 +191,85 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
     }
     const input = (id, attrs = {}) => h("input", { id, autocomplete: "off", spellcheck: "false", ...attrs });
     const secretWarning = () => (st().plainSecrets ? h("p", { class: "form-error sv-warn" }, node("U0499")) : null);
-    /** Host versions for this section (hostLines): one group, each line with the update command to copy. */
+    /**
+     * Host versions for this section (hostLines), each line with the update command to copy; with a relay that offers
+     * host updates (state.update), the Update button and its progress (Settings › Relay) and one row per gateway that
+     * waits for a restart, with Restart now (Settings › Hermes). docs/updating.md, Updating from the app.
+     */
     function hostGroup(section) {
-      const lines = hostLines(ctx.hostVersions ? ctx.hostVersions() : null, section);
-      if (!lines.length) return null;
-      return group(node("hostupd.group"), ...lines.map((l) => h("div", { class: "sv-row sv-block" },
+      const state = ctx.hostVersions ? ctx.hostVersions() : null;
+      const lines = hostLines(state, section);
+      const u = state && state.update;
+      const restarts = section === "hermes" && u && Array.isArray(u.restarts) ? u.restarts : [];
+      const queueError = section === "hermes" && u && u.queueError ? u.queueError : null;
+      // the button only for what the relay updates: the relay itself, a relay-reported plugin, or a plugin step to finish
+      const st = u && u.status;
+      const running = !!st && !UPDATE_FINAL.includes(st.state);
+      const relayBehind = !!(state && state.relay && state.relay.older);
+      const pluginBehind = !!(state && Array.isArray(state.plugins) && state.plugins.some((p) => p.source === "relay" && p.older));
+      // a plugin install that stopped half way leaves pending queue entries: the relay finishes it on the next update
+      const pendingRecovery = !running && !!u && Array.isArray(u.restarts) && u.restarts.some((r) => r && r.state === "pending");
+      const recover = (!!st && st.state === "plugin-failed") || pendingRecovery;
+      const eligible = relayBehind || pluginBehind || running || recover;
+      const canUpdate = !!(u && ctx.deck && ctx.deck.hostUpdate);
+      const showUpdate = canUpdate && (section === "relay" ? eligible || !!st : pluginBehind || recover);
+      if (!lines.length && !restarts.length && !showUpdate && !queueError) return null;
+      const rows = lines.map((l) => h("div", { class: "sv-row sv-block" },
         h("p", { class: `hostver ${l.level}`, role: l.level === "block" ? "alert" : "status" }, T(l.key, l.vars)),
-        l.cmd ? h("p", { class: "hostver-cmd" }, T("hostupd.runOnHost"), " ", h("code", { class: "sv-path" }, l.cmd)) : null)));
+        l.cmd ? h("p", { class: "hostver-cmd" }, T("hostupd.runOnHost"), " ", h("code", { class: "sv-path" }, l.cmd)) : null));
+      if (showUpdate) rows.push(updateRow(state, eligible));
+      if (queueError) rows.push(h("div", { class: "sv-row sv-block" }, h("p", { class: "hostver warn", role: "status" }, T("hostupd.queueError", { error: queueError }))));
+      for (const r of restarts) rows.push(restartRow(r));
+      return group(node("hostupd.group"), ...rows);
+    }
+
+    const UPDATE_STEPS = ["download", "verify", "install", "switch", "health", "plugin"];
+    const UPDATE_FINAL = ["done", "failed", "rolled-back", "plugin-failed"];
+    function statusText(st) {
+      const v = { version: st.version || "", from: st.from || "", step: st.step || "", error: st.error || "" };
+      if (st.state === "done") return T("hostupd.done", v);
+      if (st.state === "rolled-back") return T("hostupd.rolledBack", v);
+      if (st.state === "plugin-failed") return T("hostupd.pluginFailed", v);
+      if (st.state === "failed") return T("hostupd.failed", v);
+      return T(`hostupd.step.${UPDATE_STEPS.includes(st.step) ? st.step : "starting"}`, v);
+    }
+
+    function updateRow(state, eligible) {
+      const u = state.update;
+      const st = u.status;
+      const running = !!st && !UPDATE_FINAL.includes(st.state);
+      const blocked = !u.remote || !u.remote.enabled || !u.remote.managed;
+      const label = st && UPDATE_FINAL.includes(st.state) && st.state !== "done" && !(state.relay && state.relay.older) ? "hostupd.tryAgain" : "hostupd.update";
+      const btn = h("button", { class: "btn mini", type: "button", title: T("hostupd.updateHelp"), disabled: running || blocked ? true : null, dataset: { fk: "hostupd:update" },
+        onclick: async () => {
+          const r = await ctx.deck.hostUpdate.update();
+          refresh({ force: true }); // rebuild first: a note written before the rebuild would be swept away with it
+          if (r && r.ok === false) notify(false, String(r.error || "").startsWith("hostupd.") ? T(r.error) : T("hostupd.startFailed", { error: r.error || "" }));
+        } }, node(label, { app: state.app }));
+      return h("div", { class: "sv-row sv-block" },
+        st ? h("p", { class: `hostver hostver-step ${st.state === "done" ? "ok" : running ? "info" : "warn"}`, role: "status" }, statusText(st)) : null,
+        u.remote && !u.remote.enabled ? h("p", { class: "hostver warn" }, T("hostupd.remoteOff")) : null,
+        u.remote && u.remote.enabled && !u.remote.managed ? h("p", { class: "hostver-cmd" }, T("hostupd.needInit"), " ", h("code", { class: "sv-path" }, "node relay/bin/deck-relay-update init ~/hermes-deck --dry-run")) : null,
+        eligible ? h("div", { class: "sv-end" }, btn) : null); // a finished update on a current host shows only its result
+    }
+
+    const RESTART_STATES = ["waiting", "busy", "unknown", "pending", "restarting", "restarted", "failed"];
+    function restartRow(r) {
+      const state = RESTART_STATES.includes(r.state) ? r.state : "waiting";
+      const canNow = ["waiting", "busy", "unknown", "failed"].includes(state);
+      return h("div", { class: "sv-row sv-block" },
+        h("p", { class: `hostver ${state === "restarted" ? "ok" : state === "failed" ? "warn" : "info"}`, role: "status" }, T(`hostupd.row.${state}`, { profile: r.profile, error: r.error || "" })),
+        r.longWait ? h("p", { class: "hostver warn" }, T("hostupd.row.longWait", { profile: r.profile })) : null,
+        canNow ? h("div", { class: "sv-end" }, h("button", { class: "btn mini", type: "button", dataset: { fk: `hostupd:restart:${r.profile}` },
+          onclick: async () => {
+            const sure = ctx.confirm
+              ? await ctx.confirm({ title: T("hostupd.restartNow"), body: T("hostupd.restartConfirm", { profile: r.profile }), ok: T("hostupd.restartNow") })
+              : window.confirm(T("hostupd.restartConfirm", { profile: r.profile }));
+            if (!sure) return;
+            const res = await ctx.deck.hostUpdate.restart(r.profile);
+            refresh({ force: true });
+            if (res && res.ok === false) notify(false, T("hostupd.row.failed", { profile: r.profile, error: res.error || "" }));
+          } }, node("hostupd.restartNow"))) : null);
     }
 
     BUILDERS.general = (kids) => {
@@ -275,7 +347,7 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
         UPD.asked = true;
         updatesCall(() => ctx.deck.updates.status());
       }
-      const u = st().updates || { auto: true, repo: "", branch: "main", hasToken: false, fromSource: false };
+      const u = st().updates || { auto: true, host: false, repo: "", branch: "main", hasToken: false, fromSource: false };
       const build = s ? `v${s.version}${s.commit ? ` · ${s.commit.slice(0, 7)}` : ""}${s.built ? ` (${s.built})` : ""}${s.dirty ? " *" : ""}` : "";
       const working = !!(UPD.busy || UPD.progress);
       const action = s && !s.error ? s.action : "none";
@@ -306,6 +378,7 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
         commits,
         h("div", { class: "sv-row sv-end" }, h("span", { class: "sv-inline" }, check, go)),
         switchRow("s-upd-auto", node("updates.auto"), u.auto !== false, (on) => ctx.save({ updates: { auto: on } }, T("set.saved")), { fk: "upd:auto" }),
+        switchRow("s-upd-host", node("updates.host"), u.host === true, (on) => ctx.save({ updates: { host: on } }, T("set.saved")), { fk: "upd:host" }),
         adv);
     }
 

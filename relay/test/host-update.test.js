@@ -245,7 +245,7 @@ test("queue-only changes push hostUpdate and unchanged polls stay quiet", async 
   rows = [{ profile: "research", state: "busy" }];
   x.hu.poll();
   assert.equal(x.pushed.length, before + 1);
-  assert.deepEqual(x.pushed.at(-1), { t: "hostUpdate", remote: { enabled: true, managed: true }, status: null, restarts: rows, queueError: null });
+  assert.deepEqual(x.pushed.at(-1), { t: "hostUpdate", remote: { enabled: true, managed: true }, status: null, restarts: rows, queueError: null, plugins: { default: "1.2.0" } });
   x.hu.poll();
   assert.equal(x.pushed.length, before + 1);
 });
@@ -441,3 +441,23 @@ test("an abandoned launchd job is cleaned up before its retry reuses the plist",
   assert.match(fs.readFileSync(plistFile, "utf8"), /<key>ProgramArguments<\/key>/);
   assert.equal(x.pushed[0].status.error, "the update stopped without reporting (abandoned)");
 });
+
+test("poll() ends an abandoned update (stale running status, no live lock) and pushes it", async (t) => {
+  const x = await setup(t);
+  const file = path.join(x.root, "shared", "data", "update-status.json");
+  fs.writeFileSync(file, JSON.stringify({ version: "1.3.0", from: "1.2.0", step: "install", state: "running", at: new Date(x.clock.ms - 16 * 60 * 1000).toISOString() }));
+  x.hu.poll();
+  const st = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(st.state, "failed");
+  assert.match(st.error, /abandoned/);
+  assert.equal(x.pushed.at(-1).status.state, "failed");
+});
+
+test("poll() leaves a fresh running status alone", async (t) => {
+  const x = await setup(t);
+  const file = path.join(x.root, "shared", "data", "update-status.json");
+  fs.writeFileSync(file, JSON.stringify({ version: "1.3.0", from: "1.2.0", step: "install", state: "running", at: new Date(x.clock.ms - 60 * 1000).toISOString() }));
+  x.hu.poll();
+  assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).state, "running");
+});
+

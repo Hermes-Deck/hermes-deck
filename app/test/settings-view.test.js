@@ -769,3 +769,134 @@ test("Agent spaces: in agent mode with no desktop host yet, Settings says how to
   await flushAll();
   assert.doesNotMatch(root2().querySelector('.sv-section[data-section="device"]').text, /No computer hosts agent desktops/, "shared mode needs no desktop host");
 });
+
+// ------------------------------------------------------------------ Update the host (docs/updating.md)
+const hostState = (update, over = {}) => ({
+  app: "1.3.0", protocol: 1, relay: { version: "1.2.0", older: true, mismatch: false },
+  plugins: [{ profile: "default", version: "1.2.0", older: true, source: "relay" }],
+  commands: { relay: "relay/bin/deck-relay-update apply", plugin: "python hermes-plugin/hermes-deck/install.py" },
+  update, ...over,
+});
+const remoteOk = { enabled: true, managed: true };
+
+test("Host version: Update button, live progress, and Restart now with a confirm", async () => {
+  const calls = [];
+  let state = hostState({ remote: remoteOk, status: null, restarts: [], queueError: null });
+  const deck = { hostUpdate: { update: async () => { calls.push(["update"]); return { ok: true, state: "started" }; }, restart: async (p) => { calls.push(["restart", p]); return { ok: true }; } } };
+  const asked = [];
+  const { sv, root } = mount({ deck, hostVersions: () => state, confirm: async (o) => { asked.push(o); return true; } });
+  sv.open("relay");
+  const btn = () => root().querySelector('[data-fk="hostupd:update"]');
+  assert.match(btn().text, /Update the host to 1\.3\.0/);
+  btn().dispatch("click");
+  await flushAll();
+  assert.deepEqual(calls, [["update"]]);
+  state = hostState({ remote: remoteOk, status: { version: "1.3.0", step: "health", state: "running" }, restarts: [{ profile: "default", state: "busy", reason: "plugin 1.3.0" }], queueError: null });
+  sv.refresh({ force: true });
+  assert.match(root().querySelector('.sv-section[data-section="relay"]').text, /Restarting the relay/);
+  assert.equal(btn().disabled, true, "no second press while it runs");
+  sv.open("hermes");
+  assert.match(root().querySelector('.sv-section[data-section="hermes"]').text, /default: waiting, a turn is running/);
+  root().querySelector('[data-fk="hostupd:restart:default"]').dispatch("click");
+  await flushAll();
+  assert.equal(asked.length, 1);
+  assert.match(asked[0].body, /Restart the default gateway now/);
+  assert.deepEqual(calls.at(-1), ["restart", "default"]);
+});
+
+test("Host version: a declined confirm restarts nothing; pending and restarting rows offer no Restart now", async () => {
+  const calls = [];
+  const state = hostState({ remote: remoteOk, status: null, restarts: [{ profile: "default", state: "waiting" }, { profile: "aurora", state: "pending" }, { profile: "pioneer", state: "restarting" }], queueError: null });
+  const deck = { hostUpdate: { update: async () => ({}), restart: async (p) => { calls.push(p); return { ok: true }; } } };
+  const { sv, root } = mount({ deck, hostVersions: () => state, confirm: async () => false });
+  sv.open("hermes");
+  root().querySelector('[data-fk="hostupd:restart:default"]').dispatch("click");
+  await flushAll();
+  assert.deepEqual(calls, []);
+  assert.equal(root().querySelector('[data-fk="hostupd:restart:aurora"]'), null);
+  assert.equal(root().querySelector('[data-fk="hostupd:restart:pioneer"]'), null);
+  assert.match(root().querySelector('.sv-section[data-section="hermes"]').text, /aurora: the plugin install has not finished/);
+});
+
+test("Host version: no install root disables the button and shows the init command; remote off says so", () => {
+  const deck = { hostUpdate: { update: async () => ({}), restart: async () => ({}) } };
+  const a = mount({ deck, hostVersions: () => hostState({ remote: { enabled: true, managed: false }, status: null, restarts: [], queueError: null }) });
+  a.sv.open("relay");
+  assert.equal(a.root().querySelector('[data-fk="hostupd:update"]').disabled, true);
+  assert.match(a.root().querySelector('.sv-section[data-section="relay"]').text, /deck-relay-update init/);
+  const b = mount({ deck, hostVersions: () => hostState({ remote: { enabled: false, managed: true }, status: null, restarts: [], queueError: null }) });
+  b.sv.open("relay");
+  assert.equal(b.root().querySelector('[data-fk="hostupd:update"]').disabled, true);
+  assert.match(b.root().querySelector('.sv-section[data-section="relay"]').text, /DECK_REMOTE_UPDATE=0/);
+});
+
+test("Host version: a relay without host updates keeps only the command; a current host shows no button", () => {
+  const deck = { hostUpdate: { update: async () => ({}), restart: async () => ({}) } };
+  const a = mount({ deck, hostVersions: () => hostState(null) });
+  a.sv.open("relay");
+  assert.equal(a.root().querySelector('[data-fk="hostupd:update"]'), null);
+  assert.match(a.root().querySelector('.sv-section[data-section="relay"]').text, /deck-relay-update apply/);
+  const b = mount({ deck, hostVersions: () => hostState({ remote: remoteOk, status: null, restarts: [], queueError: null }, { relay: { version: "1.3.0", older: false, mismatch: false }, plugins: [{ profile: "default", version: "1.3.0", older: false, source: "relay" }] }) });
+  b.sv.open("relay");
+  assert.equal(b.root().querySelector('[data-fk="hostupd:update"]'), null, "the host is current: nothing to press");
+});
+
+test("General › Updates: the host auto-update switch saves updates.host", async () => {
+  const deck = { updates: { status: async () => ({ status: { version: "1.3.0" }, busy: null }), check: async () => ({}), install: async () => ({}), open() {}, on() {} } };
+  const { sv, saves, root, setSettings } = mount({ deck });
+  setSettings({ language: "en", composer: { busySend: "queue" }, chat: { modes: ["telegram", "sessions"], defaultMode: "telegram" }, relay: { url: "", hasToken: false }, telegram: {}, downloads: { dir: "", ask: false }, desktop: { notifications: true, pet: true }, hiddenBots: [], updates: { auto: true, host: false, repo: "", branch: "main", hasToken: false, fromSource: false } });
+  sv.open("general");
+  await flushAll();
+  const sw = root().querySelector("#s-upd-host");
+  assert.ok(sw, "the switch is there");
+  assert.ok(!sw.checked, "off by default");
+  sw.checked = true;
+  sw.dispatch("change");
+  await flushAll();
+  assert.deepEqual(saves.at(-1), { updates: { host: true } });
+});
+
+test("Host version: an error from the Update button stays visible after the rebuild", async () => {
+  const deck = { hostUpdate: { update: async () => ({ ok: false, error: "hostupd.needDeviceKey" }), restart: async () => ({}) } };
+  const { sv, root } = mount({ deck, hostVersions: () => hostState({ remote: remoteOk, status: null, restarts: [], queueError: null }) });
+  sv.open("relay");
+  root().querySelector('[data-fk="hostupd:update"]').dispatch("click");
+  await flushAll();
+  assert.match(root().querySelector('.sv-section[data-section="relay"]').text, /needs a device key/);
+});
+
+test("Host version: no button for a finished update on a current host, or for direct-connection drift only", () => {
+  const deck = { hostUpdate: { update: async () => ({}), restart: async () => ({}) } };
+  const current = { relay: { version: "1.3.0", older: false, mismatch: false }, plugins: [{ profile: "default", version: "1.3.0", older: false, source: "relay" }] };
+  const a = mount({ deck, hostVersions: () => hostState({ remote: remoteOk, status: { version: "1.3.0", from: "1.2.0", step: "done", state: "done" }, restarts: [], queueError: null }, current) });
+  a.sv.open("relay");
+  assert.equal(a.root().querySelector('[data-fk="hostupd:update"]'), null);
+  assert.match(a.root().querySelector('.sv-section[data-section="relay"]').text, /The host is on 1\.3\.0/);
+  const b = mount({ deck, hostVersions: () => hostState({ remote: remoteOk, status: null, restarts: [], queueError: null }, { relay: { version: "1.3.0", older: false, mismatch: false }, plugins: [{ profile: null, version: "1.2.0", older: true, legacy: false, source: "bridge" }] }) });
+  b.sv.open("hermes");
+  assert.equal(b.root().querySelector('[data-fk="hostupd:update"]'), null, "the direct connection is not updated by the relay");
+});
+
+test("Host version: a restart queue error shows even with no plugin rows", () => {
+  const deck = { hostUpdate: { update: async () => ({}), restart: async () => ({}) } };
+  const { sv, root } = mount({ deck, hostVersions: () => hostState({ remote: remoteOk, status: null, restarts: [], queueError: "EACCES: permission denied" }, { relay: { version: "1.3.0", older: false, mismatch: false }, plugins: [] }) });
+  sv.open("hermes");
+  assert.match(root().querySelector('.sv-section[data-section="hermes"]').text, /cannot read its gateway restart queue: EACCES/);
+});
+
+test("Host version: an install that stopped half way (pending restarts, failed status, current host) offers Try again", async () => {
+  const calls = [];
+  const deck = { hostUpdate: { update: async () => { calls.push("update"); return { ok: true }; }, restart: async () => ({}) } };
+  const current = { relay: { version: "1.3.0", older: false, mismatch: false }, plugins: [{ profile: "default", version: "1.3.0", older: false, source: "relay" }] };
+  const u = { remote: remoteOk, status: { version: "1.3.0", step: "plugin", state: "failed", error: "the update stopped without reporting (abandoned)" }, restarts: [{ profile: "default", state: "pending" }], queueError: null };
+  const { sv, root } = mount({ deck, hostVersions: () => hostState(u, current) });
+  sv.open("relay");
+  const btn = root().querySelector('[data-fk="hostupd:update"]');
+  assert.ok(btn, "the update can be finished from the app");
+  assert.match(btn.text, /Try again/);
+  btn.dispatch("click");
+  await flushAll();
+  assert.deepEqual(calls, ["update"]);
+  sv.open("hermes");
+  assert.ok(root().querySelector('.sv-section[data-section="hermes"] [data-fk="hostupd:update"]'), "also next to the pending rows");
+});

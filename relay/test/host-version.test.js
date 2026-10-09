@@ -138,9 +138,10 @@ test("mobile capabilities carry relayVersion and protocol", () => {
 
 test("hello carries hostUpdate, status changes reach WebSockets and health exposes only state and version", async (t) => {
   const { base, hello, ws, dataDir } = await boot(t);
-  assert.deepStrictEqual(Object.keys(hello.hostUpdate).sort(), ["queueError", "remote", "restarts", "status"]);
+  assert.deepStrictEqual(Object.keys(hello.hostUpdate).sort(), ["plugins", "queueError", "remote", "restarts", "status"]);
   assert.strictEqual(hello.hostUpdate.queueError, null);
-  assert.deepStrictEqual(hello.hostUpdate, { remote: { enabled: true, managed: false }, status: null, restarts: [], queueError: null });
+  assert.strictEqual(typeof hello.hostUpdate.plugins, "object");
+  assert.deepStrictEqual(hello.hostUpdate, { remote: { enabled: true, managed: false }, status: null, restarts: [], queueError: null, plugins: hello.hostUpdate.plugins });
   const empty = await (await fetch(`${base}/health`)).json();
   assert.strictEqual(empty.hostUpdate, undefined);
   assert.strictEqual(empty.plugins, undefined);

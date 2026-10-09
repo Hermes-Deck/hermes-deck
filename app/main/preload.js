@@ -105,6 +105,10 @@ contextBridge.exposeInMainWorld("deck", {
     open: () => ipcRenderer.invoke("updates:open"),
     on: listen("updates"),
   },
+  hostUpdate: { // Settings › Update the host (main/host-update.js)
+    update: () => ipcRenderer.invoke("hostupdate:update"),
+    restart: (profile) => ipcRenderer.invoke("hostupdate:restart", profile),
+  },
   wallpaper: { // per chat mode
     pick: (mode) => ipcRenderer.invoke("wallpaper:pick", mode),
     preset: (mode, id) => ipcRenderer.invoke("wallpaper:preset", mode, id),

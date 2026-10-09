@@ -44,6 +44,9 @@ Hermes Agent:
   direct connection (from `deck.version`; a plugin older than 0.3.6 does not recognise this request).
 - **Protocol mismatch:** that one connection stops, and a banner in the top bar says which connection it is.
   A version difference alone never stops anything.
+- **Update the host:** with a relay that offers host updates, Settings › Relay also shows **Update the host to vY**
+  and its progress, and Settings › Hermes lists each gateway that waits for a restart, with **Restart now**. See
+  [Updating from the app](#updating-from-the-app).
 
 Each difference triggers one notification. The app remembers which notifications it has shown, so
 reconnecting or restarting does not repeat them.

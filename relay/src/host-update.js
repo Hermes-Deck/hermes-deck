@@ -69,7 +69,8 @@ class HostUpdate {
     try { return locate({ fs: this.fs, env: {} }, { here: this.relayDir }).managed; } catch { return false; }
   }
   info() {
-    return { remote: { enabled: this.remoteUpdate, managed: this.managed() }, status: this.status(), restarts: this.restarts ? this.restarts.rows() : [], queueError: this.restarts?.queueError ?? null };
+    // plugins: the profiles' installed versions now, so an app sees a finished plugin step without a new hello
+    return { remote: { enabled: this.remoteUpdate, managed: this.managed() }, status: this.status(), restarts: this.restarts ? this.restarts.rows() : [], queueError: this.restarts?.queueError ?? null, plugins: this.plugins() };
   }
   publicInfo() {
     const st = this.status();
@@ -77,6 +78,12 @@ class HostUpdate {
   }
   /** Push status and queue changes; the first poll also cleans up a job finished before this relay started. */
   poll() {
+    // An updater that died without a final status and holds no live lock is marked abandoned here too, so an app
+    // that never sends another request (its button is disabled while "running") still sees the update end.
+    const before = this.status();
+    if (before && !FINAL.has(before.state)) {
+      try { this._running(before); } catch { /* status not writable: retried on the next poll */ }
+    }
     const info = this.info();
     const st = info.status;
     const s = JSON.stringify(info);
