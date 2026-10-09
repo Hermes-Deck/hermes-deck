@@ -38,6 +38,7 @@
 .wk-run-row.selected { background: var(--teal-a); }
 .wk-status, .wk-add { color: var(--teal); }
 .wk-run-row.fail .wk-status { color: var(--red); }
+.wk-run-row.stopped .wk-status, .wk-run-row.stopped .wk-name { color: var(--t3); }
 .wk-bar { height: 6px; position: relative; background: var(--l3); border-radius: 3px; overflow: hidden; }
 .wk-bar i { position: absolute; top: 0; bottom: 0; border-radius: 3px; background: var(--t3); min-width: 3px; }
 .wk-run-row.selected .wk-bar i { background: var(--teal); }

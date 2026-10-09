@@ -8,7 +8,7 @@
       total: Math.max(plan.items.length, number(plan.total) || 0), shown: plan.items.length,
       active: plan.items.some(x => x.state === "active") };
   }
-  const failed = c => c.status !== "ok" && c.status !== "running";
+  const failed = c => c.status !== "ok" && c.status !== "running" && c.status !== "interrupted";
   const stamp = ts => number(ts) === null ? null : ts > 1e12 ? ts : ts * 1000;
   function runStats(calls, data = {}) {
     return { calls: calls.length, time: calls.reduce((n, c) => n + (number(c.ms) || 0), 0),
@@ -328,9 +328,9 @@
     const whenOf = ts => number(ts) === null ? "" : new Date(ts * 1000).toLocaleString(root.DeckI18n?.getLocale?.() || "en-US", { dateStyle: "short", timeStyle: "short" });
     function runRow(c, bars, i, r, sid) {
       return h("div", { class: "wk-run-item" }, h("button", {
-        class: `wk-run-row${c.call === r.selected ? " selected" : ""}${failed(c) ? " fail" : ""}`, type: "button", "aria-pressed": c.call === r.selected ? "true" : "false",
+        class: `wk-run-row${c.call === r.selected ? " selected" : ""}${failed(c) ? " fail" : ""}${c.status === "interrupted" ? " stopped" : ""}`, type: "button", "aria-pressed": c.call === r.selected ? "true" : "false",
         "data-call": c.call, title: c.args || c.tool, onclick: () => showInChat(sid, c.call) },
-        h("span", { class: "wk-status", "aria-label": t(c.status === "running" ? "work.running" : failed(c) ? "work.failed" : "work.state.done") }, c.status === "running" ? "◌" : failed(c) ? "×" : "✓"),
+        h("span", { class: "wk-status", "aria-label": t(c.status === "running" ? "work.running" : c.status === "interrupted" ? "work.agentState.interrupted" : failed(c) ? "work.failed" : "work.state.done") }, c.status === "running" ? "◌" : c.status === "interrupted" ? "–" : failed(c) ? "×" : "✓"),
         h("span", { class: "wk-name", title: c.tool }, c.tool), h("span", { class: "wk-bar" }, h("i", { style: { left: `${bars[i].left}%`, width: `${bars[i].width}%` } })), h("span", { class: "wk-time" }, duration(c.ms))), revealButton(sid, c.call));
     }
     function renderTurn(turn, index, total, r, sid) {

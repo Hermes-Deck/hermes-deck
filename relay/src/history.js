@@ -76,14 +76,17 @@ const firstLine = (s) => {
   return line.length > 200 ? line.slice(0, 200) : line;
 };
 
-/** A tool result that reports an error: JSON with a truthy `error` or `success: false`. */
+/**
+ * A tool result that reports an error: JSON with a truthy `error`, `success: false`, or a non-zero numeric `exit_code`
+ * (a terminal command that failed). A result cut at the preview size that no longer parses is checked by its prefix.
+ */
 function toolFailed(content) {
   if (typeof content !== "string" || content[0] !== "{") return false;
   try {
     const o = JSON.parse(content);
-    return !!(o && (o.error || o.success === false));
+    return !!(o && (o.error || o.success === false || (typeof o.exit_code === "number" && o.exit_code !== 0)));
   } catch {
-    return false;
+    return /"exit_code":\s*-?[1-9]/.test(content.slice(0, 4096)) || /"success":\s*false/.test(content.slice(0, 4096));
   }
 }
 
@@ -322,7 +325,7 @@ class HermesStore {
         put(call, "result", res.content, TOOL_FIELD, res.clen);
         if (typeof res.timestamp === "number" && typeof c.ts === "number" && res.timestamp >= c.ts) call.ms = Math.round((res.timestamp - c.ts) * 1000);
         call.status = toolFailed(res.content) ? "error" : "ok";
-      } else call.status = lastId !== null && c.mid === lastId ? "running" : "ok";
+      } else call.status = lastId !== null && c.mid === lastId ? "running" : "interrupted"; // no result ever came back
       turns[ti].calls.push(call);
     }
     const out = { turns: turns.filter((t) => t.id !== 0 || t.calls.length), next: more && page.length ? String(page[0].id) : null };

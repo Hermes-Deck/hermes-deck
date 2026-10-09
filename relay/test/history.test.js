@@ -345,6 +345,8 @@ test("history: /session/<sid>/tools groups calls by turn and pages back", { skip
   msg.run(S, "assistant", "", null, calls("a_1", "a_2"), null, T0 + 11, 1);
   msg.run(S, "tool", "ok", "a_1", null, "terminal", T0 + 12, 1);
   msg.run(S, "tool", '{"error": "boom"}', "a_2", null, "terminal", T0 + 13, 1);
+  msg.run(S, "assistant", "", null, calls("a_3", "a_4"), null, T0 + 14, 1);
+  msg.run(S, "tool", '{"output": "FAIL", "exit_code": 1, "error": null}', "a_3", null, "terminal", T0 + 15, 1); // a_4: no result (stopped)
   msg.run(S, "user", "Second task token=abcdefghijklmnopqrstuvwx", null, null, null, T0 + 20, 1);
   msg.run(S, "assistant", "", null, calls("b_1"), null, T0 + 21, 1);
   msg.run(S, "assistant", "", null, calls("gone_1"), null, T0 + 22, 0); // rewound
@@ -362,9 +364,9 @@ test("history: /session/<sid>/tools groups calls by turn and pages back", { skip
     assert.ok(r.body.next);
     r = get(h, `/session/${S}/tools?limit=5&before=${r.body.next}`);
     assert.strictEqual(r.body.next, null);
-    assert.deepStrictEqual(r.body.turns.map((t) => t.calls.map((c) => c.call)), [["pre_0"], ["a_1", "a_2"]]);
+    assert.deepStrictEqual(r.body.turns.map((t) => t.calls.map((c) => c.call)), [["pre_0"], ["a_1", "a_2", "a_3", "a_4"]]);
     assert.strictEqual(r.body.turns[1].text, "First task");
-    assert.deepStrictEqual(r.body.turns[1].calls.map((c) => c.status), ["ok", "error"]);
+    assert.deepStrictEqual(r.body.turns[1].calls.map((c) => c.status), ["ok", "error", "error", "interrupted"], "non-zero exit_code is an error; a call that never got a result was interrupted");
     assert.strictEqual(r.body.turns[1].calls[0].ms, 1000);
     assert.strictEqual(get(h, `/session/${S}/tools?before=12x`).code, 400);
     assert.strictEqual(get(h, "/session/nope_nope/tools").code, 404);
