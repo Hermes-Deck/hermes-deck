@@ -15,8 +15,6 @@
 .livebar:not(.open) .la-body { max-height: 7.6em; }
 .la-think { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: italic 300 15px/1.7 var(--serif); color: var(--t3); }
 .la-none { margin: 0; font: 12px var(--sans); color: var(--t3); }
-.la-steps { margin: 0; padding-left: 16px; font: 12px/1.6 var(--mono); color: var(--t3); }
-.la-steps li.now { color: var(--teal); }
 .livebar.ph-approval .la-dot, .livebar.ph-question .la-dot { border-color: var(--brass); animation: none; }
 .livebar.ph-approval .la-label, .livebar.ph-question .la-label { color: var(--brass); }
 @media (prefers-reduced-motion: reduce) { .livebar.la-enter, .la-dot { animation: none; } }

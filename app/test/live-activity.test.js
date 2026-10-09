@@ -124,7 +124,7 @@ test("event state with no event for a while and an idle node is torn down (no st
   assert.equal(w.la.has("s"), false);
 });
 
-test("Show thinking: remembered, reported to the caller, and the open row shows the reasoning (or the steps)", () => {
+test("Show thinking: remembered, reported to the caller, and the open row shows the reasoning, never a tool list", () => {
   const saved = new Map();
   const store = { get: (k) => saved.get(k) || null, set: (k, v) => saved.set(k, v) };
   const w = world({ store });
@@ -140,7 +140,8 @@ test("Show thinking: remembered, reported to the caller, and the open row shows 
   assert.equal(world({ store }).la.isOpen(), true, "a new renderer starts open");
   w.ev("tool.start", { name: "read_file" });
   row = w.la.row(w.la.view("s", { live: true }));
-  assert.ok(walk(row).some((n) => n.tag === "ol" && n.attrs.class === "la-steps"), "no reasoning yet: the step log");
+  assert.ok(!walk(row).some((n) => n.tag === "ol"), "the calls are in the transcript, not listed again");
+  assert.ok(walk(row).some((n) => n.attrs.class === "la-none"), "no reasoning yet: a quiet note");
   w.ev("reasoning.delta", { text: "Thinking hard." });
   row = w.la.row(w.la.view("s", { live: true }));
   assert.ok(walk(row).some((n) => n.attrs.class === "la-think" && textOf(n) === "Thinking hard."));

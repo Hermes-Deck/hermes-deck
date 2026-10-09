@@ -50,13 +50,13 @@ test("selection shares exact session/call identity and opens only on inspect", (
   assert.equal(c.selection().call, "call-b");
 });
 const R = require("../renderer/receipts");
-test("receipt accumulates calls once, stays open live, folds and counts failures at completion", () => {
+test("receipt accumulates calls once, starts folded (the transcript shows each call), counts failures at completion", () => {
   const s = R.createStore();
   s.event("s", "message.start", {}, 1000);
   s.event("s", "tool.start", { tool_id: "a", name: "terminal", arguments: { command: "npm test" } }, 2000);
   s.event("s", "tool.start", { tool_id: "a", name: "terminal" }, 2000);
   assert.equal(s.turns("s")[0].calls.length, 1);
-  assert.equal(s.turns("s")[0].open, true);
+  assert.equal(s.turns("s")[0].open, false, "a live turn's receipt is a summary: folded until the reader opens it");
   s.event("s", "tool.complete", { tool_id: "a", status: "error", result: "failure", duration_ms: 500 }, 2500);
   s.event("s", "message.complete", {}, 42000);
   const turn = s.turns("s")[0];

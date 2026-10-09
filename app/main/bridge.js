@@ -522,7 +522,74 @@ function storedReasoning(m) {
   return "";
 }
 
-/** Port of Desk's hermesHistoryMessages: visible user/assistant text only, plus an assistant's stored reasoning. */
+const CALLS_MAX = 24; // tool calls kept per assistant step
+const CALL_ARG_MAX = 160; // characters of one call's argument preview
+// the argument a reader recognises a call by, in this order; else the first string argument
+const CALL_ARG_KEYS = ["command", "cmd", "path", "file_path", "url", "query", "pattern", "goal", "prompt", "name", "code"];
+// Tool arguments stay on screen in the transcript: the common secret shapes are masked (the relay's patterns, trimmed)
+const CALL_SECRET_RES = [
+  /\b\d{8,10}:[A-Za-z0-9_-]{35}\b/g,
+  /\b(?:sk|rk|pk)-[A-Za-z0-9_-]{16,}/g,
+  /\b(?:ghp|gho|ghs|github_pat)_[A-Za-z0-9_]{16,}/g,
+  /\bxox[abprs]-[A-Za-z0-9-]{10,}/g,
+  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
+  /\bAIza[A-Za-z0-9_-]{35}\b/g,
+  /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
+];
+const CALL_LABELLED_RES = [
+  /(bearer\s+)[A-Za-z0-9._~+/=-]{12,}/gi,
+  /((?:api[_-]?key|token|secret|password)["']?\s*[:=]\s*["']?)[^\s"',}]{6,}/gi,
+  /(\b[a-z][a-z0-9+.-]{1,20}:\/\/[^\s:/@]+:)[^\s@/]+(?=@)/gi,
+];
+function redactCallArg(s) {
+  let out = s;
+  for (const re of CALL_SECRET_RES) out = out.replace(re, "•••");
+  for (const re of CALL_LABELLED_RES) out = out.replace(re, "$1•••");
+  return out;
+}
+
+/** One line a reader recognises a tool call by: its main argument, masked and clipped. */
+function callArg(raw) {
+  let v = raw;
+  if (typeof v === "string") {
+    try { v = JSON.parse(v); } catch { /* not JSON: the text itself is the argument */ }
+  }
+  let s = "";
+  if (isPlainObject(v)) {
+    const k = CALL_ARG_KEYS.find((x) => typeof v[x] === "string" && v[x].trim()) || Object.keys(v).find((x) => typeof v[x] === "string" && v[x].trim());
+    s = k ? v[k] : Object.keys(v).length ? JSON.stringify(v) : "";
+  } else if (typeof v === "string") s = v;
+  else if (v != null) s = JSON.stringify(v) || "";
+  s = redactCallArg(s.replace(CONTROL_RE, " ").replace(/\s+/g, " ").trim());
+  return s.length > CALL_ARG_MAX ? `${s.slice(0, CALL_ARG_MAX - 1)}…` : s;
+}
+
+/**
+ * The tool calls an assistant step made, as [{id, name, arg}]. Calls made through Hermes' bridge tools (tool_call)
+ * show the tool they reached, from the labels Hermes stores beside them (tool_call_labels).
+ */
+function storedCalls(m) {
+  if (!Array.isArray(m.tool_calls)) return [];
+  const labels = isPlainObject(m.tool_call_labels) ? m.tool_call_labels : {};
+  const out = [];
+  for (const c of m.tool_calls) {
+    if (out.length >= CALLS_MAX) break;
+    if (!isPlainObject(c)) continue;
+    const fn = isPlainObject(c.function) ? c.function : c;
+    const name = str(fn.name, 96).trim();
+    if (!name) continue;
+    const id = str(c.id, 128);
+    const inner = Array.isArray(labels[id]) ? labels[id].filter((l) => isPlainObject(l) && typeof l.name === "string" && l.name.trim()) : [];
+    if (inner.length) for (const l of inner.slice(0, CALLS_MAX - out.length)) out.push({ id, name: str(l.name, 96).trim(), arg: callArg(typeof l.preview === "string" ? l.preview : "") });
+    else out.push({ id, name, arg: callArg(fn.arguments ?? fn.args) });
+  }
+  return out;
+}
+
+/**
+ * Port of Desk's hermesHistoryMessages: visible user/assistant text, plus an assistant's stored reasoning and the
+ * tool calls it made (so a step that only thought and called a tool reads as one: Thought, then its calls).
+ */
 function projectHistory(messages) {
   if (!Array.isArray(messages)) return [];
   const out = [];
@@ -546,11 +613,15 @@ function projectHistory(messages) {
     text = keepLines(text, 100000);
     if (!text.trim() && media) text = i18nText("A0032");
     const think = m.role === "assistant" ? storedReasoning(m) : "";
-    if (!text.trim() && !think) continue; // a tool-call step that only carries reasoning still shows its Thinking
+    const calls = m.role === "assistant" ? storedCalls(m) : [];
+    if (!text.trim() && !think && !calls.length) continue; // a tool-call step shows its Thinking and its calls
     const id = typeof m.id === "string" && m.id ? m.id.slice(0, 128) : Number.isSafeInteger(m.id) ? String(m.id) : null;
     let ts = num(m.timestamp) ?? num(m.created_at) ?? num(m.ts);
     if (ts !== null && ts > 1e12) ts /= 1000; // milliseconds
-    out.push(think ? { id, role: m.role, text, ts, think } : { id, role: m.role, text, ts });
+    const item = { id, role: m.role, text, ts };
+    if (think) item.think = think;
+    if (calls.length) item.calls = calls;
+    out.push(item);
   }
   return out;
 }

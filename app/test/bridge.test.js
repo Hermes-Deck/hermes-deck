@@ -287,6 +287,35 @@ test("history keeps an assistant message's stored reasoning as `think` (display_
   ]);
 });
 
+test("history keeps the tool calls of an assistant step, in order, with a masked one-line argument", () => {
+  const call = (id, name, args) => ({ id, type: "function", function: { name, arguments: typeof args === "string" ? args : JSON.stringify(args) } });
+  const out = bridge.projectHistory([
+    { id: 1, role: "user", content: "run the tests" },
+    { id: 2, role: "assistant", content: "", reasoning: "Run the suite first.", tool_calls: [
+      call("c1", "terminal", { command: "npm test\n  -- --watch=false", timeout: 600 }),
+      call("c2", "read_file", { offset: 3, path: "app/main.js" }),
+    ] },
+    { id: 3, role: "tool", tool_call_id: "c1", content: "ok" },
+    { id: 4, role: "assistant", content: "", tool_calls: [call("c3", "terminal", { command: "curl -H 'Authorization: Bearer abcdefghijklmnopqrstuvwx' https://example.com" })] },
+    { id: 5, role: "assistant", content: "Checking.", tool_calls: [call("c4", "web_search", "not json at all")] },
+    { id: 6, role: "assistant", content: "", tool_calls: [call("c5", "tool_call", { name: "mcp_x", arguments: {} })],
+      tool_call_labels: { c5: [{ name: "github_create_issue", preview: "Fix the build" }] } },
+    { id: 7, role: "assistant", content: "", tool_calls: [{ id: "c6", function: { name: "" } }, "junk"] },
+    { id: 8, role: "assistant", content: "", tool_calls: [call("c7", "write_file", { path: "/tmp/" + "x".repeat(400) })] },
+    { id: 9, role: "assistant", content: "done" },
+  ]);
+  assert.deepEqual(out.map((m) => [m.id, m.text, m.think, m.calls]), [
+    ["1", "run the tests", undefined, undefined],
+    ["2", "", "Run the suite first.", [{ id: "c1", name: "terminal", arg: "npm test -- --watch=false" }, { id: "c2", name: "read_file", arg: "app/main.js" }]],
+    ["4", "", undefined, [{ id: "c3", name: "terminal", arg: "curl -H 'Authorization: Bearer •••' https://example.com" }]],
+    ["5", "Checking.", undefined, [{ id: "c4", name: "web_search", arg: "not json at all" }]],
+    ["6", "", undefined, [{ id: "c5", name: "github_create_issue", arg: "Fix the build" }]],
+    ["8", "", undefined, [{ id: "c7", name: "write_file", arg: `/tmp/${"x".repeat(154)}…` }]],
+    ["9", "done", undefined, undefined],
+  ], "a step that only called a tool is kept; a tool row and a call with no name are not shown");
+  assert.equal(out[5].calls[0].arg.length, 160);
+});
+
 test("failure wording names the actual problem", () => {
   const c = (stderr, code) => bridge.classifyFailure(null, stderr, { code }).code;
   assert.equal(c("user@host: Permission denied (publickey).", 255), "key");

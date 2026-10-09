@@ -54,7 +54,7 @@ function world() {
     hermesTextEl: (m) => element("div", { class: "text" }, m.text),
   };
   vm.createContext(ctx);
-  const names = ["sealLive", "applyBridgeEvent", "hermesLiveSegments", "settleEcho", "renderHermesMsgs", "splitSystemNotices", "hermesMsgEl"];
+  const names = ["sealLive", "applyBridgeEvent", "hermesLiveSegments", "settleEcho", "renderHermesMsgs", "splitSystemNotices", "hermesMsgEl", "hermesIsStep", "hermesCallsEl"];
   vm.runInContext(names.map(fn).join("\n"), ctx);
   ctx.H.hist.set("s", { msgs: [], loaded: true, loading: false, error: null, hasMore: false });
   const ev = (type, payload = {}) => { clock.t += 10; vm.runInContext("applyBridgeEvent", ctx)({ type, sid: "s", payload }); };
@@ -146,4 +146,91 @@ test("an opened Thinking block stays open across transcript rebuilds (per messag
   again.attrs.ontoggle();
   assert.ok(!TB.el("thought", "s:2").attrs.open);
   assert.equal(TB.el("   ", "s:4"), null);
+});
+
+test("a tool call ends a step: the stored step is read at once; the row keeps its thought until the next step thinks", () => {
+  const w = world();
+  let loads = 0;
+  w.ctx.hermesLoadHistory = () => { loads++; };
+  w.LA.setOpen(true);
+  w.ev("message.start");
+  w.ev("reasoning.delta", { text: "Step one: look at the log." });
+  w.ev("tool.generating", { name: "terminal" });
+  assert.equal(w.LA.view("s", { live: true }).think, "Step one: look at the log.", "the step's reasoning stays while its call is written");
+  assert.equal(loads, 0);
+  w.ev("tool.start", { name: "terminal", tool_id: "c1", arguments: { command: "tail log" } });
+  assert.equal(loads, 1, "Hermes stored the step before the tool runs: read it now");
+  assert.equal(w.LA.view("s", { live: true }).think, "Step one: look at the log.", "no empty gap while the tool runs");
+  assert.ok(!w.screen().some((n) => n.tag === "ol"), "the row never lists the turn's tool calls");
+  w.ev("tool.complete", { tool_id: "c1" });
+  w.ev("reasoning.delta", { text: "" });
+  assert.equal(w.LA.view("s", { live: true }).think, "Step one: look at the log.");
+  w.ev("reasoning.delta", { text: "Step two." });
+  const row = w.screen().find((n) => cls(n) === "la-think");
+  assert.equal(textOf(row), "Step two.", "the row never repeats the whole turn");
+  w.ev("message.complete", { text: "Done." });
+  const block = w.screen().find((n) => cls(n) === "think-block");
+  assert.equal(textOf(walk(block).find((n) => cls(n) === "tb-text")), "Step two.", "the final message keeps only its own step's reasoning");
+});
+
+test("work steps read in order: each thought with the calls it made, one stamp per stretch of steps", () => {
+  const w = world();
+  const fired = [];
+  w.ctx.document = { dispatchEvent: (e) => fired.push(e) };
+  w.ctx.CustomEvent = class { constructor(type, o) { this.type = type; this.detail = o.detail; } };
+  w.ctx.H.hist.get("s").msgs = [
+    { id: "1", role: "user", text: "go", ts: 100 },
+    { id: "2", role: "assistant", text: "", ts: 101, think: "Look first.", calls: [{ id: "c1", name: "terminal", arg: "git status" }] },
+    { id: "3", role: "assistant", text: "", ts: 102, think: "Then read.", calls: [{ id: "c2", name: "read_file", arg: "a.js" }, { id: "", name: "read_file", arg: "" }] },
+    { id: "4", role: "assistant", text: "Found it.", ts: 103, calls: [{ id: "c4", name: "patch", arg: "a.js" }] },
+    { id: "5", role: "assistant", text: "", ts: 104, calls: [{ id: "c5", name: "terminal", arg: "npm test" }] },
+    { id: "6", role: "assistant", text: "Fixed.", ts: 105 },
+  ];
+  w.screen();
+  const msgs = w.ctx.els.msgsInner.kids.filter((n) => /^msg\b/.test(cls(n)));
+  const read = (el) => el.kids.flatMap((k) => {
+    if (cls(k) === "think-block") return [`T:${textOf(walk(k).find((n) => cls(n) === "tb-text"))}`];
+    if (cls(k) === "tool-calls") return k.kids.map((li) => { const b = li.kids[0]; return `C:${b.tag}:${walk(b).filter((n) => /^tc-/.test(cls(n))).map(textOf).join(" ")}`; });
+    if (cls(k) === "text") return [`X:${textOf(k)}`];
+    if (k.tag === "time") return ["@"];
+    return [];
+  });
+  assert.deepEqual(msgs.map((el) => [cls(el), ...read(el)]), [
+    ["msg out", "X:go", "@"],
+    ["msg step work", "T:Look first.", "C:button:terminal git status"],
+    ["msg step step-end work", "T:Then read.", "C:button:read_file a.js", "C:span:read_file", "@"],
+    ["msg work", "X:Found it.", "C:button:patch a.js", "@"],
+    ["msg step step-end work", "C:button:terminal npm test", "@"],
+    ["msg", "X:Fixed.", "@"],
+  ]);
+  const first = walk(msgs[1]).find((n) => n.tag === "button" && cls(n) === "tc");
+  first.attrs.onclick();
+  assert.deepEqual(JSON.parse(JSON.stringify(fired.map((e) => [e.type, e.detail]))), [["deck-tool-reveal", { sid: "s", call: "c1", ts: 101 }]], "a call opens its row in the turn's receipt");
+});
+
+test("a history read asked for while one is on its way runs once more after it (a step stored meanwhile is not missed)", async () => {
+  const start = SRC.indexOf("  async function hermesLoadHistory(");
+  const code = SRC.slice(start, SRC.indexOf("\n  }\n", start) + 4);
+  const st = { loaded: true, loading: false, msgs: [], older: false, sig: "" };
+  const gates = [];
+  let reads = 0;
+  const ctx = {
+    BT: null, hermesMode: () => true, bridgeOpen: () => true, hHist: () => st, H: { nodes: new Map(), sel: "s" }, mark() {},
+    HW: { PAGE: 50 }, histSig: (m) => String(m.length), settleEcho: () => false, cleanErr: String,
+    deck: { bridge: { history: () => { reads++; return new Promise((r) => gates.push(r)); } } },
+  };
+  vm.createContext(ctx);
+  vm.runInContext(code, ctx);
+  const load = vm.runInContext("hermesLoadHistory", ctx);
+  const first = load("s");
+  load("s");
+  load("s");
+  assert.equal(reads, 1, "one read at a time");
+  gates.shift()({ messages: [], offset: 50, hasMore: false });
+  await first;
+  await new Promise((r) => setImmediate(r));
+  assert.equal(reads, 2, "the read asked for meanwhile runs once after the one on its way");
+  gates.shift()({ messages: [], offset: 50, hasMore: false });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(reads, 2, "and only once");
 });

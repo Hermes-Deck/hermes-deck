@@ -370,6 +370,47 @@ const MEDIA_HISTORY = [
   { id: 22, role: "user", content: `what is in these?\n\n@image:${MEDIA_DIR}/upload_1_1.png\n@image:\`${MEDIA_DIR}/upload_1_2.png\`\n@image:"${MEDIA_DIR}/missing.png"\n@file:'${MEDIA_DIR}/../notes.txt'`, timestamp: 1700000011 },
 ];
 
+// --work: every ordinary session's history is one turn of work: thoughts with the tool calls they made (stored before
+// the tools ran, then the tool rows), a line of commentary beside a call, and the reply.
+const workCall = (id, name, args) => ({ id, type: "function", function: { name, arguments: JSON.stringify(args) } });
+const WORK_HISTORY = [
+  { id: 31, role: "user", content: "Run the test suite and fix what fails.", timestamp: 1700000020 },
+  { id: 32, role: "assistant", content: "", timestamp: 1700000021, reasoning: "I should run the plugin tests first, then the app suite.",
+    tool_calls: [workCall("w1", "terminal", { command: "python -m pytest hermes-plugin -q", timeout: 600 })] },
+  { id: 33, role: "tool", tool_call_id: "w1", content: "1 failed, 212 passed" },
+  { id: 34, role: "assistant", content: "", timestamp: 1700000040, reasoning: "The failure imports yaml; system python may not have it. Check against a clean checkout to confirm it is pre-existing.",
+    tool_calls: [workCall("w2", "terminal", { command: "git stash && python -m pytest hermes-plugin/test_usage.py -q; git stash pop" }), workCall("w3", "read_file", { path: "hermes-plugin/test_usage.py", offset: 1 })] },
+  { id: 35, role: "tool", tool_call_id: "w2", content: "1 failed" },
+  { id: 36, role: "tool", tool_call_id: "w3", content: "import yaml" },
+  { id: 37, role: "assistant", content: "Pre-existing (no PyYAML in system python). Full suite with the project python:", timestamp: 1700000060,
+    tool_calls: [workCall("w4", "terminal", { command: "venv/bin/python -m pytest -q" })] },
+  { id: 38, role: "tool", tool_call_id: "w4", content: "213 passed" },
+  { id: 39, role: "assistant", content: "", timestamp: 1700000080, reasoning: "Now the app suite. npm ci would download Electron; skip the binary.",
+    tool_calls: [workCall("w5", "terminal", { command: "ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci && npm test" })] },
+  { id: 40, role: "tool", tool_call_id: "w5", content: "1131 tests, 0 failed" },
+  { id: 41, role: "assistant", content: "", timestamp: 1700000100, reasoning: "While that ran: the docs mention the old label; update docs/features.md.",
+    tool_calls: [workCall("w6", "patch", { path: "docs/features.md", old_string: "a", new_string: "b" })] },
+  { id: 42, role: "tool", tool_call_id: "w6", content: "ok" },
+  { id: 43, role: "assistant", content: "All green: plugin 213 passed, app 1131 passed. The one plugin failure was pre-existing (system python has no PyYAML).", timestamp: 1700000110, reasoning: "Summarise." },
+];
+
+// --work-live: a turn still running. The history holds its first step (stored before the tool ran); the events then
+// finish that tool and stream the second step's reasoning, with no message.complete.
+const WORK_LIVE_HISTORY = WORK_HISTORY.slice(0, 2);
+let workLiveSent = false;
+function workLive(sid) {
+  const ev = (type, payload) => out({ jsonrpc: "2.0", method: "event", params: { type, session_id: sid, payload } });
+  const steps = [
+    () => ev("message.start", {}),
+    () => ev("reasoning.delta", { text: WORK_HISTORY[1].reasoning }),
+    () => ev("tool.start", { tool_id: "w1", name: "terminal", arguments: { command: "python -m pytest hermes-plugin -q" } }),
+    () => ev("tool.complete", { tool_id: "w1", result: "1 failed, 212 passed", duration_ms: 4200 }),
+    () => ev("reasoning.delta", { text: "One failure. It imports yaml; " }),
+    () => ev("reasoning.delta", { text: "system python may not have it. I will check a clean checkout first." }),
+  ];
+  steps.forEach((fn, i) => setTimeout(fn, 300 + i * 250));
+}
+
 const FILE_PATH = "/srv/example/out/report.txt";
 const FILE_BODY = Buffer.from("line of report\n".repeat(200)); // 3,000 bytes
 const ok = (result) => ({ result });
@@ -406,6 +447,8 @@ function answer(method, p) {
       }
       if (p.session_id === "s-files") return ok({ session_id: p.session_id, messages: offset === 0 ? FILES_HISTORY : [], pagination: { limit, offset, order: "latest", returned: offset === 0 ? FILES_HISTORY.length : 0 } });
       if (flag("media")) return ok({ session_id: p.session_id, messages: offset === 0 ? MEDIA_HISTORY : [], pagination: { limit, offset, order: "latest", returned: offset === 0 ? MEDIA_HISTORY.length : 0 } });
+      if (flag("work-live")) return ok({ session_id: p.session_id, messages: offset === 0 ? WORK_LIVE_HISTORY : [], pagination: { limit, offset, order: "latest", returned: offset === 0 ? WORK_LIVE_HISTORY.length : 0 } });
+      if (flag("work")) return ok({ session_id: p.session_id, messages: offset === 0 ? WORK_HISTORY : [], pagination: { limit, offset, order: "latest", returned: offset === 0 ? WORK_HISTORY.length : 0 } });
       const page = offset === 0 ? HISTORY : [{ id: 9, role: "user", content: "Eski soru", timestamp: 1699999000 }];
       return ok({ session_id: p.session_id, messages: page, pagination: { limit, offset, order: "latest", returned: page.length } });
     }
@@ -520,6 +563,10 @@ function answer(method, p) {
 
 let listed = false;
 function after(method, p) {
+  if (method === "session.messages" && flag("work-live") && !workLiveSent && p.session_id === MAIN) {
+    workLiveSent = true;
+    workLive(MAIN);
+  }
   if (method === "prompt.submit" && typeof p.session_id === "string" && p.session_id.startsWith("rpc-")) {
     const ev = (type, payload) => out({ jsonrpc: "2.0", method: "event", params: { type, session_id: p.session_id, payload } });
     ev("message.start", {});

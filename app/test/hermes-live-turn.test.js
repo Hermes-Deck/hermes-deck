@@ -46,7 +46,7 @@ function world() {
     hermesMsgEl: (m) => element("div", { class: `msg${m.role === "user" ? " out" : ""}` }, element("div", { class: "text" }, m.text)),
   };
   vm.createContext(ctx);
-  const names = ["sealLive", "applyBridgeEvent", "hermesLiveSegments", "settleEcho", "renderHermesMsgs"];
+  const names = ["sealLive", "applyBridgeEvent", "hermesLiveSegments", "settleEcho", "renderHermesMsgs", "hermesIsStep"];
   vm.runInContext(names.map(fn).join("\n"), ctx);
   ctx.H.hist.set("s-main", { msgs: [], loaded: true, loading: false, error: null, hasMore: false });
   const ev = (type, payload = {}) => vm.runInContext("applyBridgeEvent", ctx)({ type, sid: "s-main", payload });

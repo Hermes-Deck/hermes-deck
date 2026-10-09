@@ -33,7 +33,7 @@
       const list = turns(sid);
       const live = active(sid);
       if (live) return live;
-      const turn = { id: `receipt-${++seq}`, since: at, end: null, open: true, calls: [], anchor: null, measured: true, turnId: null };
+      const turn = { id: `receipt-${++seq}`, since: at, end: null, open: false, calls: [], anchor: null, measured: true, turnId: null };
       list.push(turn);
       while (list.length > MAX_TURNS) list.shift();
       return turn;
@@ -124,7 +124,6 @@
         if (turn.measured || turn.end != null || turn.calls.some(c => c.status === "running")) continue;
         turn.end = Math.max(turn.since, ...turn.calls.map(c => c.ts * 1000)); turn.open = false;
       }
-      if (imported && imported.calls.some(c => c.status === "running")) imported.open = true;
       while (list.length > MAX_TURNS) list.shift();
       bound(sid);
     }
@@ -144,7 +143,7 @@
         } else {
           const lost = turns(sid).filter(turn => !turn.imported).at(-1);
           if (lost?.lost && lost.turnId === turnId) {
-            lost.end = null; lost.lost = false; lost.open = true;
+            lost.end = null; lost.lost = false;
             for (const call of lost.calls) if (call.status === "unknown") call.status = "running";
             return true;
           }
@@ -182,11 +181,13 @@
   function receipt({ h, t, sid, turn, select, selected = null }) {
     const totals = stats(turn);
     const label = t(totals.running ? "conv.working" : totals.seconds == null ? "conv.receiptCount" : "conv.receipt", totals);
-    const fold = h("details", { class: "receipt-fold", open: turn.open ? true : null, ontoggle: () => { if (turn.end != null) turn.open = fold.open; } },
+    const fold = h("details", { class: "receipt-fold", open: turn.open ? true : null, ontoggle: () => { turn.open = fold.open; } },
       h("summary", { class: "receipt-summary" }, label, totals.failed ? h("span", { class: "receipt-fail" }, t("conv.failed", totals)) : null),
       h("div", { class: "receipt-calls" }, turn.calls.map(call => {
         const active = selected?.sid === sid && selected.call === call.call;
-        const item = h("details", { class: `receipt-call${failed(call) ? " failed" : ""}${active ? " selected" : ""}`, open: active || call.open ? true : null,
+        // the call the turn runs now is marked, not unfolded: following a live turn must not open every call it makes
+        const unfold = active && selected.source !== "live";
+        const item = h("details", { class: `receipt-call${failed(call) ? " failed" : ""}${active ? " selected" : ""}`, open: unfold || call.open ? true : null,
           dataset: { call: call.call }, ontoggle: () => { call.open = item.open; } },
           h("summary", { onclick: () => select(sid, call.call, false) },
             h("span", { class: call.status === "running" ? "receipt-spinner" : "receipt-dot", "aria-hidden": "true" }),
@@ -238,6 +239,9 @@
       };
       for (const turn of store.turns(sid)) {
         if (!turn.calls.length) continue;
+        // A Hermes chat shows each call under the thought that made it while the turn runs, and the live row says what
+        // runs now: the receipt waits for the turn's end (a summary), unless the reader opened one of its calls.
+        if (session.kind === "hermes" && turn.end == null && !turn.open) continue;
         if (!turn.imported) {
           // Fixed at first placement (calls arrive after the user's message is on screen), so a later steer or
           // queued message never pulls an earlier turn's receipt; a turn seen only via snapshots uses timestamps.
@@ -280,13 +284,16 @@
           while (nodes.size > MAX_TURNS * 2) nodes.delete(nodes.keys().next().value);
         }
         keep.add(cached.el);
-        // Before this turn's final prose, never in another user's turn.
-        let target = anchor ? anchor.nextElementSibling : inner.firstElementChild || null, last = null;
+        // After this turn's work (messages that called tools or only thought: the transcript shows each call where it
+        // was made) and before the prose that follows it; with no such message, before the final prose. Never in
+        // another user's turn: the receipt sums the work up, it does not split it.
+        let target = anchor ? anchor.nextElementSibling : inner.firstElementChild || null, last = null, afterWork = null, worked = false;
         while (target && !target.matches(".msg.out:not(.outbox)")) {
-          if (target.matches(".msg:not(.out):not(.sysmsg)")) last = target;
+          if (target.matches(".msg.work")) { worked = true; afterWork = null; }
+          else if (target.matches(".msg:not(.out):not(.sysmsg)")) { last = target; if (!afterWork) afterWork = target; }
           target = target.nextElementSibling;
         }
-        const ref = last || target || inner.querySelector(".livebar, .outbox, .conv-wait") || null;
+        const ref = (worked ? afterWork : last) || target || inner.querySelector(".livebar, .outbox, .conv-wait") || null;
         if (cached.el.parentNode !== inner || after(cached.el) !== ref) inner.insertBefore(cached.el, ref);
       }
       for (const el of inner.querySelectorAll(".receipt")) if (!keep.has(el)) el.remove();

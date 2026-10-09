@@ -8,7 +8,7 @@ const { boot } = require("./composer-dom-helper");
 const live = (extra = {}) => ({ sid: "s", state: "working", turnId: "t1", terminalAt: null, ...extra });
 const idle = (extra = {}) => ({ sid: "s", state: "idle", turnId: "t1", terminalAt: 5, ...extra });
 
-test("a turn driven elsewhere opens from the snapshot, absorbs its running import and folds once when idle", () => {
+test("a turn driven elsewhere starts from the snapshot, absorbs its running import and ends once when idle", () => {
   const s = R.createStore();
   s.replace("s", [{ call: "a", tool: "terminal", ts: 10, status: "running" }], 11_000);
   assert.equal(s.turns("s")[0].imported, true);
@@ -16,7 +16,7 @@ test("a turn driven elsewhere opens from the snapshot, absorbs its running impor
   const turn = s.active("s");
   assert.equal(turn.measured, false);
   assert.deepEqual(turn.calls.map(c => c.call), ["a"], "the running import joins the live turn");
-  assert.equal(turn.open, true);
+  assert.equal(turn.open, false, "folded: the transcript shows the calls");
   s.replace("s", [{ call: "a", tool: "terminal", ts: 10, status: "ok", ms: 3 }, { call: "b", tool: "read", ts: 13, status: "running" }], 14_000);
   assert.deepEqual(turn.calls.map(c => c.call), ["a", "b"]);
   assert.equal(turn.end, null, "a completed import does not fold a live turn early");
@@ -51,7 +51,7 @@ test("a lagging idle snapshot right after the Deck's own send does not fold the 
   assert.equal(R.stats(s.turns("s")[0]).seconds, 8);
 });
 
-test("a dropped link folds live turns in every session and a reconnect reopens a still-running one", () => {
+test("a dropped link ends live turns in every session and a reconnect resumes a still-running one", () => {
   const s = R.createStore();
   s.event("a", "message.start", {}, 1000); s.event("a", "tool.start", { tool_id: "x", name: "x" }, 1100);
   s.observe("a", live({ sid: "a" }), 1200);
@@ -62,7 +62,8 @@ test("a dropped link folds live turns in every session and a reconnect reopens a
   assert.equal(s.find("a", "x").call.status, "unknown");
   assert.equal(R.failed(s.find("a", "x").call), false, "a lost call is not a failure");
   assert.equal(s.observe("b", live({ sid: "b", turnId: "tb" }), 3000), true);
-  assert.equal(s.active("b").open, true);
+  assert.ok(s.active("b"), "the still-running turn is live again");
+  assert.equal(s.active("b").open, false, "a reconnect does not unfold it");
   assert.equal(s.find("b", "y").call.status, "running");
   s.replace("b", [{ call: "y", tool: "y", ts: 1.3, status: "ok", ms: 4 }], 3100);
   assert.equal(s.find("b", "y").call.status, "ok");
@@ -85,7 +86,7 @@ test("imported history is split by user-message time and hidden without timestam
 });
 
 test("a live receipt stays with its own turn when a steer message follows", () => {
-  const env = boot();
+  const env = boot({ session: { id: "s", sid: "s", kind: "agent", channel: "telegram", profile: "default" } }); // a relay agent view: the live receipt shows
   env.fire("deck-conversation-turn", { sid: "s", type: "local.sent", payload: {}, at: env.clock });
   env.inner.append(env.user("go"));
   env.flush();
@@ -97,18 +98,43 @@ test("a live receipt stays with its own turn when a steer message follows", () =
   assert.deepEqual(order, ["hello", "reply", "go", "R", "also do this"]);
 });
 
-test("a bridge snapshot folds the visible receipt once and a disconnect folds without counting failures", () => {
-  const env = boot();
+test("a bridge snapshot shows a live receipt folded and a disconnect ends it without counting failures", () => {
+  const env = boot({ session: { id: "s", sid: "s", kind: "agent", channel: "telegram", profile: "default" } }); // a relay agent view: the live receipt shows
   // Elsewhere-driven calls need the same timestamp anchor that stored transcript users carry.
   env.inner.querySelector(".msg.out").dataset.ts = String(env.clock / 1000 - 1);
   env.bridgeEvent({ t: "snapshot", snapshot: { nodes: [live()] } });
   env.bridgeEvent({ t: "event", type: "deck.tools", sid: "s", payload: { tools: [{ call: "a", tool: "x", ts: env.clock / 1000, status: "running" }] } });
   env.flush();
   assert.ok(env.inner.querySelector(".receipt.running"));
-  assert.equal(env.inner.querySelector(".receipt-fold").open, true);
+  assert.ok(!env.inner.querySelector(".receipt-fold").open, "a live receipt is a folded summary");
   env.bridgeEvent({ t: "status", status: "closed" });
   env.flush();
   assert.equal(env.inner.querySelector(".receipt.running"), null);
   assert.equal(env.inner.querySelector(".receipt").dataset.failed, "false");
   assert.ok(!env.inner.querySelector(".receipt-fold").open);
+});
+
+test("a Hermes chat keeps the receipt out of a running turn; after the end it sums the work up after its steps", () => {
+  const env = boot();
+  env.inner.replaceChildren(env.user("go"));
+  env.flush();
+  env.fire("deck-conversation-turn", { sid: "s", type: "local.sent", payload: {}, at: env.clock });
+  env.fire("deck-conversation-turn", { sid: "s", type: "tool.start", payload: { tool_id: "a", name: "x" }, at: env.clock });
+  env.inner.append(env.agent("step one", { class: "msg step work" }));
+  env.flush();
+  const order = () => env.inner.children.map(el => el.classList.contains("receipt") ? "R" : el.textContent);
+  assert.deepEqual(order(), ["go", "step one"], "running: each call is under its thought, the live row says what runs");
+  env.fire("deck-tool-reveal", { sid: "s", call: "a" });
+  env.flush();
+  assert.deepEqual(order(), ["go", "step one", "R"], "a call the reader clicked opens the receipt");
+  assert.ok(env.inner.querySelector(".receipt-fold").open);
+  env.inner.querySelector(".receipt-summary").click(); // the reader folds it again
+  env.flush();
+  assert.ok(!env.inner.querySelector(".receipt-fold").open);
+  env.fire("deck-conversation-turn", { sid: "s", type: "tool.start", payload: { tool_id: "b", name: "y" }, at: env.clock });
+  env.inner.append(env.agent("note", { class: "msg work" }), env.agent("step two", { class: "msg step work" }), env.agent("answer"));
+  env.fire("deck-conversation-turn", { sid: "s", type: "message.complete", payload: {}, at: env.clock + 5000 });
+  env.flush();
+  assert.deepEqual(order(), ["go", "step one", "note", "step two", "R", "answer"]);
+  assert.ok(!env.inner.querySelector('.receipt-call[data-call="b"]').open, "a call followed live is marked, never unfolded");
 });

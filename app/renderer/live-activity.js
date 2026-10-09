@@ -6,8 +6,9 @@
 // cannot duplicate the reply.
 //  - Sources, in priority: the live bridge events of a turn this Deck drives (reduce()), else the snapshot node of a
 //    turn driven elsewhere (TUI, Telegram): its state and last step names.
-//  - The disclosure shows the streamed reasoning (reasoning.delta, bounded tail) when Hermes sends it, else the step
-//    log of the turn (tool names), never an error text. reasoning.available is the reply text, never shown here.
+//  - The disclosure shows the streamed reasoning of the latest step (reasoning.delta, bounded tail): a tool.start hands
+//    the step to the transcript, and the next step's first reasoning replaces it. Never the tool calls (the transcript
+//    shows them under their thought), never an error text. reasoning.available is the reply text, never shown here.
 //  - row() builds the element and remembers its parts, so patch() can update label/text in place on every reasoning
 //    token without rebuilding the transcript.
 (() => {
@@ -66,6 +67,7 @@
       // (agent/turn_response_intake.py _relay_thinking), so it would repeat the reply. Ignored (default branch).
       case "reasoning.delta": {
         const s = st && !st.done ? st : fresh(at);
+        if (s.stepDone && String(pl.text || "")) { s.think = ""; s.stepDone = false; } // a new step's reasoning
         const added = addThink(s, pl.text);
         if (s.phase === "writing") s.phase = "thinking";
         s.lastAt = at;
@@ -85,7 +87,11 @@
       case "tool.start": {
         const s = st && !st.done ? st : fresh(at);
         const name = String(pl.name || "").slice(0, 96);
-        const changed = s.phase !== "tool" || s.tool !== name;
+        let changed = s.phase !== "tool" || s.tool !== name;
+        // Hermes stores a tool-call step (its reasoning and its calls) before the tool runs, and the transcript shows
+        // it from there. The row keeps that thought on screen while the tool runs and replaces it when the next
+        // step starts thinking: never the whole turn again, never an empty gap between steps
+        if (type === "tool.start" && s.think) s.stepDone = true;
         s.phase = "tool";
         s.tool = name;
         s.arg = previewArg(pl.arguments ?? pl.args ?? pl.parameters);
@@ -199,9 +205,9 @@
     }
 
     function bodyKids(v) {
+      // only reasoning: the tool calls are in the transcript (each under the thought that made it), not listed again
       if (v.think) return [h("p", { class: "la-think" }, v.think)];
-      if (v.steps.length) return [h("ol", { class: "la-steps" }, v.steps.map((s, i) => h("li", { class: i === v.steps.length - 1 && v.phase === "tool" ? "now" : "" }, s)))];
-      return [h("p", { class: "la-none" }, i18nText("live.nothingYet"))];
+      return [h("p", { class: "la-none" }, i18nText("live.noReasoning"))];
     }
 
     function follow(b) {
@@ -220,7 +226,7 @@
       const entering = !built || built.sid !== v.sid;
       const labelEl = h("span", { class: "la-label" }, displayLabel(v));
       const body = open || v.think ? h("div", { class: "la-body", "aria-live": "off", tabindex: "0" }, bodyKids(v)) : null;
-      const b = { sid: v.sid, labelEl, bodyEl: body, key: `${open}|${v.think ? "t" : v.steps.length ? "s" : "n"}`, pinned: entering || !built || built.pinned };
+      const b = { sid: v.sid, labelEl, bodyEl: body, key: `${open}|${v.think ? "t" : "n"}`, pinned: entering || !built || built.pinned };
       if (body) {
         body.addEventListener("scroll", () => { b.pinned = body.scrollHeight - body.scrollTop - body.clientHeight < 12; }, { passive: true });
         // a reader who scrolled up keeps their place when the transcript re-renders
@@ -252,7 +258,7 @@
       const shown = !!(b && b.el.isConnected);
       if (!v) return !shown; // nothing to show and nothing shown: done; a row to remove needs a rebuild
       if (!shown || b.sid !== v.sid) return false;
-      const key = `${open}|${v.think ? "t" : v.steps.length ? "s" : "n"}`;
+      const key = `${open}|${v.think ? "t" : "n"}`;
       if (key !== b.key) return false;
       b.el.className = `livebar ph-${v.phase}${open ? " open" : ""}`;
       b.labelEl.textContent = displayLabel(v);
@@ -303,8 +309,8 @@
         ended.clear();
       },
       has: (sid) => turns.has(sid),
-      /** The streamed reasoning of the running turn ("" when none); read before message.complete drops it. */
-      think: (sid) => (turns.get(sid) || {}).think || "",
+      /** The streamed reasoning of the step under way ("" when none); read before message.complete drops it. */
+      think: (sid) => { const st = turns.get(sid); return st && !st.stepDone ? st.think : ""; },
       isOpen: () => open,
       setOpen,
       view,

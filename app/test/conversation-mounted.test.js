@@ -24,7 +24,7 @@ test("boot registers every conversation module and mounts the status row and rai
 });
 
 test("module-owned insertions do not start a decorate/paint feedback loop", () => {
-  const env = boot();
+  const env = boot({ session: { id: "s", sid: "s", kind: "agent", channel: "telegram", profile: "default" } }); // a relay agent view: its transcript has no inline calls, the live receipt shows
   env.fire("deck-conversation-turn", { sid: "s", type: "message.start", payload: {}, at: env.clock });
   env.fire("deck-conversation-turn", { sid: "s", type: "tool.start", payload: { tool_id: "c1", name: "terminal" }, at: env.clock });
   assert.ok(env.flush() <= 6);
@@ -34,7 +34,7 @@ test("module-owned insertions do not start a decorate/paint feedback loop", () =
 });
 
 test("a full transcript replacement re-decorates, keeps receipts anchored and never replays entrances", () => {
-  const env = boot();
+  const env = boot({ session: { id: "s", sid: "s", kind: "agent", channel: "telegram", profile: "default" } }); // a relay agent view: its transcript has no inline calls, the live receipt shows
   env.fire("deck-conversation-turn", { sid: "s", type: "message.start", payload: {}, at: env.clock });
   env.fire("deck-conversation-turn", { sid: "s", type: "tool.start", payload: { tool_id: "c1", name: "terminal" }, at: env.clock });
   env.fire("deck-conversation-turn", { sid: "s", type: "tool.complete", payload: { tool_id: "c1", result: "ok" }, at: env.clock + 10 });
@@ -53,7 +53,7 @@ test("a full transcript replacement re-decorates, keeps receipts anchored and ne
 });
 
 test("session switching clears receipts of the other session and resets the via line", () => {
-  const env = boot();
+  const env = boot({ session: { id: "s", sid: "s", kind: "agent", channel: "telegram", profile: "default" } }); // a relay agent view: its transcript has no inline calls, the live receipt shows
   env.fire("deck-conversation-turn", { sid: "s", type: "tool.start", payload: { tool_id: "c1", name: "terminal" }, at: env.clock });
   env.flush();
   assert.equal(env.inner.querySelectorAll(".receipt").length, 1);

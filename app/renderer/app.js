@@ -2883,7 +2883,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     }
     return st;
   }
-  const histSig = (msgs) => msgs.map((m) => `${m.id || ""}:${m.role}:${m.text.length}:${m.think ? m.think.length : 0}`).join("|");
+  const histSig = (msgs) => msgs.map((m) => `${m.id || ""}:${m.role}:${m.text.length}:${m.think ? m.think.length : 0}:${m.calls ? m.calls.length : 0}`).join("|");
 
   // history window (history-window.js): a session opens on its latest ~200 rows, older pages load by themselves
   // while the reader scrolls toward the top, and the poll merges the newest page under what is loaded
@@ -2893,7 +2893,12 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     if (!hermesMode()) return; // background bridge events must not read disabled chat history
     if (BT && BT.isDraft(sid)) return; // Botlar: a bot without its Bot Chat yet has nothing stored
     const st = hHist(sid);
-    if (st.loading || !bridgeOpen()) return;
+    if (!bridgeOpen()) return;
+    if (st.loading) {
+      // a read is already on its way and may predate what changed (a step stored just now): read once more after it
+      if (!older) st.again = true;
+      return;
+    }
     const n = H.nodes.get(sid);
     if ((n && n.fresh) || (!n && st.fresh)) {
       // just created: Hermes has no stored history for it yet
@@ -2948,6 +2953,10 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       st.loading = false;
     }
     if (changed && H.sel === sid) mark("msgs", true);
+    if (st.again) {
+      st.again = false;
+      if (!st.error) hermesLoadHistory(sid);
+    }
   }
 
   // Infinite scroll up: near the top of the list the next older page loads by itself. The scroller is a
@@ -3124,7 +3133,27 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       open ? h("pre", { class: "sysnotice-body" }, nt.body) : null);
   }
 
-  function hermesMsgEl(m) {
+  /**
+   * A work step of a turn: an assistant message with no words for the reader, only a thought and/or the tool calls it
+   * made. Steps in a row read as one stretch of work (Thought, its calls, the next Thought...), stamped once at its end.
+   */
+  function hermesIsStep(m) {
+    return !!m && m.role === "assistant" && !String(m.text || "").trim() && !(Array.isArray(m.media) && m.media.length) &&
+      (!!m.think || (Array.isArray(m.calls) && m.calls.length > 0));
+  }
+
+  /** The tool calls an assistant step made, in order: the tool's name and the argument it is known by. A call with an
+   *  id opens its row in the turn's receipt (receipts.js: output, duration, Inspect). */
+  function hermesCallsEl(calls, ts) {
+    if (!Array.isArray(calls) || !calls.length) return null;
+    const reveal = (c) => () => document.dispatchEvent(new CustomEvent("deck-tool-reveal", { detail: { sid: H.sel, call: c.id, ts: ts || null } }));
+    return h("ul", { class: "tool-calls" }, calls.map((c) => h("li", null,
+      h(c.id ? "button" : "span", { class: "tc", ...(c.id ? { type: "button", title: c.arg || c.name, onclick: reveal(c) } : {}) },
+        h("span", { class: "tc-name" }, c.name),
+        c.arg ? h("code", { class: "tc-arg" }, c.arg) : null))));
+  }
+
+  function hermesMsgEl(m, { stamp = true } = {}) {
     const parts = m.role === "user" ? splitSystemNotices(m.text) : null;
     if (parts && parts.some((x) => x.notice)) {
       const key = String(m.id || m.ts || m.text.length);
@@ -3142,17 +3171,20 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     const u = m.role === "user" && AG ? AG.userMessage(m.text, `h:${m.id || m.ts}`) : null;
     const st = H.hist.get(H.sel);
     const nodeOf = H.nodes.get(H.sel);
+    const step = hermesIsStep(m);
+    const work = step || (m.role === "assistant" && Array.isArray(m.calls) && m.calls.length > 0); // receipts.js sums a turn's work up after it
     return h(
       "div",
-      { class: `msg${m.role === "user" ? " out" : ""}`, ...(m.role === "user" && m.ts ? { dataset: { ts: String(m.ts) } } : {}) },
+      { class: `msg${m.role === "user" ? " out" : ""}${step ? ` step${stamp ? " step-end" : ""}` : ""}${work ? " work" : ""}`, ...(m.role === "user" && m.ts ? { dataset: { ts: String(m.ts) } } : {}) },
       u ? u.quote : null,
       m.role === "assistant" && m.think ? TB.el(m.think, `${H.sel}:${m.id || m.ts}`) : null, // stored reasoning: collapsed "Thinking"
       u && !u.text && u.chip ? null : Array.isArray(m.media) && m.media.length && !String(m.text || "").trim() ? null : m.role === "user" && window.DeckVoiceBubble && window.DeckVoiceBubble.hidesDefaultText(m.text, m.media) ? null : // the plugin's default text is not shown beside a voice note
-         !String(m.text || "").trim() && m.think ? null : hermesTextEl(m, u),
+         step ? null : hermesTextEl(m, u),
+      m.role === "assistant" ? hermesCallsEl(m.calls, m.ts) : null, // the tools this step called, after its words
       HF.chips(m, { sid: H.sel, profile: nodeOf ? nodeOf.profile : st ? st.profile : "default" }), // files the agent offered
       MP.strip(m, { sid: H.sel, profile: nodeOf ? nodeOf.profile : st ? st.profile : "default" }), // images/files the user sent
       u ? u.chip : null,
-      m.ts ? h("time", { class: "t", title: new Date(m.ts * 1000).toLocaleString(i18nLocale()) }, hm(m.ts)) : null
+      m.ts && stamp ? h("time", { class: "t", title: new Date(m.ts * 1000).toLocaleString(i18nLocale()) }, hm(m.ts)) : null
     );
   }
 
@@ -3179,7 +3211,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
         }
         if (!st.msgs.length && !H.echo.has(H.sel) && !H.live.has(H.sel) && !OB.size(H.sel)) kids.push(h("div", { class: "empty" }, i18nNode("U0393")));
         let lastDay = null;
-        for (const m of st.msgs) {
+        st.msgs.forEach((m, i) => {
           if (m.ts) {
             const d = dayKey(m.ts);
             if (d !== lastDay) {
@@ -3187,8 +3219,9 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
               lastDay = d;
             }
           }
-          kids.push(hermesMsgEl(m));
-        }
+          // a stretch of work steps is stamped once, at its last step
+          kids.push(hermesMsgEl(m, { stamp: !(hermesIsStep(m) && hermesIsStep(st.msgs[i + 1])) }));
+        });
         for (const e of H.echo.get(H.sel) || []) {
           kids.push(h("div", { class: "msg out pending", title: i18nText("U0592") , "data-i18n-title": "U0592"}, h("div", { class: "text" }, e.text), MP.echo(e.previews, e.names), h("time", { class: "t" }, i18nNode("U0593"))));
         }
@@ -4136,10 +4169,13 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       sealLive(live);
       hermesLoadHistory(sid); // pick the stored segment up now instead of on the next poll
     } else if (e.type === "tool.generating" || e.type === "tool.start") {
+      // Hermes stores the tool-call step (its thought and calls) before the tool runs: read it now, so the transcript
+      // shows that step while the live row moves on to the next one (live-activity.js drops the step's reasoning)
+      if (e.type === "tool.start") hermesLoadHistory(sid);
       // the text before a tool call is final: seal it so the bubble never carries the whole turn
       if (!live || !live.text.trim()) return rowOnly();
       sealLive(live);
-      hermesLoadHistory(sid);
+      if (e.type !== "tool.start") hermesLoadHistory(sid);
     } else if (e.type === "message.complete") {
       ensure();
       if (typeof p.text === "string") live.text = p.text.slice(0, 200000);

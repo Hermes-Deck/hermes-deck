@@ -151,14 +151,17 @@ Telegram. Known executable and script types are saved but never opened directly.
 
 - In a Hermes chat, one live row at the end of the transcript says what the agent is doing (**Thinking…**,
   **Running <tool>**, **Writing…**, **Waiting for approval**, **Waiting for your answer**) with the elapsed time and a
-  **Show thinking** disclosure that streams the model's reasoning when Hermes sends it.
+  **Show thinking** disclosure that streams the reasoning of the step under way when Hermes sends it (finished steps
+  are already in the transcript above).
 - While a turn runs, Enter either queues your message (sent when the turn ends; **Edit**, **Cancel** and **Send
   now** on the pending bubble) or steers it into the running turn. Pick the default in **Settings → General → When
   the agent is busy, Enter…** (**Queues** / **Steers**); Ctrl/Cmd+Enter does the other one once. **Interrupt and
   send** drops the current task and follows your message; **Stop** stops the running turn.
-- Agent prose is set in a reading serif; reasoning folds say how long the agent thought. Each turn ends with
-  receipts of its tool calls; a receipt opens the call in Work › **Run**. A scrubber on the chat's left edge jumps
-  between turns.
+- Agent prose is set in a reading serif; reasoning folds say how long the agent thought. A turn's work reads in
+  order: each thought is followed by the tool calls it made (tool name and main argument). After the work, a folded
+  receipt sums the turn up (**Worked Ns · N tools**) and lists each call's output; clicking a call in the transcript
+  opens it there, and a receipt opens the call in Work › **Run**. A scrubber on the chat's left edge jumps between
+  turns.
 - Approvals and questions from the agent appear in the composer tray and are answered there (or in the
   [inbox](#inbox-and-fleet)).
 - The Inspector's **Session** tab ends with what is running in other agents right now (status, title, model and
