@@ -7,11 +7,15 @@ const path = require("path");
 
 const xml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-function jobSpec({ platform, uid, node, updater, args, dataDir, logDir, now = Date.now }) {
+const ENV_KEYS = ["PATH", "HOME", "USER", "LANG", "DECK_RELAY_ENV", "DECK_RELAY_ROOT", "DECK_RELAY_SERVICE", "DECK_DATA_DIR",
+  "DECK_AGENTS", "DECK_DEVICE_TOKENS", "DECK_MOBILE_DEVICES_FILE", "DECK_UPDATE_REPO", "DECK_HERMES_PYTHON", "DECK_HERMES_BIN", "HERMES_ROOT", "HERMES_HOME"];
+
+function jobSpec({ platform, uid, node, updater, args, dataDir, logDir, env = {}, now = Date.now }) {
   const stamp = now();
+  const environment = ENV_KEYS.filter((key) => Object.hasOwn(env, key)).map((key) => [key, env[key]]);
   if (platform === "linux") {
     const label = `hermes-deck-update-${stamp}`;
-    return { kind: "systemd", label, cmd: "systemd-run", args: ["--user", `--unit=${label}`, "--collect", "--quiet", "--", node, updater, ...args] };
+    return { kind: "systemd", label, cmd: "systemd-run", args: ["--user", `--unit=${label}`, "--collect", "--quiet", ...environment.map(([key, value]) => `--setenv=${key}=${value}`), "--", node, updater, ...args] };
   }
   if (platform === "darwin") {
     const label = `com.hermes-deck.update.${stamp}`;
@@ -28,6 +32,10 @@ function jobSpec({ platform, uid, node, updater, args, dataDir, logDir, now = Da
   <array>
 ${program}
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+${environment.map(([key, value]) => `    <key>${key}</key>\n    <string>${xml(value)}</string>`).join("\n")}
+  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>

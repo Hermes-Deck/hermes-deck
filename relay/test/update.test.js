@@ -232,6 +232,29 @@ test("--status-file: older latest release ends in done", async () => {
   assert.ok(!fs.existsSync(path.join(root, ".update.lock")));
 });
 
+test("--no-downgrade preserves an install that advanced before the job ran", async () => {
+  const root = installRoot(["0.3.5", "0.3.7"]);
+  const status = path.join(root, "shared", "data", "update-status.json");
+  const f = fakes({ root });
+  assert.strictEqual(await U.main(["apply", "--root", root, "--version", "0.3.6", "--no-downgrade", "--status-file", status], f.deps), 0, f.logs.join("\n"));
+  assert.strictEqual(current(root), path.join("releases", "0.3.7"));
+  assert.deepStrictEqual(f.calls, [], "no extract, install or service restart");
+  assert.strictEqual(readStatus(status).step, "done");
+  assert.strictEqual(readStatus(status).state, "done");
+  assert.strictEqual(readStatus(status).from, "0.3.7");
+  assert.ok(f.logs.includes("relay 0.3.7 is newer than the requested 0.3.6; nothing to do (--no-downgrade)"));
+  assert.ok(!fs.existsSync(path.join(root, ".update.lock")));
+});
+
+test("an explicit downgrade remains allowed without --no-downgrade", async () => {
+  const root = installRoot(["0.3.5", "0.3.7"]);
+  const f = fakes({ root });
+  assert.strictEqual(await U.main(["apply", "--root", root, "--version", "0.3.6"], f.deps), 0, f.logs.join("\n"));
+  assert.strictEqual(current(root), path.join("releases", "0.3.6"));
+  assert.strictEqual(f.running(), "0.3.6");
+  assert.deepStrictEqual(f.calls.map((c) => c.split(" ")[0]), ["tar", "npm", "node", "systemctl"]);
+});
+
 test("arguments: --status-file and --restart-queue need a value", () => {
   assert.deepStrictEqual(
     (({ statusFile, restartQueue }) => ({ statusFile, restartQueue }))(U.parseArgs(["apply", "--status-file", "/s.json", "--restart-queue", "/q.json"])),
@@ -341,7 +364,7 @@ test("keeps the last 3 releases (current and previous always)", async () => {
   const f = fakes({ root });
   assert.strictEqual(await U.main(["apply", "--root", root], f.deps), 0, f.logs.join("\n"));
   assert.deepStrictEqual(fs.readdirSync(path.join(root, "releases")).sort(), ["0.3.4", "0.3.5", "0.3.6"]);
-  assert.deepStrictEqual(fs.readdirSync(path.join(root, "shared")).sort(), [".env", "agents.json", "data"], "shared state untouched");
+  assert.deepStrictEqual(fs.readdirSync(path.join(root, "shared")).sort(), [".env", "agents.json", "data", "devices.json"], "shared state retained with the desktop key store");
 });
 
 test("--dry-run writes nothing and runs nothing", async () => {
@@ -629,4 +652,189 @@ test("plugin queue: unreadable manifest skips the pre-write and queues the insta
   assert.strictEqual(writes, 1);
   assert.strictEqual(readStatus(queue)[0].reason, "plugin 0.3.6");
   assert.strictEqual(readStatus(queue)[0].pending, false);
+});
+
+for (const phase of ["dry-run", "install"]) {
+  test(`plugin queue merges concurrent additions and removals during ${phase}`, async () => {
+    const root = installRoot(["1.3.0"]);
+    const hermes = pluginHermes(root, [["default", "1.2.0"]]);
+    const queue = path.join(root, "shared", "data", "restart-queue.json");
+    const removed = { profile: "removed", since: "old" };
+    const added = { profile: "added", since: "new", pending: true };
+    fs.writeFileSync(queue, JSON.stringify([removed]));
+    const f = fakes({ root, env: { HERMES_ROOT: hermes } });
+    const run = f.deps.run;
+    f.deps.run = async (cmd, args, opts) => {
+      if (args.includes("--dry-run") === (phase === "dry-run")) {
+        const { withQueue } = require("../src/queue-file");
+        withQueue(queue, (q) => [...q.filter((x) => x.profile !== "removed"), added]);
+      }
+      return run(cmd, args, opts);
+    };
+    assert.strictEqual(await U.main(["plugin", "--root", root, "--restart-queue", queue], f.deps), 0, f.logs.join("\n"));
+    const q = readStatus(queue);
+    assert.ok(!q.some((x) => x.profile === "removed"), "must not resurrect a completed restart");
+    assert.deepStrictEqual(q.find((x) => x.profile === "added"), added);
+    assert.strictEqual(q.find((x) => x.profile === "default").pending, false);
+  });
+}
+
+for (const changed of [false, true]) {
+  test(`plugin finalization preserves a replacement generation when the version ${changed ? "changes" : "does not change"}`, async () => {
+    const root = installRoot(["1.3.0"]);
+    const hermes = pluginHermes(root, [["default", "1.2.0"]]);
+    const queue = path.join(root, "shared", "data", "restart-queue.json");
+    const replacement = { profile: "default", since: "newer-generation", target: "1.4.0", pending: true };
+    const f = fakes({ root, env: { HERMES_ROOT: hermes } });
+    const run = f.deps.run;
+    f.deps.run = async (cmd, args, opts) => {
+      if (args.includes("--dry-run")) return run(cmd, args, opts);
+      const { withQueue } = require("../src/queue-file");
+      withQueue(queue, () => [replacement]);
+      return changed ? run(cmd, args, opts) : { code: 0, out: "unchanged" };
+    };
+    assert.strictEqual(await U.main(["plugin", "--root", root, "--restart-queue", queue], f.deps), 0, f.logs.join("\n"));
+    assert.deepStrictEqual(readStatus(queue), [replacement]);
+  });
+}
+
+test("plugin reconciliation only changes this run's profiles and uses the locked current queue", async () => {
+  const root = installRoot(["1.3.0"]);
+  const hermes = pluginHermes(root, [["default", "1.3.0"], ["excluded", "1.4.0"]]);
+  const queue = path.join(root, "shared", "data", "restart-queue.json");
+  const unrelated = { profile: "excluded", since: "old", target: "1.4.0", pending: true };
+  const own = { profile: "default", since: "own", target: "1.3.0", pending: true };
+  fs.writeFileSync(queue, JSON.stringify([unrelated, own]));
+  const f = fakes({ root, env: { HERMES_ROOT: hermes } });
+  let locks = 0;
+  f.deps.fs = { ...fs, openSync: (file, flags, ...args) => {
+    const fd = fs.openSync(file, flags, ...args);
+    if (file === `${queue}.lock` && flags === "wx") locks++;
+    return fd;
+  } };
+  assert.strictEqual(await U.main(["plugin", "--root", root, "--restart-queue", queue, "--no-downgrade"], f.deps), 0, f.logs.join("\n"));
+  assert.ok(locks >= 2, "queue mutations must acquire the shared lock");
+  assert.deepStrictEqual(readStatus(queue), [unrelated, { ...own, pending: false, reason: "plugin 1.3.0" }]);
+});
+
+for (const mixed of [false, true]) {
+  test(`plugin --no-downgrade excludes newer profiles (${mixed ? "mixed versions" : "all newer"})`, async () => {
+    const root = installRoot(["1.3.0"]);
+    const hermes = pluginHermes(root, [["research", "1.4.0"], ...(mixed ? [["default", "1.2.0"]] : [])]);
+    const queue = path.join(root, "shared", "data", "restart-queue.json");
+    const f = fakes({ root, env: { HERMES_ROOT: hermes } });
+    assert.strictEqual(await U.main(["plugin", "--root", root, "--no-downgrade", "--restart-queue", queue], f.deps), 0, f.logs.join("\n"));
+    assert.ok(f.calls.every((c) => !c.includes("--profile research")));
+    assert.strictEqual(readStatus(path.join(hermes, "profiles", "research", "hermes-deck", "installed.json")).version, "1.4.0");
+    assert.strictEqual(f.logs.filter((line) => /research.*1\.4\.0.*1\.3\.0/.test(line)).length, 1);
+    if (mixed) {
+      assert.strictEqual(readStatus(path.join(hermes, "hermes-deck", "installed.json")).version, "1.3.0");
+      assert.deepStrictEqual(readStatus(queue).map((q) => q.profile), ["default"]);
+    } else assert.deepStrictEqual(f.calls, [], "no installer is needed when every profile is newer");
+  });
+}
+
+test("apply --no-downgrade forwards the guard to the plugin installer", async () => {
+  const root = installRoot(["1.2.0"]);
+  const hermes = pluginHermes(root, [["research", "1.4.0"], ["default", "1.2.0"]]);
+  const f = fakes({ root, latest: "1.3.0", env: { HERMES_ROOT: hermes } });
+  assert.strictEqual(await U.main(["apply", "--root", root, "--version", "1.3.0", "--no-downgrade", "--with-plugin"], f.deps), 0, f.logs.join("\n"));
+  assert.ok(f.calls.every((c) => !c.includes("--profile research")));
+  assert.strictEqual(readStatus(path.join(hermes, "profiles", "research", "hermes-deck", "installed.json")).version, "1.4.0");
+});
+
+test("plugin --no-downgrade refuses an unknown target before running the installer", async () => {
+  const root = installRoot(["1.3.0"]);
+  const hermes = pluginHermes(root, [["default", "1.4.0"]]);
+  fs.writeFileSync(path.join(root, "current", "hermes-plugin", "hermes-deck", "plugin.yaml"), "name: hermes-deck\n");
+  const f = fakes({ root, env: { HERMES_ROOT: hermes } });
+  assert.strictEqual(await U.main(["plugin", "--root", root, "--no-downgrade"], f.deps), 1);
+  assert.deepStrictEqual(f.calls, []);
+  assert.strictEqual(readStatus(path.join(hermes, "hermes-deck", "installed.json")).version, "1.4.0");
+});
+
+test("a desktop key in the old release survives migration and the release switch", async () => {
+  const devtokens = require("../src/devtokens");
+  const root = installRoot(["1.2.0"]);
+  const token = devtokens.add(path.join(root, "current", "relay", "devices.json"), "fixture-pc");
+  const f = fakes({ root, latest: "1.3.0" });
+  assert.strictEqual(await U.main(["apply", "--root", root, "--version", "1.3.0"], f.deps), 0, f.logs.join("\n"));
+  const devices = path.join(root, "current", "relay", "devices.json");
+  const shared = path.join(root, "shared", "devices.json");
+  assert.strictEqual(fs.readlinkSync(devices), shared);
+  assert.strictEqual(devtokens.match(devices, token), "fixture-pc");
+  assert.strictEqual(devtokens.match(shared, token), "fixture-pc");
+  if (process.platform !== "win32") assert.strictEqual(fs.statSync(shared).mode & 0o777, 0o600);
+});
+
+for (const existing of [false, true]) {
+  test(`apply prepares shared keys before self-check and preserves ${existing ? "an existing shared store" : "legacy release keys"}`, async () => {
+    const devtokens = require("../src/devtokens");
+    const root = installRoot(["1.2.0"]);
+    const legacy = path.join(root, "current", "relay", "devices.json");
+    const shared = path.join(root, "shared", "devices.json");
+    const token = devtokens.add(existing ? shared : legacy, "fixture-pc");
+    if (existing) devtokens.add(legacy, "legacy-pc");
+    const f = fakes({ root, latest: "1.3.0" });
+    const run = f.deps.run;
+    let checked = false;
+    f.deps.run = async (cmd, args, opts) => {
+      if (args.includes("--self-check")) {
+        checked = true;
+        return { code: 1, out: "stop before platform-specific release switch" };
+      }
+      return run(cmd, args, opts);
+    };
+    assert.strictEqual(await U.main(["apply", "--root", root, "--version", "1.3.0"], f.deps), 1);
+    assert.strictEqual(checked, true);
+    const devices = path.join(root, "releases", "1.3.0", "relay", "devices.json");
+    assert.strictEqual(devtokens.match(devices, token), "fixture-pc");
+    assert.strictEqual(fs.readlinkSync(devices), shared);
+    assert.deepStrictEqual(devtokens.list(shared).map((d) => d.name), ["fixture-pc"]);
+    if (process.platform !== "win32") assert.strictEqual(fs.statSync(shared).mode & 0o777, 0o600);
+    assert.strictEqual(devtokens.match(shared, token), "fixture-pc");
+    assert.strictEqual(current(root), path.join("releases", "1.2.0"));
+  });
+}
+
+for (const hasKey of [false, true]) {
+  test(`init shares the desktop key store (${hasKey ? "existing key" : "missing store fallback"})`, async () => {
+    const devtokens = require("../src/devtokens");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "deck-init-keys-"));
+    const checkout = path.join(dir, "checkout");
+    fs.mkdirSync(path.join(checkout, "relay"), { recursive: true });
+    fs.writeFileSync(path.join(checkout, "relay", "package.json"), JSON.stringify({ version: "1.3.0" }));
+    const token = hasKey ? devtokens.add(path.join(checkout, "relay", "devices.json"), "fixture-pc") : null;
+    const root = path.join(dir, "deck");
+    const f = fakes();
+    await U.init(f.deps, { root, checkout });
+    const shared = path.join(root, "shared", "devices.json");
+    const devices = path.join(root, "current", "relay", "devices.json");
+    assert.strictEqual(fs.readlinkSync(devices), shared);
+    if (hasKey) assert.strictEqual(devtokens.match(devices, token), "fixture-pc");
+    else assert.deepStrictEqual(readStatus(shared), { v: 1, devices: {} });
+    if (process.platform !== "win32") assert.strictEqual(fs.statSync(shared).mode & 0o777, 0o600);
+  });
+}
+
+test("a GitHub token in the relay's .env reaches the API when the process has none", async () => {
+  const root = installRoot(["0.3.5"]);
+  fs.appendFileSync(path.join(root, "shared", ".env"), "GH_TOKEN=fixture-token-from-env-file\n");
+  const f = fakes({ root });
+  const seen = [];
+  const fetch = f.deps.fetch;
+  f.deps.fetch = async (url, opts = {}) => { if (url.includes("api.github.com")) seen.push((opts.headers || {}).authorization || null); return fetch(url, opts); };
+  assert.strictEqual(await U.main(["--check", "--root", root], f.deps), 10, f.logs.join("\n"));
+  assert.ok(seen.length > 0 && seen.every((h) => h === "Bearer fixture-token-from-env-file"), JSON.stringify(seen));
+  const g = fakes({ root, env: { GH_TOKEN: "fixture-token-from-process" } });
+  const seen2 = [];
+  const fetch2 = g.deps.fetch;
+  g.deps.fetch = async (url, opts = {}) => { if (url.includes("api.github.com")) seen2.push((opts.headers || {}).authorization || null); return fetch2(url, opts); };
+  await U.main(["--check", "--root", root], g.deps);
+  assert.ok(seen2.every((h) => h === "Bearer fixture-token-from-process"), "the process token wins");
+});
+
+test("withToken never adds a token when neither the process nor the .env has one", () => {
+  const deps = { env: { PATH: "/bin" } };
+  assert.strictEqual(U.withToken(deps, {}), deps);
 });

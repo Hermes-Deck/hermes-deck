@@ -60,7 +60,7 @@ reconnecting or restarting does not repeat them.
 <root>/shared/               .env, agents.json, data/ (and logs/ on macOS), never changed by an update
 ```
 
-Each release links its `relay/.env`, `relay/agents.json`, `relay/data` and `relay/logs` to `<root>/shared/`.
+Each release links its `relay/.env`, `relay/agents.json`, `relay/devices.json`, `relay/data` and `relay/logs` to `<root>/shared/`.
 
 A plain checkout (`relay/` inside a git clone) still works without this layout. You update it with
 `git pull` and `npm ci --omit=dev` in `relay/`, then restart. `apply` refuses to run on a plain checkout.
@@ -146,15 +146,17 @@ and shown in the app.
 
 - Only a desktop Deck with the relay token and its device key, connected at that moment, can start it. The iOS app cannot.
 - The host never moves to an older version, and only one update runs at a time.
-- `DECK_REMOTE_UPDATE=0` in the relay's `.env` turns this off.
+- `DECK_REMOTE_UPDATE=0` in the relay's `.env` refuses update and restart requests from the app. Restarts already
+  queued by an earlier update still complete when the gateway is idle.
 - Settings › General › Updates › **Automatically update the host to this app's version** (off by default) sends the
   same request when the app has updated and the host is behind. A version whose update failed is not tried again
   automatically.
 
 Gateways: profiles whose plugin changed are listed in `<data>/restart-queue.json`. The relay restarts each one with
-`hermes [-p <profile>] gateway restart` once it has been idle on two checks 15 s apart (no active agents and no
-unfinished delegation). A busy profile waits; the app offers **Restart now**. If the relay cannot read a profile's
-gateway state, it never restarts it on its own. Set `DECK_HERMES_BIN` if `hermes` is not on the relay's PATH.
+`hermes [-p <profile>] gateway restart` once it has been idle on two checks at least 14 s apart: no active agents in
+its `gateway_state.json`, and no delegation log written in the last 15 minutes that has not ended. A busy profile
+waits; the app offers **Restart now**. If the relay cannot read a profile's gateway state, it never restarts it on
+its own. Set `DECK_HERMES_BIN` if `hermes` is not on the relay's PATH.
 
 ### Daily check (optional)
 
@@ -178,7 +180,7 @@ from an install root.
 | `DECK_RELAY_SERVICE` | systemd `--user` unit (default `hermes-deck-relay`), or the launchd label on macOS (default `com.hermes-deck.relay`) |
 | `DECK_RELAY_AUTO_UPDATE` | `1`: the daily `--check --auto` also applies the update |
 | `DECK_HERMES_PYTHON` | Python for `--with-plugin` |
-| `GH_TOKEN` / `GITHUB_TOKEN` | optional; only raises GitHub's rate limit |
+| `GH_TOKEN` / `GITHUB_TOKEN` | needed only while the update repository is private (a token with read access to it); otherwise optional, it raises GitHub's rate limit. Read from the environment, else from the relay's `.env` (updates started from the app read it there) |
 
 ## Updating the plugin on its own
 

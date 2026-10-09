@@ -35,6 +35,24 @@ test("other platforms are refused", () => {
   assert.throws(() => J.jobSpec({ ...base, platform: "win32" }), /not supported/);
 });
 
+for (const platform of ["linux", "darwin"]) {
+  test(`${platform}: forwards only the job environment allowlist and escapes plist values`, () => {
+    const env = { PATH: "/opt/bin:/a&b/<c>", DECK_RELAY_ENV: "/private/relay.env", HOME: "/home/fixture", LANG: "",
+      GH_TOKEN: "github-secret", GITHUB_TOKEN: "other-secret", DECK_RELAY_TOKEN: "relay-secret", UNRELATED: "ignored" };
+    const s = J.jobSpec({ ...base, platform, env });
+    if (platform === "linux") {
+      assert.deepEqual(s.args.slice(4, s.args.indexOf("--")), [
+        `--setenv=PATH=${env.PATH}`, `--setenv=HOME=${env.HOME}`, "--setenv=LANG=", `--setenv=DECK_RELAY_ENV=${env.DECK_RELAY_ENV}`,
+      ]);
+    } else {
+      assert.match(s.plist, /<key>EnvironmentVariables<\/key>\s*<dict>/);
+      assert.match(s.plist, /<key>PATH<\/key>\s*<string>\/opt\/bin:\/a&amp;b\/&lt;c&gt;<\/string>/);
+      assert.match(s.plist, /<key>DECK_RELAY_ENV<\/key>\s*<string>\/private\/relay.env<\/string>/);
+    }
+    assert.doesNotMatch(JSON.stringify(s), /GH_TOKEN|GITHUB_TOKEN|DECK_RELAY_TOKEN|secret|UNRELATED|ignored/);
+  });
+}
+
 for (const scenario of [
   { name: "success", result: { code: 0 }, ok: true },
   { name: "nonzero exit", result: { code: 5, out: "Bootstrap failed: 5" }, error: "launchctl failed (exit 5): Bootstrap failed: 5" },

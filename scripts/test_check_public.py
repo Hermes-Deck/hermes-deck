@@ -52,6 +52,14 @@ class PublicContentTests(unittest.TestCase):
                              "app/test/browser-transfer-e2e.test.js": "source." + "local.push();"})
         self.assertEqual(result.returncode, 0, result.stdout)
 
+    def test_per_user_command_path_is_allowed_but_hostname_is_rejected(self):
+        result = self.check({"relay/.env.example": "~/" + "." + "local/bin/hermes"})
+        self.assertEqual(result.returncode, 0, result.stdout)
+        result = self.check({"relay/.env.example": "~/" + "." + "local/bin/hermes box." + "local"})
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("relay/.env.example:1:", result.stdout)
+        self.assertIn("1 findings", result.stdout)
+
     def test_checker_scans_its_own_definitions_without_false_positives(self):
         result = self.check({"scripts/check-public.sh": CHECK.read_text(),
                              "scripts/test_check_public.py": Path(__file__).read_text()})

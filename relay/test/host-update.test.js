@@ -29,7 +29,7 @@ async function setup(t, over = {}, serverOptions = {}) {
   const hu = new HostUpdate({
     dataDir: path.join(root, "shared", "data"), relayDir: path.join(root, "current", "relay"), version: "1.2.0", remoteUpdate: true,
     tokensFile, presence, plugins: () => ({ default: "1.2.0" }), restarts: { rows: () => [], restartNow: async (p) => ({ ok: true, state: "restarted", profile: p }) },
-    platform: "linux", uid: 1000, node: "/usr/bin/node", now: () => clock.ms, fs,
+    platform: "linux", uid: 1000, node: "/usr/bin/node", now: () => clock.ms, fs, env: {},
     run: async (cmd, args) => { runs.push([cmd, ...args].join(" ")); return { code: 0, out: "" }; },
     broadcast: (m) => pushed.push(m), ...over,
   });
@@ -60,7 +60,7 @@ test("starts the updater job with the version, status file and restart queue", a
   assert.deepEqual(await r.json(), { state: "started", version: "1.3.0" });
   assert.equal(x.runs.length, 1);
   assert.equal(x.runs[0], ["systemd-run", "--user", `--unit=hermes-deck-update-${x.clock.ms}`, "--collect", "--quiet", "--", "/usr/bin/node",
-    path.join(x.root, "current", "relay", "bin", "deck-relay-update"), "apply", "--version", "1.3.0", "--with-plugin", "--status-file",
+    path.join(x.root, "current", "relay", "bin", "deck-relay-update"), "apply", "--version", "1.3.0", "--no-downgrade", "--with-plugin", "--status-file",
     path.join(x.root, "shared", "data", "update-status.json"), "--restart-queue", path.join(x.root, "shared", "data", "restart-queue.json")].join(" "));
   const st = JSON.parse(fs.readFileSync(path.join(x.root, "shared", "data", "update-status.json"), "utf8"));
   assert.equal(st.state, "running");
@@ -245,9 +245,68 @@ test("queue-only changes push hostUpdate and unchanged polls stay quiet", async 
   rows = [{ profile: "research", state: "busy" }];
   x.hu.poll();
   assert.equal(x.pushed.length, before + 1);
-  assert.deepEqual(x.pushed.at(-1), { t: "hostUpdate", remote: { enabled: true, managed: true }, status: null, restarts: rows });
+  assert.deepEqual(x.pushed.at(-1), { t: "hostUpdate", remote: { enabled: true, managed: true }, status: null, restarts: rows, queueError: null });
   x.hu.poll();
   assert.equal(x.pushed.length, before + 1);
+});
+
+test("info and poll report queue read errors without throwing and publish recovery", async (t) => {
+  const x = await setup(t);
+  const { Restarts } = require("../src/restarts");
+  x.hu.restarts = new Restarts({ file: x.hu.queueFile, hermesRoot: x.dir, run: () => assert.fail("unreadable queue restarted") });
+  fs.writeFileSync(x.hu.queueFile, "[]");
+  const read = fs.readFileSync;
+  const stub = t.mock.method(fs, "readFileSync", (file, ...args) => {
+    if (file === x.hu.queueFile) throw Object.assign(new Error("queue denied"), { code: "EACCES" });
+    return read(file, ...args);
+  });
+  assert.doesNotThrow(() => x.hu.poll());
+  assert.deepEqual(x.hu.info().restarts, []);
+  assert.equal(x.hu.info().queueError, "queue denied");
+  assert.equal(x.pushed.at(-1).queueError, "queue denied");
+  x.hu.poll();
+  assert.equal(x.pushed.length, 1, "unchanged errors do not flood status updates");
+  stub.mock.restore();
+  assert.doesNotThrow(() => x.hu.poll());
+  assert.equal(x.hu.info().queueError, null);
+  assert.equal(x.pushed.at(-1).queueError, null);
+  assert.equal(x.pushed.length, 2, "recovery is visible even if the queue stays empty");
+});
+
+test("relay startup and interval contain poll failures and log each distinct message once", async (t) => {
+  const { start } = require("../src/index");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "deck-hostpoll-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const intervals = [];
+  t.mock.method(global, "setInterval", (callback, ms) => {
+    intervals.push({ callback, ms });
+    return { unref() {} };
+  });
+  let error = "poll denied", polls = 0;
+  t.mock.method(HostUpdate.prototype, "poll", () => {
+    polls++;
+    if (error) throw new Error(error);
+  });
+  const warnings = [];
+  t.mock.method(console, "warn", (message) => warnings.push(message));
+  const relay = await start({
+    host: "127.0.0.1", port: 0, token: RELAY_TOKEN, eventsDir: path.join(dir, "events"),
+    stateDir: path.join(dir, "state"), dataDir: path.join(dir, "data"), agentsFile: path.join(dir, "agents.json"),
+    claudeDirs: [], launchdPrefixes: [], codexbar: null, history: false, tickMs: 100, broadcastWindowS: 300,
+  });
+  try {
+    assert.equal(polls, 1, "startup polls even when the poll throws");
+    const timers = intervals.filter((x) => x.ms === 1000);
+    for (const message of ["poll denied", "poll unavailable", "poll denied", null]) {
+      error = message;
+      for (const timer of timers) assert.doesNotThrow(() => timer.callback());
+    }
+    assert.equal(polls, 5, "later polls continue after failures");
+    assert.equal(warnings.length, 2);
+    assert.match(warnings[0], /^deck-relay:.*poll denied/);
+    assert.match(warnings[1], /^deck-relay:.*poll unavailable/);
+    assert.equal((await fetch(`http://127.0.0.1:${relay.port}/health`)).status, 200);
+  } finally { await relay.stop(); }
 });
 
 test("first poll after a relay restart cleans up a finished launchd job only once", async (t) => {
@@ -290,4 +349,95 @@ test("a new launchd job waits until cleanup stops using the shared plist", async
   } finally { release({ code: 0, out: "" }); await new Promise(setImmediate); }
   assert.equal((await x.post("/host/update", { version: "1.3.0" })).status, 202);
   assert.match(fs.readFileSync(plistFile, "utf8"), /<key>ProgramArguments<\/key>/);
+});
+
+test("the HTTP job receives the injected environment without credentials", async (t) => {
+  const x = await setup(t, { env: { PATH: "/opt/bin", DECK_RELAY_ENV: "/custom/relay.env", GH_TOKEN: "secret", DECK_RELAY_TOKEN: "secret" } });
+  assert.equal((await x.post("/host/update", { version: "1.3.0" })).status, 202);
+  assert.match(x.runs[0], /--setenv=PATH=\/opt\/bin/);
+  assert.match(x.runs[0], /--setenv=DECK_RELAY_ENV=\/custom\/relay.env/);
+  assert.doesNotMatch(x.runs[0], /TOKEN|secret/);
+});
+
+for (const recovery of ["plugin-failed", "pending"]) {
+  test(`current versions still start plugin recovery after ${recovery}`, async (t) => {
+    const x = await setup(t);
+    if (recovery === "plugin-failed") fs.writeFileSync(x.hu.statusFile, JSON.stringify({ state: recovery, version: "1.2.0" }));
+    else fs.writeFileSync(x.hu.queueFile, JSON.stringify([{ profile: "default", since: "old", pending: true, target: "1.2.0" }]));
+    assert.equal((await x.post("/host/update", { version: "1.2.0" })).status, 202);
+    assert.match(x.runs[0], /deck-relay-update plugin /);
+    assert.match(x.runs[0], /--no-downgrade/);
+    assert.equal(x.runs.length, 1);
+  });
+}
+
+test("plugin recovery at current versions permits a newer profile protected by --no-downgrade", async (t) => {
+  const x = await setup(t, { plugins: () => ({ default: "1.2.0", research: "1.4.0" }) });
+  fs.writeFileSync(x.hu.statusFile, JSON.stringify({ state: "plugin-failed", version: "1.2.0" }));
+  assert.equal((await x.post("/host/update", { version: "1.2.0" })).status, 202);
+  assert.match(x.runs[0], /deck-relay-update plugin /);
+  assert.match(x.runs[0], /--no-downgrade/);
+});
+
+for (const lock of ["live", "dead", "absent"]) {
+  test(`stale status with a ${lock} lock owner ${lock === "live" ? "keeps running" : "reports abandonment before a new job"}`, async (t) => {
+    const x = await setup(t, { isAlive: (pid) => pid === 1234 });
+    if (lock !== "absent") fs.writeFileSync(path.join(x.root, ".update.lock"), lock === "live" ? "1234" : "5678");
+    const old = { state: "running", version: "1.3.0", step: "install", at: new Date(x.clock.ms - 16 * 60 * 1000).toISOString() };
+    fs.writeFileSync(x.hu.statusFile, JSON.stringify(old));
+    const writes = [];
+    x.hu.fs = { ...fs, writeFileSync: (file, value, ...args) => {
+      if (file === `${x.hu.statusFile}.tmp`) writes.push(JSON.parse(value));
+      return fs.writeFileSync(file, value, ...args);
+    } };
+    const r = await x.post("/host/update", { version: "1.3.0" });
+    if (lock === "live") {
+      assert.equal(r.status, 200);
+      assert.equal((await r.json()).state, "running");
+      assert.deepEqual(x.runs, []);
+      assert.deepEqual(writes, []);
+    } else {
+      assert.equal(r.status, 202);
+      assert.equal(writes[0].state, "failed");
+      assert.equal(writes[0].error, "the update stopped without reporting (abandoned)");
+      assert.equal(x.pushed[0].status.state, "failed");
+      assert.equal(x.pushed[0].status.error, writes[0].error);
+      assert.equal(x.runs.length, 1);
+    }
+  });
+}
+
+test("a live update lock blocks the current shortcut even without a status file", async (t) => {
+  const x = await setup(t);
+  fs.writeFileSync(path.join(x.root, ".update.lock"), String(process.pid));
+  const r = await x.post("/host/update", { version: "1.2.0" });
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).state, "running");
+  assert.deepEqual(x.runs, []);
+});
+
+test("an abandoned launchd job is cleaned up before its retry reuses the plist", async (t) => {
+  let entered, release;
+  const cleaning = new Promise((resolve) => { entered = resolve; });
+  const gate = new Promise((resolve) => { release = resolve; });
+  const calls = [];
+  const x = await setup(t, { platform: "darwin", isAlive: () => false, run: async (_cmd, args) => {
+    calls.push(args[0]);
+    if (args[0] === "bootout") { entered(); await gate; }
+    return { code: 0, out: "" };
+  } });
+  const plistFile = path.join(x.hu.dataDir, "update-job.plist");
+  fs.writeFileSync(plistFile, "old plist");
+  fs.writeFileSync(x.hu.statusFile, JSON.stringify({ state: "running", version: "1.3.0", at: new Date(x.clock.ms - 16 * 60 * 1000).toISOString(),
+    job: { kind: "launchd", label: "com.hermes-deck.update.old", plistFile } }));
+  const retry = x.post("/host/update", { version: "1.3.0" });
+  try {
+    await cleaning;
+    assert.equal(fs.readFileSync(plistFile, "utf8"), "old plist");
+    assert.equal((await x.post("/host/update", { version: "1.3.0" })).status, 409);
+  } finally { release(); }
+  assert.equal((await retry).status, 202);
+  assert.deepEqual(calls, ["bootout", "bootstrap"]);
+  assert.match(fs.readFileSync(plistFile, "utf8"), /<key>ProgramArguments<\/key>/);
+  assert.equal(x.pushed[0].status.error, "the update stopped without reporting (abandoned)");
 });

@@ -12,8 +12,13 @@ patterns = re.compile(r'/root/|/srv/|192\.168\.|@gmail\.com|\.local\b')
 # Narrow, reviewed exceptions to synthetic fixtures and generic platform paths.
 # Add exceptions only with a reason; never exempt a whole source tree.
 allowlist = [
+    # The per-user command directory ~/.local/bin (XDG), where Hermes installs the hermes command; not a hostname.
+    ('relay/src/index.js', re.compile(r'(?<=")\.local(?=", "bin", "hermes")')),
+    ('relay/test/host-version.test.js', re.compile(r'(?<=")\.local(?=", "bin", "hermes")')),
+    ('docs/relay.md', re.compile(r'(?<=~/)\.local(?=/bin/hermes\b)')),
+    ('relay/.env.example', re.compile(r'(?<=~/)\.local(?=/bin/hermes\b)')),
     # Detector definitions describe forbidden prefixes, not an infrastructure location.
-    ('scripts/check-public.sh', re.compile(r'/root/(?=\|)|/srv/(?=\|)')),
+    ('scripts/check-public.sh', re.compile(r'/root/(?=\|)|/srv/(?=\|)|(?<=command directory ~/)\.local(?=/bin \(XDG\), where Hermes installs the hermes command; not a hostname\.$)')),
     # Local properties and the legacy filename are not private hostnames.
     ('app/main/settings.js', re.compile(r'(?<=deck)\.local(?=\.json)')),
     ('app/test/browser-transfer-e2e.test.js', re.compile(r'\.local(?=\.push\()')),

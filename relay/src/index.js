@@ -467,10 +467,20 @@ async function start(cfg) {
     setInterval(() => model.prune(), 600_000),
   ];
   restarts.start();
-  const hostPoll = setInterval(() => hostUpdate.poll(), 1000);
+  const hostPollErrors = new Set();
+  const pollHostUpdate = () => {
+    try { hostUpdate.poll(); }
+    catch (error) {
+      const message = error?.message || String(error);
+      if (hostPollErrors.has(message)) return;
+      hostPollErrors.add(message);
+      console.warn(`deck-relay: host update poll failed (${message})`);
+    }
+  };
+  const hostPoll = setInterval(pollHostUpdate, 1000);
   hostPoll.unref?.();
   timers.push(hostPoll);
-  hostUpdate.poll();
+  pollHostUpdate();
   if (spaceAudit) {
     spaceAudit.cleanup().catch(() => {});
     const maintenance = setInterval(() => { spaceAudit.cleanup().catch(() => {}); spaceApprovals?.sweep(); }, 60_000);

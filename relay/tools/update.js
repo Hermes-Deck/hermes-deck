@@ -5,8 +5,8 @@
 // Layout of an install root (made by `init`, used by `apply`):
 //   <root>/releases/<version>/   one extracted source release each (its relay/ is what runs); the last 3 are kept
 //   <root>/current -> releases/<version>   the service runs <root>/current/relay
-//   <root>/shared/                .env, agents.json and data/ — never touched by an update; each release's
-//                                 relay/.env, relay/agents.json and relay/data are symlinks into it
+//   <root>/shared/                .env, agents.json, devices.json and data/ — retained across updates; each release
+//                                 links its relay state files and directories into it
 // A plain checkout (relay/ in a git clone) keeps working without any of this; `init` converts one, dry-run first.
 //
 // Every effect goes through `deps` (fetch, run, fs, sleep, now, log) so test/update.test.js drives it all with fakes.
@@ -14,6 +14,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { withQueue } = require("../src/queue-file");
 
 const API = "https://api.github.com";
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
@@ -21,7 +22,7 @@ const TAG_RE = /^v?(0|[1-9]\d{0,4})\.(0|[1-9]\d{0,4})\.(0|[1-9]\d{0,4})$/;
 const KEEP = 3;
 const HEALTH_TIMEOUT_MS = 30_000;
 const EXIT = { ok: 0, failed: 1, usage: 2, updateAvailable: 10 };
-const SHARED = [".env", "agents.json", "data", "logs"]; // relative to relay/, kept in <root>/shared/ (logs: macOS launchd)
+const SHARED = [".env", "agents.json", "devices.json", "data", "logs"]; // relative to relay/, kept in <root>/shared/ (logs: macOS launchd)
 // what a release copy never takes from a checkout (init): VCS data, installed modules, the relay's own state
 const SKIP = new Set([".git", "node_modules"]);
 
@@ -155,6 +156,16 @@ function relayEnv(deps, relayDir) {
 }
 const pick = (o, keys) => Object.fromEntries(keys.filter((k) => o[k] !== undefined && o[k] !== "").map((k) => [k, o[k]]));
 
+/**
+ * GitHub access for a private update repository: GH_TOKEN / GITHUB_TOKEN from the process, else from the relay's own
+ * .env (0600). A job started by the relay never carries tokens in its environment or plist, so it reads them here.
+ */
+function withToken(deps, env) {
+  if (deps.env.GH_TOKEN || deps.env.GITHUB_TOKEN) return deps;
+  const token = env.GH_TOKEN || env.GITHUB_TOKEN;
+  return token ? { ...deps, env: { ...deps.env, GH_TOKEN: token } } : deps;
+}
+
 /** http://<host>:<port>/health of the relay configured in `env` (a wildcard bind is asked on loopback). */
 function healthUrl(env) {
   let host = env.DECK_RELAY_HOST || "127.0.0.1";
@@ -172,6 +183,7 @@ async function check(deps, { relayDir, write = true }) {
   const running = String(pkg.version || "");
   if (!parse(running)) throw new Error(`cannot read the running version from ${path.join(relayDir, "package.json")}`);
   const env = relayEnv(deps, relayDir);
+  deps = withToken(deps, env);
   const repo = repoOf({ ...deps.env, ...env }, pkg);
   const rel = await release(deps, repo);
   const c = compare(rel.version, running);
@@ -202,7 +214,21 @@ async function must(deps, cmd, args, opts = {}) {
   return r;
 }
 
-/** relay/.env, relay/agents.json, relay/data, relay/logs of a release -> <root>/shared/<same> (those that exist there). */
+/** Preserve a legacy release's desktop keys before linking the next release. */
+function migrateDevices(deps, root, relayDir) {
+  const target = path.join(root, "shared", "devices.json");
+  if (exists(deps, target)) return;
+  const source = path.join(relayDir, "devices.json");
+  let regular = false;
+  try { regular = deps.fs.lstatSync(source).isFile(); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
+  if (regular) deps.fs.copyFileSync(source, target);
+  // devtokens saves by rename, so adding a key cannot populate a dangling link's target.
+  else deps.fs.writeFileSync(target, JSON.stringify({ v: 1, devices: {} }), { mode: 0o600 });
+  deps.fs.chmodSync(target, 0o600);
+}
+
+/** Release state files and directories -> <root>/shared/<same> (those that exist there). */
 function linkShared(deps, root, relayDir) {
   for (const name of SHARED) {
     const target = path.join(root, "shared", name);
@@ -215,7 +241,7 @@ function linkShared(deps, root, relayDir) {
 
 /**
  * init <root>: make an install root from the checkout this updater runs in (`checkout`, the repo root). Copies the
- * checkout (without .git and node_modules) to <root>/releases/<version>/, copies relay/.env, agents.json, data/ and
+ * checkout (without .git and node_modules) to <root>/releases/<version>/, copies relay/.env, agents.json, devices.json, data/ and
  * logs/ to <root>/shared/ (the checkout keeps its own: it goes on working until the service is pointed elsewhere),
  * links them into the release, runs npm ci --omit=dev and the self-check, and points <root>/current at it.
  * Never touches a service: it prints the change to make.
@@ -234,7 +260,9 @@ async function init(deps, { root, checkout, dry = false }) {
   if (exists(deps, rel)) throw new Error(`${rel} already exists`);
   deps.log(`init ${root} from ${checkout} (relay ${version})${dry ? " — dry run, nothing is changed" : ""}`);
   await step(`create ${path.join(root, "shared")}`, () => deps.fs.mkdirSync(path.join(root, "shared"), { recursive: true, mode: 0o700 }));
+  await step("preserve desktop device keys in shared/devices.json", () => migrateDevices(deps, root, src));
   for (const name of SHARED) {
+    if (name === "devices.json") continue;
     const from = path.join(src, name);
     if (!exists(deps, from)) {
       if (name === "data" || name === "logs") await step(`create ${path.join(root, "shared", name)}`, () => deps.fs.mkdirSync(path.join(root, "shared", name), { recursive: true, mode: 0o700 }));
@@ -386,71 +414,72 @@ function installedPluginVersion(deps, home) {
   return v && typeof v.version === "string" ? v.version.replace(/^v/, "") : null;
 }
 
-function readQueue(deps, file) {
-  let text;
-  try {
-    text = deps.fs.readFileSync(file, "utf8");
-  } catch (e) {
-    if (e.code === "ENOENT") return [];
-    throw e;
-  }
-  try {
-    const queue = JSON.parse(text);
-    if (Array.isArray(queue)) return queue;
-  } catch { /* preserve malformed JSON before replacing it */ }
-  const moved = `${file}.corrupt-${deps.now()}`;
-  deps.fs.renameSync(file, moved);
-  deps.log(`plugin: restart queue ${file} was unreadable; moved to ${moved}`);
-  return [];
-}
-
-function writeQueue(deps, file, queue) {
-  deps.fs.writeFileSync(`${file}.tmp`, JSON.stringify(queue));
-  deps.fs.renameSync(`${file}.tmp`, file);
-}
-
 /** --with-plugin / plugin: the release's install.py, dry run first, then for real; changed profiles go to the restart queue. */
-async function updatePlugin(deps, { releaseDir, env, dry, restartQueue = null }) {
+async function updatePlugin(deps, { releaseDir, env, dry, noDowngrade = false, restartQueue = null }) {
   const hermesRoot = env.HERMES_ROOT || path.join(deps.home, ".hermes");
-  const profiles = pluginProfiles(deps, hermesRoot);
+  let profiles = pluginProfiles(deps, hermesRoot);
   if (!profiles.length) {
     deps.log(`plugin: no profile under ${hermesRoot} has hermes-deck installed; nothing to update`);
     return { profiles, changed: [] };
   }
   const before = Object.fromEntries(profiles.map((p) => [p, installedPluginVersion(deps, profileHome(hermesRoot, p))]));
+  const target = /^\s*version:\s*["']?([^"'\s#]+)/m.exec(readText(deps, path.join(releaseDir, "hermes-plugin", "hermes-deck", "plugin.yaml")) || "")?.[1] || null;
+  if (noDowngrade) {
+    if (!parse(target)) throw new Error("cannot determine the plugin target version for --no-downgrade");
+    profiles = profiles.filter((p) => {
+      if (compare(before[p], target) <= 0) return true;
+      deps.log(`plugin: skipping ${p}: installed ${before[p]} is newer than target ${target} (--no-downgrade)`);
+      return false;
+    });
+    if (!profiles.length) return { profiles, changed: [] };
+  }
   const venv = path.join(hermesRoot, "hermes-agent", "venv", "bin", "python");
   const python = env.DECK_HERMES_PYTHON || (exists(deps, venv) ? venv : "python3");
   const installer = path.join(releaseDir, "hermes-plugin", "hermes-deck", "install.py");
   const args = [installer, "--home", hermesRoot, ...profiles.flatMap((p) => ["--profile", p])];
   const step = stepper(deps, dry);
-  let queue = restartQueue && !dry ? readQueue(deps, restartQueue) : [];
-  const target = restartQueue && !dry
-    ? /^\s*version:\s*["']?([^"'\s#]+)/m.exec(readText(deps, path.join(releaseDir, "hermes-plugin", "hermes-deck", "plugin.yaml")) || "")?.[1] || null
-    : null;
+  const generations = new Map();
+  if (restartQueue && !dry) {
+    const stamp = deps.now();
+    const moved = `${restartQueue}.corrupt-${stamp}`;
+    const hadCorrupt = exists(deps, moved);
+    withQueue(restartQueue, (queue) => {
+      for (const p of profiles) generations.set(p, queue.find((x) => x?.profile === p)?.since);
+    }, { fs: deps.fs, now: () => stamp });
+    if (!hadCorrupt && exists(deps, moved)) deps.log(`plugin: restart queue ${restartQueue} was unreadable; moved to ${moved}`);
+  }
   const since = new Date(deps.now()).toISOString();
   let pending = [];
   await step(`plugin: ${python} ${[...args, "--dry-run"].join(" ")}`, async () => deps.log(String((await must(deps, python, [...args, "--dry-run"])).out || "").trim()));
   if (restartQueue && !dry && target) {
     // A previous install may have succeeded while its final queue write failed.
-    queue = queue.map((x) => x && x.pending === true && typeof x.target === "string" && installedPluginVersion(deps, profileHome(hermesRoot, x.profile)) === x.target
-      ? { ...x, pending: false, reason: `plugin ${x.target}` } : x);
     pending = profiles.filter((p) => before[p] !== target);
-    for (const p of pending) {
-      queue = queue.filter((x) => x && x.profile !== p);
-      queue.push({ profile: p, reason: `plugin ${target}`, since, pending: true, target });
-    }
-    writeQueue(deps, restartQueue, queue);
+    withQueue(restartQueue, (queue) => {
+      queue = queue.map((x) => x && profiles.includes(x.profile) && x.pending === true && typeof x.target === "string" && installedPluginVersion(deps, profileHome(hermesRoot, x.profile)) === x.target
+        ? { ...x, pending: false, reason: `plugin ${x.target}` } : x);
+      for (const p of pending) {
+        const previous = queue.find((x) => x?.profile === p);
+        queue = queue.filter((x) => x?.profile !== p || x.since !== previous?.since);
+        queue.push({ profile: p, reason: `plugin ${target}`, since, pending: true, target });
+        generations.set(p, since);
+      }
+      return queue;
+    }, deps);
   }
   await step(`plugin: ${python} ${args.join(" ")}`, async () => deps.log(String((await must(deps, python, args)).out || "").trim()));
   if (dry) return { profiles, changed: [] };
   const changed = profiles.filter((p) => { const now = installedPluginVersion(deps, profileHome(hermesRoot, p)); return now && now !== before[p]; });
   if (restartQueue) {
-    queue = queue.filter((x) => !x || !pending.includes(x.profile) || changed.includes(x.profile));
-    for (const p of changed) {
-      queue = queue.filter((x) => x && x.profile !== p);
-      queue.push({ profile: p, reason: `plugin ${installedPluginVersion(deps, profileHome(hermesRoot, p))}`, since, pending: false, ...(target ? { target } : {}) });
-    }
-    writeQueue(deps, restartQueue, queue);
+    withQueue(restartQueue, (queue) => {
+      queue = queue.filter((x) => !x || !pending.includes(x.profile) || x.since !== since || changed.includes(x.profile));
+      for (const p of changed) {
+        const current = queue.find((x) => x?.profile === p);
+        if (current ? current.since !== generations.get(p) : pending.includes(p)) continue;
+        queue = queue.filter((x) => x?.profile !== p || x.since !== generations.get(p));
+        queue.push({ profile: p, reason: `plugin ${installedPluginVersion(deps, profileHome(hermesRoot, p))}`, since, pending: false, ...(target ? { target } : {}) });
+      }
+      return queue;
+    }, deps);
     if (changed.length) deps.log(`plugin: queued gateway restarts for ${changed.join(", ")} (the relay restarts them when idle)`);
   } else if (changed.length) {
     deps.log("plugin: gateways were not restarted. Restart each changed profile's gateway at a quiet moment:");
@@ -460,7 +489,7 @@ async function updatePlugin(deps, { releaseDir, env, dry, restartQueue = null })
 }
 
 /** `deck-relay-update plugin`: the plugin step alone, from the running release (the app's "Try again"). */
-async function pluginOnly(deps, { root = null, dry = false, statusFile = null, restartQueue = null }) {
+async function pluginOnly(deps, { root = null, dry = false, noDowngrade = false, statusFile = null, restartQueue = null }) {
   const loc = locate(deps, { root });
   if (!loc.managed) throw new Error(`the relay in ${loc.relay} is a plain checkout; see deck-relay-update init`);
   const env = relayEnv(deps, loc.relay);
@@ -469,7 +498,7 @@ async function pluginOnly(deps, { root = null, dry = false, statusFile = null, r
   const status = dry ? () => {} : statusWriter(deps, statusFile, { version, from: version });
   try {
     status({ step: "plugin", state: "running" });
-    const r = await updatePlugin(deps, { releaseDir: path.join(loc.root, "current"), env: { ...deps.env, ...env }, dry, restartQueue });
+    const r = await updatePlugin(deps, { releaseDir: path.join(loc.root, "current"), env: { ...deps.env, ...env }, dry, noDowngrade, restartQueue });
     status({ step: "done", state: "done" });
     return r;
   } catch (e) {
@@ -484,22 +513,23 @@ async function pluginOnly(deps, { root = null, dry = false, statusFile = null, r
  * apply: install release `version` (default: the latest) into <root>/releases/<version>/ and switch to it.
  *   1 download the source archive and SHA256SUMS.txt; the archive's sum must be listed and match (else: nothing written)
  *   2 extract to releases/.tmp-*, check its relay/package.json version, rename to releases/<version>
- *   3 link .env / agents.json / data / logs from <root>/shared, npm ci --omit=dev, node src/index.js --self-check
+ *   3 link .env / agents.json / devices.json / data / logs from <root>/shared, npm ci --omit=dev, node src/index.js --self-check
  *   4 switch <root>/current atomically, restart the service, poll /health until v == <version> (30 s)
  *   5 on a failed restart or health check: switch back, restart, report the failure (exit 1)
  *   6 keep the last 3 releases; --with-plugin: the release's install.py (dry run, then real), no gateway restart
  * Returns {status: "updated"|"current"|"dry-run", from, to}.
  */
-async function apply(deps, { root, version = null, withPlugin = false, dry = false, force = false, healthTimeoutMs = HEALTH_TIMEOUT_MS, statusFile = null, restartQueue = null }) {
+async function apply(deps, { root, version = null, noDowngrade = false, withPlugin = false, dry = false, force = false, healthTimeoutMs = HEALTH_TIMEOUT_MS, statusFile = null, restartQueue = null }) {
   const loc = locate(deps, { root });
   if (!loc.managed) throw new Error(`the relay in ${loc.relay} is a plain checkout; update it with git, or convert it first: deck-relay-update init <dir> --dry-run`);
   root = loc.root;
-  const step = stepper(deps, dry);
   const env = relayEnv(deps, loc.relay);
+  deps = withToken(deps, env);
+  const step = stepper(deps, dry);
   const pkg = readJsonFile(deps, path.join(loc.relay, "package.json")) || {};
-  const from = currentVersion(deps, root);
   const unlock = dry ? () => {} : lock(deps, root);
   try {
+    const from = currentVersion(deps, root);
     const base = { version: version || null, from };
     const status = dry ? () => {} : statusWriter(deps, statusFile, base);
     let repo, rel;
@@ -514,6 +544,11 @@ async function apply(deps, { root, version = null, withPlugin = false, dry = fal
     base.version = to;
     if (to === from && !force) {
       deps.log(`relay ${from} is already the ${version ? "requested" : "latest"} release (${repo})`);
+      status({ step: "done", state: "done" });
+      return { status: "current", from, to };
+    }
+    if (noDowngrade && compare(to, from) < 0) {
+      deps.log(`relay ${from} is newer than the requested ${to}; nothing to do (--no-downgrade)`);
       status({ step: "done", state: "done" });
       return { status: "current", from, to };
     }
@@ -559,6 +594,7 @@ async function apply(deps, { root, version = null, withPlugin = false, dry = fal
         if (got !== to) throw new Error(`the archive's relay/package.json says ${got || "nothing"}, not ${to}`);
         deps.fs.renameSync(tmp, dir);
       });
+      await step("preserve desktop device keys in shared/devices.json", () => migrateDevices(deps, root, loc.relay));
       await step(`link relay/${SHARED.join(", relay/")} to ${path.join(root, "shared")}`, () => linkShared(deps, root, path.join(dir, "relay")));
       await step(`npm ci --omit=dev in ${path.join(dir, "relay")}`, () => must(deps, "npm", ["ci", "--omit=dev", "--no-audit", "--no-fund"], { cwd: path.join(dir, "relay") }));
       await step(`self-check: node src/index.js --self-check in ${path.join(dir, "relay")}`, () => must(deps, deps.node, ["src/index.js", "--self-check"], { cwd: path.join(dir, "relay") }));
@@ -598,7 +634,7 @@ async function apply(deps, { root, version = null, withPlugin = false, dry = fal
         phase = "plugin";
         status({ step: "plugin", state: "running" });
         try {
-          plugin = await updatePlugin(deps, { releaseDir: dry ? path.join(root, "current") : dir, env: { ...deps.env, ...env }, dry, restartQueue });
+          plugin = await updatePlugin(deps, { releaseDir: dry ? path.join(root, "current") : dir, env: { ...deps.env, ...env }, dry, noDowngrade, restartQueue });
         } catch (e) {
           status({ step: "plugin", state: "plugin-failed", error: e.message });
           throw Object.assign(e, { pluginFailed: true });
@@ -632,20 +668,21 @@ const USAGE = `deck-relay-update: update the Hermes Deck relay from GitHub relea
 
   deck-relay-update --check [--auto]      is a newer release out? exit 0: up to date, 10: newer release available
                                           (--auto, for the timer: then apply it when DECK_RELAY_AUTO_UPDATE=1)
-  deck-relay-update apply [--version X.Y.Z] [--with-plugin] [--dry-run] [--root DIR]
+  deck-relay-update apply [--version X.Y.Z] [--no-downgrade] [--with-plugin] [--dry-run] [--root DIR]
                                           [--status-file FILE] [--restart-queue FILE]
                                           install a release next to the running one, switch, restart, health-check;
                                           switches back by itself when the new relay does not come up
-  deck-relay-update plugin [--root DIR] [--status-file F] [--restart-queue F] [--dry-run]   reinstall the plugin from the running release
+  deck-relay-update plugin [--root DIR] [--no-downgrade] [--status-file F] [--restart-queue F] [--dry-run]   reinstall the plugin from the running release
   deck-relay-update init DIR [--dry-run]  turn this checkout into an install root at DIR (releases/, current, shared/)
 
 Environment: DECK_UPDATE_REPO (owner/name; default: relay/package.json "repository"), DECK_RELAY_ROOT (install root),
 DECK_RELAY_SERVICE (systemd --user unit, default hermes-deck-relay; launchd label on macOS, default
-com.hermes-deck.relay), DECK_HERMES_PYTHON (Python for --with-plugin), GH_TOKEN / GITHUB_TOKEN (optional).`;
+com.hermes-deck.relay), DECK_HERMES_PYTHON (Python for --with-plugin), GH_TOKEN / GITHUB_TOKEN (needed only for a private repository;
+also read from the relay's .env).`;
 
 /** Parse argv: {cmd, flags, dir}; throws on anything unknown. */
 function parseArgs(argv) {
-  const out = { cmd: null, dir: null, version: null, root: null, statusFile: null, restartQueue: null, dry: false, withPlugin: false, auto: false, force: false };
+  const out = { cmd: null, dir: null, version: null, root: null, statusFile: null, restartQueue: null, dry: false, noDowngrade: false, withPlugin: false, auto: false, force: false };
   const a = [...argv];
   while (a.length) {
     const x = a.shift();
@@ -653,6 +690,7 @@ function parseArgs(argv) {
     else if (x === "apply" || x === "init" || x === "plugin" || x === "help" || x === "--help" || x === "-h") out.cmd = x.replace(/^-+/, "") === "h" ? "help" : x.replace(/^-+/, "");
     else if (x === "--dry-run") out.dry = true;
     else if (x === "--with-plugin") out.withPlugin = true;
+    else if (x === "--no-downgrade") out.noDowngrade = true;
     else if (x === "--auto") out.auto = true;
     else if (x === "--force") out.force = true;
     else if (x === "--version" || x === "--root" || x === "--status-file" || x === "--restart-queue") {
@@ -730,10 +768,10 @@ async function main(argv, deps = defaultDeps()) {
       return EXIT.updateAvailable;
     }
     if (args.cmd === "plugin") {
-      await pluginOnly(deps, { root: args.root, dry: args.dry, statusFile: args.statusFile, restartQueue: args.restartQueue });
+      await pluginOnly(deps, { root: args.root, dry: args.dry, noDowngrade: args.noDowngrade, statusFile: args.statusFile, restartQueue: args.restartQueue });
       return EXIT.ok;
     }
-    await apply(deps, { root: args.root, version: args.version, withPlugin: args.withPlugin, dry: args.dry, force: args.force, statusFile: args.statusFile, restartQueue: args.restartQueue });
+    await apply(deps, { root: args.root, version: args.version, noDowngrade: args.noDowngrade, withPlugin: args.withPlugin, dry: args.dry, force: args.force, statusFile: args.statusFile, restartQueue: args.restartQueue });
     return EXIT.ok;
   } catch (e) {
     deps.log(`error: ${e.message}${e.detail ? `\n${e.detail}` : ""}`);
@@ -741,4 +779,4 @@ async function main(argv, deps = defaultDeps()) {
   }
 }
 
-module.exports = { main, parseArgs, check, apply, init, prune, locate, repoOf, compare, sumFor, sourceName, healthUrl, restartCommand, pluginProfiles, profileHome, pluginOnly, parseEnv, statusWriter, EXIT, KEEP, USAGE };
+module.exports = { withToken, main, parseArgs, check, apply, init, prune, locate, repoOf, compare, sumFor, sourceName, healthUrl, restartCommand, pluginProfiles, profileHome, pluginOnly, parseEnv, statusWriter, EXIT, KEEP, USAGE };

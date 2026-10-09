@@ -7,6 +7,7 @@ const path = require("path");
 const devtokens = require("./devtokens");
 const job = require("./update-job");
 const { locate, compare } = require("../tools/update");
+const { readQueue } = require("./queue-file");
 
 const SEMVER = /^(0|[1-9]\d{0,4})\.(0|[1-9]\d{0,4})\.(0|[1-9]\d{0,4})$/;
 const DEVICE_RE = /^[a-f0-9]{8,64}$/;
@@ -38,7 +39,8 @@ class HostUpdate {
     this.o = o;
     Object.assign(this, { dataDir: o.dataDir, relayDir: o.relayDir, version: o.version, remoteUpdate: o.remoteUpdate !== false, tokensFile: o.tokensFile, presence: o.presence,
       plugins: o.plugins || (() => ({})), restarts: o.restarts, platform: o.platform || process.platform, uid: o.uid, node: o.node || process.execPath,
-      run: o.run, fs: o.fs || require("fs"), now: o.now || Date.now, broadcast: o.broadcast || (() => {}) });
+      run: o.run, fs: o.fs || require("fs"), env: o.env || process.env, now: o.now || Date.now, broadcast: o.broadcast || (() => {}),
+      isAlive: o.isAlive || ((pid) => { try { process.kill(pid, 0); return true; } catch { return false; } }) });
     this.statusFile = path.join(this.dataDir, "update-status.json");
     this.queueFile = path.join(this.dataDir, "restart-queue.json");
     this.lastSeen = null;
@@ -49,13 +51,25 @@ class HostUpdate {
     try { return JSON.parse(this.fs.readFileSync(this.statusFile, "utf8")); } catch { return null; }
   }
   _running(st = this.status()) {
-    return !!st && !FINAL.has(st.state) && this.now() - Date.parse(st.at || 0) < STALE_MS;
+    const loc = locate({ fs: this.fs, env: this.env }, { here: this.relayDir });
+    if (loc.root) {
+      try {
+        const pid = Number(this.fs.readFileSync(path.join(loc.root, ".update.lock"), "utf8"));
+        if (Number.isInteger(pid) && pid > 0 && this.isAlive(pid)) return true;
+      } catch { /* No readable live owner; use the status deadline. */ }
+    }
+    if (!st || FINAL.has(st.state)) return false;
+    if (this.now() - Date.parse(st.at || 0) < STALE_MS) return true;
+    this.fs.writeFileSync(`${this.statusFile}.tmp`, JSON.stringify({ ...st, state: "failed", error: "the update stopped without reporting (abandoned)", at: new Date(this.now()).toISOString() }));
+    this.fs.renameSync(`${this.statusFile}.tmp`, this.statusFile);
+    this.poll();
+    return false;
   }
   managed() {
     try { return locate({ fs: this.fs, env: {} }, { here: this.relayDir }).managed; } catch { return false; }
   }
   info() {
-    return { remote: { enabled: this.remoteUpdate, managed: this.managed() }, status: this.status(), restarts: this.restarts ? this.restarts.rows() : [] };
+    return { remote: { enabled: this.remoteUpdate, managed: this.managed() }, status: this.status(), restarts: this.restarts ? this.restarts.rows() : [], queueError: this.restarts?.queueError ?? null };
   }
   publicInfo() {
     const st = this.status();
@@ -71,7 +85,7 @@ class HostUpdate {
     if (st && FINAL.has(st.state) && st.job && st.job.kind === "launchd" && this.cleanedJob !== st.job.label) {
       this.cleanedJob = st.job.label;
       this.cleaning = true;
-      job.cleanupJob(st.job, { run: this.run, fs: this.fs, uid: this.uid }).finally(() => { this.cleaning = false; }).catch(() => {});
+      this.cleanup = job.cleanupJob(st.job, { run: this.run, fs: this.fs, uid: this.uid }).finally(() => { this.cleaning = false; }).catch(() => {});
     }
     this.broadcast({ t: "hostUpdate", ...info });
   }
@@ -100,23 +114,31 @@ class HostUpdate {
     const version = body.version;
     if (typeof version !== "string" || !SEMVER.test(version)) throw fail(400, "version must be X.Y.Z");
     const { relayOk, pluginsOk, newerPlugin } = this._current(version);
-    if (relayOk && pluginsOk) return reply(res, 200, { state: "current", version });
-    const st = this.status();
-    if (this._running(st)) {
-      if (compare(version, st.version) > 0) throw fail(409, "another update is running; try again when it ends", { status: st });
+    let st = this.status();
+    let running = this._running(st);
+    if (!running && st && !FINAL.has(st.state) && this.cleaning) {
+      await this.cleanup;
+      this._actor(req);
+      st = this.status();
+      running = this._running(st);
+    }
+    if (running) {
+      if (compare(version, st?.version) > 0) throw fail(409, "another update is running; try again when it ends", { status: st });
       return reply(res, 200, { ...st, state: "running" });
     }
+    const recover = st?.state === "plugin-failed" || readQueue(this.queueFile, { fs: this.fs }).some((entry) => entry?.pending === true);
+    if (relayOk && pluginsOk && !recover) return reply(res, 200, { state: "current", version });
     if (this.cleaning) throw fail(409, "previous update cleanup is still running; try again when it ends");
     if (!this.managed()) throw fail(409, "the relay is not running from an install root", { command: "node relay/bin/deck-relay-update init ~/hermes-deck --dry-run" });
-    // The updater installs the bundled plugin into every installed profile.
-    if (newerPlugin) throw fail(409, "an installed plugin is newer than this release; refusing a downgrade");
+    // Recovery skips newer profiles in the installer under --no-downgrade.
+    if (newerPlugin && !(relayOk && pluginsOk && recover)) throw fail(409, "an installed plugin is newer than this release; refusing a downgrade");
     const updater = path.join(this.relayDir, "bin", "deck-relay-update");
     const args = relayOk
-      ? ["plugin", "--status-file", this.statusFile, "--restart-queue", this.queueFile]
-      : ["apply", "--version", version, "--with-plugin", "--status-file", this.statusFile, "--restart-queue", this.queueFile];
+      ? ["plugin", "--status-file", this.statusFile, "--restart-queue", this.queueFile, "--no-downgrade"]
+      : ["apply", "--version", version, "--no-downgrade", "--with-plugin", "--status-file", this.statusFile, "--restart-queue", this.queueFile];
     let spec;
     try {
-      spec = job.jobSpec({ platform: this.platform, uid: this.uid, node: this.node, updater, args, dataDir: this.dataDir, logDir: path.join(path.dirname(this.dataDir), "logs"), now: this.now });
+      spec = job.jobSpec({ platform: this.platform, uid: this.uid, node: this.node, updater, args, dataDir: this.dataDir, logDir: path.join(path.dirname(this.dataDir), "logs"), env: this.env, now: this.now });
     } catch (e) {
       throw fail(501, e.message);
     }

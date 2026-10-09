@@ -24,6 +24,9 @@ function load(file) {
 }
 
 function save(file, data) {
+  if (fs.lstatSync(file, { throwIfNoEntry: false })?.isSymbolicLink()) {
+    file = fs.existsSync(file) ? fs.realpathSync(file) : path.resolve(path.dirname(file), fs.readlinkSync(file));
+  }
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", { mode: 0o600 });
