@@ -157,7 +157,9 @@ class Model {
 
     switch (ev.ev) {
       case "turn_start":
-        if (!FINISHED.has(s.state)) s.state = "running";
+        // A new turn in a top-level session always runs, even after an earlier turn was stopped or failed (the
+        // user sent the next message to the same chat). Sub-agents stay finished: their sid is never reused.
+        if (!s.parent || !FINISHED.has(s.state)) s.state = "running";
         s.turns += 1;
         s.turnTs = ev.ts; // B2: how long the current turn has been running
         provenance.turnBoundary(s);

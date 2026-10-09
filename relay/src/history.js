@@ -8,6 +8,7 @@ const { redact, normUsage } = require("./util");
  *   GET /session/<sid>/messages?before=<cursor>&limit=50   the newest page (oldest first) + `next` to page back
  *   GET /session/<sid>/call/<callId>                         one tool call: full args and result
  *   GET /message/<id>/full                                   one message with every field (up to 256 KB each)
+ *   GET /session/<sid>/tools?before=<turnId>&limit=5         tool calls grouped by turn (Hermes sessions only), newest turns first page
  *
  * Item shape (both sources): {id, role: user|assistant|tool, ts, text?, think?, calls?: [{call, name, args}],
  * call?, name?, status?, child?, truncated?}. Pages clip each field to FIELD chars and set `truncated`.
@@ -26,6 +27,10 @@ const FIELD = 4096;
 const FULL = 256 * 1024;
 const PAGE = 50;
 const MAX_PAGE = 200;
+const TOOL_FIELD = 1200; // args/result preview per tool call in the turns view
+const TURN_PAGE = 5;
+const MAX_TURNS = 20;
+const MAX_TURN_CALLS = 2000;
 const MARGIN = 256; // read a little past a cut so redaction never sees half a secret
 const IDLE_CLOSE_MS = 5 * 60 * 1000;
 const MAX_INDEXES = 16;
@@ -63,6 +68,23 @@ function callOf(item, call, name, args, n, len) {
   put(c, "args", args, n, len);
   if (c.truncated) item.truncated = true;
   return c;
+}
+
+
+const firstLine = (s) => {
+  const line = s.split(/\r?\n/).map((x) => x.trim()).find(Boolean) || "";
+  return line.length > 200 ? line.slice(0, 200) : line;
+};
+
+/** A tool result that reports an error: JSON with a truthy `error` or `success: false`. */
+function toolFailed(content) {
+  if (typeof content !== "string" || content[0] !== "{") return false;
+  try {
+    const o = JSON.parse(content);
+    return !!(o && (o.error || o.success === false));
+  } catch {
+    return false;
+  }
 }
 
 const blocks = (content) => (Array.isArray(content) ? content : []);
@@ -261,6 +283,50 @@ class HermesStore {
       items: page.map((r) => this._item(profile, r, FIELD, byMsg.get(r.id))),
       next: more && page.length ? String(page[0].id) : null,
     };
+  }
+
+
+  /**
+   * Tool calls of a session grouped by turn (a turn starts at a user message). `before` is a turn id (the user
+   * message row id) from `next`; the newest turns come first when it is absent. Turns are returned oldest first;
+   * calls before the first user message form a turn with id 0. Args and results are redacted previews.
+   */
+  tools(profile, sid, before, limit) {
+    const h = this.open(profile);
+    const act = this._activeSql(h);
+    const n = TOOL_FIELD + MARGIN;
+    const users = this.stmt(h, `SELECT id, timestamp, substr(content, 1, 400) AS content FROM messages WHERE session_id = ? AND role = 'user'${act} AND id < ? ORDER BY id DESC LIMIT ?`).all(sid, before, limit + 1);
+    const more = users.length > limit;
+    const page = users.slice(0, limit).reverse();
+    const lo = more && page.length ? page[0].id : 0;
+    const hi = before === Number.MAX_SAFE_INTEGER ? before : before - 1;
+    const turns = page.map((u) => ({ id: u.id, ts: u.timestamp, text: firstLine(redact(String(u.content || ""))), calls: [] }));
+    if (!more) turns.unshift({ id: 0, ts: null, text: "", calls: [] });
+    const askedSql = this._callsSql(n).replace("SELECT m.id AS mid,", "SELECT m.id AS mid, m.timestamp AS ts,") +
+      `WHERE m.session_id = ?${act ? " AND m.active = 1" : ""} AND m.id BETWEEN ? AND ? AND m.role = 'assistant' AND m.tool_calls IS NOT NULL AND json_valid(m.tool_calls) AND json_type(m.tool_calls) = 'array' ORDER BY m.id, CAST(j.key AS INTEGER) LIMIT ${MAX_TURN_CALLS}`;
+    const asked = this.stmt(h, askedSql).all(sid, lo, hi);
+    const results = new Map();
+    for (const r of this.stmt(h, `SELECT tool_call_id, timestamp, substr(content, 1, ${n}) AS content, length(content) AS clen FROM messages WHERE session_id = ? AND role = 'tool'${act} AND id BETWEEN ? AND ?`).all(sid, lo, hi)) {
+      if (r.tool_call_id) results.set(r.tool_call_id, r);
+    }
+    const lastId = hi === Number.MAX_SAFE_INTEGER ? (this.stmt(h, `SELECT MAX(id) AS id FROM messages WHERE session_id = ?${act}`).get(sid) || {}).id : null;
+    // each call belongs to the latest user message at or before it
+    let ti = 0;
+    const startOf = (i) => turns[i].id;
+    for (const c of asked) {
+      while (ti + 1 < turns.length && startOf(ti + 1) <= c.mid) ti++;
+      const res = results.get(c.call);
+      const call = { call: c.call || undefined, tool: c.name || undefined, ts: c.ts };
+      put(call, "args", c.args, TOOL_FIELD, c.alen);
+      if (res) {
+        put(call, "result", res.content, TOOL_FIELD, res.clen);
+        if (typeof res.timestamp === "number" && typeof c.ts === "number" && res.timestamp >= c.ts) call.ms = Math.round((res.timestamp - c.ts) * 1000);
+        call.status = toolFailed(res.content) ? "error" : "ok";
+      } else call.status = lastId !== null && c.mid === lastId ? "running" : "ok";
+      turns[ti].calls.push(call);
+    }
+    const out = { turns: turns.filter((t) => t.id !== 0 || t.calls.length), next: more && page.length ? String(page[0].id) : null };
+    return out;
   }
 
   full(profile, rowid) {
@@ -627,6 +693,18 @@ class History {
     return { sid, meta, ...this.hermes.page(src.profile, sid, before, limit) };
   }
 
+
+  tools(sid, q) {
+    const limit = Math.min(MAX_TURNS, Math.max(1, Number(q.get("limit")) || TURN_PAGE));
+    const rawBefore = q.get("before");
+    if (rawBefore !== null && !/^\d{1,15}$/.test(rawBefore)) throw new HttpError(400, "bad cursor");
+    const before = rawBefore === null ? Number.MAX_SAFE_INTEGER : Number(rawBefore);
+    const src = this.resolve(sid);
+    if (src.kind === "claude") return { sid, turns: [], next: null };
+    const meta = this.hermes.meta(src.profile, sid);
+    return { sid, meta: meta ? { tools: meta.tools, cost: meta.cost } : null, ...this.hermes.tools(src.profile, sid, before, limit) };
+  }
+
   full(id) {
     let m = HERMES_ID_RE.exec(id);
     if (m) return this.hermes.full(m[1], Number(m[2]));
@@ -656,6 +734,8 @@ class History {
     try {
       let m = /^\/session\/([^/]+)\/messages$/.exec(p);
       if (m) return { code: 200, body: this.messages(dec(m[1]), url.searchParams) };
+      m = /^\/session\/([^/]+)\/tools$/.exec(p);
+      if (m) return { code: 200, body: this.tools(dec(m[1]), url.searchParams) };
       m = /^\/session\/([^/]+)\/call\/([^/]+)$/.exec(p);
       if (m) {
         const r = this.call(dec(m[1]), dec(m[2]));

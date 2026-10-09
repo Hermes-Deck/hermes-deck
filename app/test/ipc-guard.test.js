@@ -108,7 +108,7 @@ test("ipc: every main-window channel refuses a foreign frame (bridge, settings, 
   }
   // the work pane's channels (Lane C): sub-agent roster, tail, steer and interrupt, the plan (bridge and relay paths)
   // and the latest tool calls; each one is in the preload and refuses a foreign frame
-  for (const ch of ["bridge:subagents", "bridge:subagent-tail", "bridge:subagent-steer", "bridge:subagent-interrupt", "bridge:plan", "bridge:tool-calls", "relay:plan"]) {
+  for (const ch of ["bridge:subagents", "bridge:subagent-tail", "bridge:subagent-steer", "bridge:subagent-interrupt", "bridge:plan", "bridge:tool-calls", "relay:plan", "relay:tools"]) {
     assert.ok(used.includes(ch), `${ch} is in the preload`);
     assert.deepEqual([byChannel.get(ch)?.kind, byChannel.get(ch)?.guarded, byChannel.get(ch)?.refused], ["handle", true, true], ch);
   }

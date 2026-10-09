@@ -101,6 +101,48 @@
     for (const a of list) walk(a, 0);
     return out;
   }
+  // --- relay-sourced sub-agents (works for sessions this Deck does not own, and for finished children)
+  const RELAY_STATE = { running: "running", done: "completed", failed: "failed", stopped: "interrupted", idle: "queued" };
+  const notOwned = e => /not owned|session not found|\b4001\b/i.test(String(e && e.message || e || ""));
+  function relayAgents(children) {
+    return (Array.isArray(children) ? children : []).filter(c => c && c.sid).slice(0, 128).map(c => {
+      const ms = number(c.ms) ?? (number(c.lastTs) !== null && number(c.firstTs) !== null ? Math.max(0, (c.lastTs - c.firstTs) * 1000) : null);
+      const tk = c.tokens && typeof c.tokens === "object" ? { input: number(c.tokens.in) || 0, output: number(c.tokens.out) || 0, cache_read: number(c.tokens.cr) || 0, cache_write: number(c.tokens.cw) || 0 } : null;
+      return { id: c.sa || c.sid, childSid: c.sid, goal: c.goal || c.role || "", model: c.route?.model || c.model || "", effort: c.route?.effort || "",
+        category: c.route?.category || "", status: RELAY_STATE[c.state] || "unknown", elapsedS: ms === null ? null : ms / 1000, toolCount: number(c.ntools),
+        tokens: tk, summary: c.summary || "", acceptingSteer: false, relayOnly: true };
+    });
+  }
+  const present = (a, b) => a === undefined || a === null || a === "" ? b : a;
+  /** Bridge rows win (live controls, tree); relay rows add finished children and fill goal/model/summary/tokens/counts. */
+  function mergeRoster(relayRows, bridgeRows) {
+    const relay = relayRows || [], seen = new Set();
+    const out = (bridgeRows || []).map(b => {
+      const r = relay.find(x => (x.id === b.id) || (b.childSid && x.childSid === b.childSid));
+      if (r) seen.add(r);
+      return r ? { ...b, goal: present(b.goal, r.goal), model: present(b.model, r.model), effort: present(b.effort, r.effort), childSid: present(b.childSid, r.childSid),
+        summary: present(b.summary, r.summary), tokens: present(b.tokens, r.tokens), toolCount: present(b.toolCount, r.toolCount), elapsedS: present(b.elapsedS, r.elapsedS) } : b;
+    });
+    for (const r of relay) if (!seen.has(r)) out.push(r);
+    return out.slice(0, 128);
+  }
+  // --- Run tab: history turns (oldest first) plus live calls; unknown live calls join the newest turn
+  function groupTurns(turns, live) {
+    const out = (Array.isArray(turns) ? turns : []).map(t => ({ ...t, calls: (t.calls || []).slice() }));
+    const index = new Map();
+    out.forEach((t, ti) => t.calls.forEach((c, ci) => index.set(c.call, [ti, ci])));
+    const extra = [];
+    for (const c of live || []) {
+      const at = index.get(c.call);
+      if (at) out[at[0]].calls[at[1]] = { ...out[at[0]].calls[at[1]], ...c };
+      else extra.push(c);
+    }
+    if (extra.length) {
+      if (out.length) out[out.length - 1].calls.push(...extra);
+      else out.push({ id: "live", ts: stamp(extra[0].ts) === null ? null : stamp(extra[0].ts) / 1000, text: "", calls: extra });
+    }
+    return out;
+  }
   const canSteer = agent => agent?.status === "running" && agent.acceptingSteer === true;
   const STEER_MAX = 32000;
   // Lane C validates again in main; this keeps the failure inline and the draft intact.
@@ -122,6 +164,7 @@
         cache.set(sid, { plan: null, planVersion: 0, loaded: false, loading: false, error: "",
           tools: [], toolsVersion: 0, toolError: "", toolsLoading: false, selected: null, pinned: false, extra: null, data: {}, writes: new Map(),
           agents: [], failed: [], agentError: "", agentLoading: false, agentsLoaded: false,
+          turns: [], turnsNext: null, turnsLoaded: false, turnsLoading: false, turnOpen: new Map(), childHist: new Map(),
           agentId: null, detail: null, vanished: new Set(), tail: null, tailVersion: 0, agentMessages: new Map(), drafts: new Map(), busy: new Set(), expanded: new Set() });
         if (cache.size > 32) cache.delete(cache.keys().next().value);
       }
@@ -151,6 +194,7 @@
       r.loading = true; r.toolsLoading = true;
       const version = r.planVersion, toolsVersion = r.toolsVersion;
       const opts = session.profile ? { profile: session.profile } : undefined;
+      loadTurns(sid);
       const toolsRead = (async () => {
         try {
           let calls = [];
@@ -177,28 +221,52 @@
       } catch (e) { if (r.planVersion === version) r.error = msg(e); }
       finally { await toolsRead; r.loading = false; r.loaded = true; if (current() === sid) redraw(); }
     }
+    // Whole-session history from the relay: the newest turns first, older pages on demand. Failures leave the live list alone.
+    async function loadTurns(sid, before = null) {
+      const r = record(sid);
+      if (!deck.sessionTools || r.turnsLoading) return;
+      r.turnsLoading = true;
+      try {
+        const page = await deck.sessionTools(sid, before);
+        if (disposed) return;
+        const got = Array.isArray(page?.turns) ? page.turns : [];
+        const ids = new Set(got.map(x => x.id));
+        r.turns = before === null ? (got.length ? [...r.turns.filter(x => !ids.has(x.id) && typeof x.id === "number" && x.id < got.find(y => typeof y.id === "number" && y.id > 0)?.id), ...got] : r.turns)
+          : [...got, ...r.turns.filter(x => !ids.has(x.id))];
+        if (before !== null || !r.turnsLoaded) r.turnsNext = page?.next || null;
+        r.turnsLoaded = true;
+        if (page?.meta && number(page.meta.cost) !== null) r.historyCost = page.meta.cost;
+        for (const turn of r.turns) for (const c of turn.calls) if (changedFiles([c]).length) r.writes.set(c.call, c);
+        while (r.writes.size > 200) r.writes.delete(r.writes.keys().next().value);
+      } catch { r.turnsLoaded = true; }
+      finally { r.turnsLoading = false; if (sid === current()) redraw(); }
+    }
+    const grouped = r => groupTurns(r.turns, r.tools);
+    const allCalls = r => grouped(r).flatMap(t => t.calls);
     function replaceTools(sid, tools) {
       const r = record(sid), previous = r.tools.find(c => c.call === r.selected);
       r.tools = (Array.isArray(tools) ? tools : []).filter(c => c && c.call).slice(-30).map(c => ({ ...c, status: c.status || (c.ms == null ? "running" : "ok") }));
       for (const c of r.tools) if (changedFiles([c]).length) r.writes.set(c.call, c);
       while (r.writes.size > 200) r.writes.delete(r.writes.keys().next().value);
-      if (r.selected && !r.tools.some(c => c.call === r.selected)) {
+      if (r.selected && !allCalls(r).some(c => c.call === r.selected)) {
         if (r.pinned) { if (previous) r.extra = previous; }
         else r.selected = null;
       }
-      if (r.extra && (r.extra.call !== r.selected || r.tools.some(c => c.call === r.extra.call))) r.extra = null;
+      if (r.extra && (r.extra.call !== r.selected || allCalls(r).some(c => c.call === r.extra.call))) r.extra = null;
       if (!r.pinned) r.selected = [...r.tools].reverse().find(c => c.status === "running")?.call || r.tools.at(-1)?.call || null;
     }
     function selectTool({ sid, call, source, tool }, { open = true, notify = true } = {}) {
       if (!sid || !call || disposed) return;
       const r = record(sid);
       if (source === "live" && r.pinned) return;
-      const known = r.tools.some(c => c.call === call), given = tool && tool.call === call ? tool : null;
+      const known = allCalls(r).some(c => c.call === call), given = tool && tool.call === call ? tool : null;
       // A live call is genuinely recent; an explicit older selection is shown beside the list, never merged into it.
       if (!known && given && source === "live") replaceTools(sid, [...r.tools, given]);
       if (r.selected !== call) r.revealNotice = null;
       r.selected = call; r.pinned = source !== "live";
-      if (!r.tools.some(c => c.call === call)) {
+      const turnOf = grouped(r).find(t => t.calls.some(c => c.call === call));
+      if (turnOf) r.turnOpen.set(String(turnOf.id), true);
+      if (!allCalls(r).some(c => c.call === call)) {
         let found = given;
         if (!found) { try { found = receipts()?.calls?.(sid)?.find(c => c && c.call === call) || null; } catch { found = null; } }
         r.extra = found ? { ...found } : null;
@@ -221,6 +289,9 @@
         else if (e.sid && (e.ev === "tool_start" || e.ev === "tool_end")) {
           const r = record(e.sid);
           r.toolsVersion++;
+          if (e.ev === "tool_start" && r.turnsLoaded && !allCalls(r).some(c => c.call === e.call) && !r.refreshAt) {
+            r.refreshAt = setTimer(() => { r.refreshAt = null; loadTurns(e.sid); }, 2000);
+          }
           const list = r.tools.slice(), index = list.findIndex(c => c.call === e.call);
           const call = { ...(index >= 0 ? list[index] : {}), ...e, status: e.ev === "tool_start" ? "running" : e.status || "ok" };
           if (index >= 0) list[index] = call; else list.push(call);
@@ -244,7 +315,7 @@
     }
     function showInChat(sid, call) {
       selectTool({ sid, call }, { open: false });
-      const ts = Number(record(sid).tools.find(c => c.call === call)?.ts ?? record(sid).extra?.ts);
+      const ts = Number(allCalls(record(sid)).find(c => c.call === call)?.ts ?? record(sid).extra?.ts);
       emitReveal(Number.isFinite(ts) ? { sid, call, ts } : { sid, call });
     }
     const revealButton = (sid, call) => h("button", { class: "wk-reveal", type: "button", onclick: () => showInChat(sid, call), title: t("work.showInChat"), "aria-label": t("work.showInChat") }, "↗");
@@ -254,21 +325,37 @@
         c.args ? disclosure(r, `run:${c.call}`, null, t("work.arguments"), h("pre", null, c.args)) : null,
         h("pre", null, c.err || c.result || t(c.status === "running" ? "work.running" : "work.noOutput")), h("p", { class: "wk-note" }, t("work.preview")));
     }
+    const whenOf = ts => number(ts) === null ? "" : new Date(ts * 1000).toLocaleString(root.DeckI18n?.getLocale?.() || "en-US", { dateStyle: "short", timeStyle: "short" });
+    function runRow(c, bars, i, r, sid) {
+      return h("div", { class: "wk-run-item" }, h("button", {
+        class: `wk-run-row${c.call === r.selected ? " selected" : ""}${failed(c) ? " fail" : ""}`, type: "button", "aria-pressed": c.call === r.selected ? "true" : "false",
+        "data-call": c.call, title: c.args || c.tool, onclick: () => showInChat(sid, c.call) },
+        h("span", { class: "wk-status", "aria-label": t(c.status === "running" ? "work.running" : failed(c) ? "work.failed" : "work.state.done") }, c.status === "running" ? "◌" : failed(c) ? "×" : "✓"),
+        h("span", { class: "wk-name", title: c.tool }, c.tool), h("span", { class: "wk-bar" }, h("i", { style: { left: `${bars[i].left}%`, width: `${bars[i].width}%` } })), h("span", { class: "wk-time" }, duration(c.ms))), revealButton(sid, c.call));
+    }
+    function renderTurn(turn, index, total, r, sid) {
+      const key = String(turn.id), newest = index === total - 1;
+      const open = r.turnOpen.has(key) ? r.turnOpen.get(key) : newest;
+      const bars = timingBars(turn.calls);
+      return h("details", { class: "wk-turn", "data-turn": key, open: open ? true : null },
+        h("summary", { onclick: e => { const opening = !e.currentTarget?.parentNode?.open; r.turnOpen.set(key, opening); } },
+          h("b", null, turn.text || t("work.turnUntitled")), h("small", null, [whenOf(turn.ts), t("work.turnCalls", { n: turn.calls.length })].filter(Boolean).join(" · "))),
+        h("div", { class: "wk-gantt" }, turn.calls.map((c, i) => runRow(c, bars, i, r, sid))));
+    }
     function renderRun(el) {
       const sid = current();
       if (!sid) return el.replaceChildren(shell.empty(t("work.noSession")));
-      const r = record(sid), stats = runStats(r.tools, r.data), bars = timingBars(r.tools);
-      const inList = r.tools.find(c => c.call === r.selected);
+      const r = record(sid), turns = grouped(r), calls = turns.flatMap(x => x.calls), stats = runStats(calls, { ...r.data, cost: r.data.cost ?? r.historyCost });
+      const total = number(r.data.ntools);
+      const inList = calls.find(c => c.call === r.selected);
       const outside = !inList && r.selected ? (r.extra?.call === r.selected ? r.extra : null) : null;
-      el.replaceChildren(h("section", { class: "wk-content" }, r.toolError ? h("p", { class: "wk-error", role: "alert" }, r.toolError) : null,
-        h("div", { class: "wk-stats" }, stat("work.calls", String(stats.calls)), stat("work.toolTime", duration(stats.time)), stat("work.failed", String(stats.failed), !!stats.failed), stat("work.cost", money(stats.cost, r.data.cost_estimated || r.data.costStatus === "estimated"))),
-        h("p", { class: "wk-note" }, t("work.recentCalls")),
+      const partial = total !== null && calls.length < total;
+      el.replaceChildren(h("section", { class: "wk-content" }, r.toolError && !calls.length ? h("p", { class: "wk-error", role: "alert" }, r.toolError) : null,
+        h("div", { class: "wk-stats" }, stat("work.sessionCalls", String(total ?? stats.calls), false, t("work.sessionCallsHint")), stat("work.toolTime", duration(stats.time)), stat("work.failed", String(stats.failed), !!stats.failed), stat("work.cost", money(stats.cost, r.data.cost_estimated || r.data.costStatus === "estimated"))),
+        partial ? h("p", { class: "wk-note" }, t("work.loadedCalls", { n: calls.length, total })) : null,
         r.revealNotice?.call === r.selected ? h("p", { class: "wk-note", role: "status" }, t(r.revealNotice.key)) : null,
-        r.tools.length ? h("div", { class: "wk-gantt" }, r.tools.map((c, i) => h("div", { class: "wk-run-item" }, h("button", {
-          class: `wk-run-row${c.call === r.selected ? " selected" : ""}${failed(c) ? " fail" : ""}`, type: "button", "aria-pressed": c.call === r.selected ? "true" : "false",
-          title: c.args || c.tool, onclick: () => showInChat(sid, c.call) },
-          h("span", { class: "wk-status", "aria-label": t(c.status === "running" ? "work.running" : failed(c) ? "work.failed" : "work.state.done") }, c.status === "running" ? "◌" : failed(c) ? "×" : "✓"),
-          h("span", { class: "wk-name", title: c.tool }, c.tool), h("span", { class: "wk-bar" }, h("i", { style: { left: `${bars[i].left}%`, width: `${bars[i].width}%` } })), h("span", { class: "wk-time" }, duration(c.ms))), revealButton(sid, c.call)))) : shell.empty(t(r.toolsLoading ? "work.loading" : "work.noTools")),
+        turns.length ? h("div", { class: "wk-turns" }, [...turns].reverse().map((turn, i) => renderTurn(turn, turns.length - 1 - i, turns.length, r, sid))) : shell.empty(t(r.toolsLoading || r.turnsLoading ? "work.loading" : "work.noTools")),
+        r.turnsNext ? h("button", { class: "btn wk-older", type: "button", "data-action": "older", disabled: r.turnsLoading, onclick: () => loadTurns(sid, r.turnsNext) }, t(r.turnsLoading ? "work.loadingOlder" : "work.loadOlder")) : null,
         inList ? output(inList, r, null, sid) : outside ? output(outside, r, t("work.selectedOutside"), sid)
           : r.selected ? h("p", { class: "wk-note", role: "status" }, t("work.selectedUnavailable")) : null));
     }
@@ -309,30 +396,57 @@
       if (!sid || disposed || !shell.isOpen("work", "agents")) return;
       const r = record(sid);
       if (r.agentLoading) return;
-      if (!deck.bridge?.subagents) { r.agentError = t("work.agentsNeedDirect"); redraw(); return; }
+      if (!deck.bridge?.subagents && !deck.session) { r.agentError = t("work.agentsNeedDirect"); redraw(); return; }
       r.agentLoading = true;
+      let bridgeData = null, bridgeError = null, relayRows = null, relayError = null;
+      await Promise.all([
+        (async () => { if (!deck.bridge?.subagents) return; try { bridgeData = await deck.bridge.subagents(sid, optsOf()); } catch (e) { bridgeError = e; } })(),
+        (async () => { if (!deck.session) return; try { const d = await deck.session(sid); relayRows = relayAgents(d?.children); if (d) r.data = { ...r.data, ...d, children: undefined }; } catch (e) { relayError = e; } })(),
+      ]);
       try {
-        const data = await deck.bridge.subagents(sid, optsOf());
         if (disposed) return;
-        r.agents = Array.isArray(data.subagents) ? data.subagents.slice(0, 128) : [];
-        r.failed = Array.isArray(data.failed) ? data.failed.slice(0, 64) : [];
-        r.agentError = "";
+        // A session this Deck does not own is not an error: the relay roster is shown read-only.
+        const live = bridgeData && Array.isArray(bridgeData.subagents) ? bridgeData.subagents.slice(0, 128) : null;
+        r.agentOwned = !!live;
+        r.agents = mergeRoster(relayRows, live);
+        r.failed = bridgeData && Array.isArray(bridgeData.failed) ? bridgeData.failed.slice(0, 64) : [];
+        r.agentError = !live && !relayRows ? msg(bridgeError && !notOwned(bridgeError) ? bridgeError : relayError || bridgeError) : bridgeError && !notOwned(bridgeError) && !relayRows ? msg(bridgeError) : "";
         if (pendingAgent && pendingAgent.sid === sid) {
           const want = pendingAgent, hit = r.agents.find(a => (want.subagentId && a.id === want.subagentId) || (want.childSid && a.childSid === want.childSid));
-          if (hit) { pendingAgent = null; agentNotice = null; r.agentId = hit.id; r.detail = hit; r.tail = null; r.tailVersion++; }
+          if (hit) { pendingAgent = null; agentNotice = null; r.agentId = hit.id; r.detail = hit; r.tail = null; r.tailVersion++; loadChildHistory(sid, hit); }
           else if (++want.reads >= 4) { pendingAgent = null; agentNotice = { sid, key: "work.agentMissing" }; }
         }
         const detail = r.agents.find(a => a.id === r.agentId);
         if (detail) { r.detail = detail; r.vanished.delete(detail.id); }
         else if (r.agentId) { r.vanished.add(r.agentId); r.detail = ended(r.detail); }
-      } catch (e) { r.agentError = msg(e); }
-      finally { r.agentLoading = false; r.agentsLoaded = true; if (sid === current()) redraw(); }
+      } finally { r.agentLoading = false; r.agentsLoaded = true; if (sid === current()) redraw(); }
       if (sid === current() && shell.isOpen("work", "agents")) await loadTail();
+    }
+    // A relay-known child is an ordinary stored session: its tool calls and last messages come from relay history.
+    async function loadChildHistory(sid, agent) {
+      const r = record(sid), child = agent?.childSid;
+      if (!child || !deck.messages) return;
+      const cur = r.childHist.get(child);
+      if (cur?.loading || (cur?.done && agent.status !== "running")) return;
+      const entry = cur || { loading: false, done: false, messages: [], calls: [], error: "" };
+      r.childHist.set(child, entry); entry.loading = true;
+      while (r.childHist.size > 16) r.childHist.delete(r.childHist.keys().next().value);
+      try {
+        const page = await deck.messages(child);
+        if (disposed) return;
+        const items = Array.isArray(page?.items) ? page.items : [];
+        const results = new Map(items.filter(i => i.role === "tool" && i.call).map(i => [i.call, i]));
+        entry.calls = items.filter(i => i.role === "assistant").flatMap(i => (i.calls || []).map(c => ({ call: c.call, tool: c.name || "tool", args: c.args || "", result: results.get(c.call)?.text || "", status: "ok" })));
+        entry.messages = items.filter(i => i.role === "assistant" && i.text).slice(-5).map(i => i.text);
+        entry.error = ""; entry.done = true;
+      } catch (e) { entry.error = msg(e); }
+      finally { entry.loading = false; if (sid === current() && r.agentId === agent.id) redraw(); }
     }
     async function loadTail() {
       const sid = current();
       if (!sid || disposed || !shell.isOpen("work", "agents")) return;
       const r = record(sid), id = r.agentId;
+      if (id && (r.detail?.relayOnly || r.agentOwned === false)) { loadChildHistory(sid, r.detail); return; }
       if (!id || !deck.bridge?.subagentTail) return;
       const version = ++r.tailVersion;
       try {
@@ -349,12 +463,13 @@
       const r = record(sid), agent = r.agents.find(a => a.id === id);
       if (!agent) return;
       r.agentId = id; r.detail = agent; r.tail = null; r.tailVersion++; r.vanished.delete(id); agentNotice = null;
+      loadChildHistory(sid, agent);
       shell.openRight("work", "agents");
       loadTail(); redraw();
     }
     async function mutateAgent(kind, sid, id) {
       const r = record(sid), a = r.agents.find(x => x.id === id) || r.detail;
-      if (disposed || sid !== current() || id !== r.agentId || r.busy.has(id) || a?.status !== "running") return;
+      if (disposed || sid !== current() || id !== r.agentId || r.busy.has(id) || a?.status !== "running" || a?.relayOnly) return;
       const text = (r.drafts.get(id) || "").trim();
       if (kind === "steer" && (!canSteer(a) || !text)) return;
       const fail = key => { r.agentMessages.set(id, { text: t(key, { max: STEER_MAX }), error: true }); redraw(); };
@@ -395,7 +510,7 @@
         h("pre", null, c.err || c.result || t("work.noOutput")));
     }
     // Without the direct mutation methods the controls are disabled; say why instead of failing silently.
-    const controlNotice = a => a?.status === "running" && (!deck.bridge?.steerSubagent || !deck.bridge?.interruptSubagent) ? { text: t("work.controlNeedsDirect"), error: false } : null;
+    const controlNotice = a => a?.relayOnly && a.status === "running" ? { text: t("work.controlNeedsOpen"), error: false } : a?.status === "running" && (!deck.bridge?.steerSubagent || !deck.bridge?.interruptSubagent) ? { text: t("work.controlNeedsDirect"), error: false } : null;
     // Shell holds pane rebuilds while typing. These controls still follow current runtime state.
     function syncControls(r) {
       const form = r.form;
@@ -404,7 +519,7 @@
       const busy = r.busy.has(form.id), draft = r.drafts.get(form.id) || "", message = r.agentMessages.get(form.id) || controlNotice(a);
       form.field.disabled = !canSteer(a) || busy || !deck.bridge?.steerSubagent;
       form.steer.disabled = form.field.disabled || !draft.trim();
-      form.stop.disabled = a?.status !== "running" || busy || !deck.bridge?.interruptSubagent;
+      form.stop.disabled = a?.status !== "running" || a?.relayOnly || busy || !deck.bridge?.interruptSubagent;
       form.field.value = draft;
       form.note.textContent = message?.text || "";
       form.note.className = message?.error ? "wk-error" : "wk-note";
@@ -434,26 +549,29 @@
         return;
       }
       const message = r.agentMessages.get(a.id) || controlNotice(a), busy = r.busy.has(a.id), tokens = a.tokens;
-      const notes = agentNotes(r.tail?.text);
+      const notes = agentNotes(r.tail?.text), hist = a.childSid ? r.childHist.get(a.childSid) : null;
       const tokenCount = tokens ? (number(tokens.input) || 0) + (number(tokens.output) || 0) + (number(tokens.cache_read) || 0) + (number(tokens.cache_write) || 0) : null;
       const field = h("textarea", { class: "wk-steer-input", "data-hold": "", "aria-label": t("work.steerLabel"), placeholder: t("work.steerPlaceholder"), maxlength: 32000,
         disabled: !canSteer(a) || busy || !deck.bridge?.steerSubagent, oninput: e => { r.drafts.set(a.id, e.target.value); syncControls(r); },
         onkeydown: e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) { e.preventDefault(); mutateAgent("steer", sid, a.id); } } });
       field.value = r.drafts.get(a.id) || "";
       const steer = h("button", { class: "btn primary", type: "button", "data-action": "steer", disabled: !canSteer(a) || busy || !deck.bridge?.steerSubagent || !field.value.trim(), onclick: () => mutateAgent("steer", sid, a.id) }, t("work.steer"));
-      const stop = h("button", { class: "btn danger-outline", type: "button", "data-action": "stop", disabled: a.status !== "running" || busy || !deck.bridge?.interruptSubagent, onclick: () => mutateAgent("stop", sid, a.id) }, t("work.stop"));
+      const stop = h("button", { class: "btn danger-outline", type: "button", "data-action": "stop", disabled: a.status !== "running" || a.relayOnly || busy || !deck.bridge?.interruptSubagent, onclick: () => mutateAgent("stop", sid, a.id) }, t("work.stop"));
       const note = h("p", { class: message?.error ? "wk-error" : "wk-note", role: message?.error ? "alert" : "status", "data-agent-message": a.id }, message?.text || "");
       r.form = { id: a.id, field, steer, stop, note };
       el.replaceChildren(h("section", { class: "wk-content" }, h("button", { class: "wk-back", type: "button", onclick: () => { r.agentId = null; r.detail = null; r.tailVersion++; redraw(); } }, t("work.back")), error,
         h("header", { class: "wk-agent-head" }, h("b", null, a.id), h("small", null, [a.model, a.effort, agentState(a), a.state ? t(`work.runtimeState.${["idle", "thinking", "working", "searching", "finished", "error", "question", "approval", "ratelimit"].includes(a.state) ? a.state : "unknown"}`) : null].filter(Boolean).join(" · "))),
         r.vanished.has(a.id) ? h("p", { class: "wk-note", role: "status" }, t("work.agentGone")) : null,
         h("p", { class: "wk-task-goal" }, a.goal),
-        h("div", { class: "wk-stats" }, stat("work.elapsed", duration(number(a.elapsedS) === null ? null : a.elapsedS * 1000)), stat("work.tokens", tokenCount === null ? "—" : String(tokenCount), false, t("work.tokensHint")), stat("work.calls", String(number(a.toolCount) ?? a.tools?.length ?? 0)), stat("work.agentCost", money(number(a.costUsd), a.costStatus === "estimated"))),
+        h("div", { class: "wk-stats" }, stat("work.elapsed", duration(number(a.elapsedS) === null ? null : a.elapsedS * 1000)), stat("work.tokens", tokenCount === null ? "—" : String(tokenCount), false, t("work.tokensHint")), stat("work.calls", String(number(a.toolCount) ?? a.tools?.length ?? hist?.calls.length ?? 0)), stat("work.agentCost", money(number(a.costUsd), a.costStatus === "estimated"))),
         notes ? [h("h3", { class: "wk-label" }, t("work.notes")), h("pre", { class: "wk-notes" }, notes)] : null,
         r.tail?.error ? h("p", { class: "wk-error", role: "alert" }, r.tail.error)
           : r.tail?.available === false ? h("p", { class: "wk-note" }, t("work.tailEnded")) : null,
         notes && r.tail?.truncated ? h("p", { class: "wk-note" }, t("work.tailClipped")) : null,
-        h("h3", { class: "wk-label" }, t("work.calls")), h("div", { class: "wk-tools" }, (a.tools || []).map(c => toolDisclosure(c, r))),
+        a.summary ? [h("h3", { class: "wk-label" }, t("work.agentSummary")), h("p", { class: "wk-notes" }, a.summary)] : null,
+        hist?.messages.length ? [h("h3", { class: "wk-label" }, t("work.agentHistory")), h("pre", { class: "wk-notes" }, hist.messages.join("\n\n"))] : null,
+        hist?.error ? h("p", { class: "wk-error", role: "alert" }, hist.error) : null,
+        h("h3", { class: "wk-label" }, t("work.calls")), h("div", { class: "wk-tools" }, (a.tools?.length ? a.tools : hist?.calls || []).map(c => toolDisclosure(c, r))),
         h("div", { class: "wk-steer" }, field, h("footer", null, h("small", null, t("work.steerHint")), steer)), stop, note));
     }
     // Lane E fleet: select a child by runtime id or stored child sid once the parent's live tree has it.
@@ -533,7 +651,7 @@
       dispose() { disposed = true; if (timer !== null) clearTimer(timer); off(); doc.removeEventListener("deck-language", refresh); },
     };
   }
-  const api = { planSummary, runStats, timingBars, changedFiles, agentNotes, agentRows, canSteer, steerError, ended, create, createSurfaces };
+  const api = { planSummary, runStats, timingBars, changedFiles, agentNotes, agentRows, canSteer, steerError, ended, relayAgents, mergeRoster, groupTurns, notOwned, create, createSurfaces };
   if (typeof module === "object" && module.exports) module.exports = api;
   else if (root.DeckShell && root.deck) {
     const pane = create({ shell: root.DeckShell, deck: root.deck });

@@ -34,7 +34,7 @@ function tokenOk(req, token, queryToken = false) {
  *   GET /snapshot | /fleet | /tokens?range=24h|7d|14d|30d|all (or legacy ?days=N) | /session/<sid>   (Bearer token)
  *   GET|POST /hermes/config[/schema], /hermes/restart   (Bearer token, never a mobile token; hermes-config.js)
  *   GET /session/<sid>/plan    (Bearer token) {sid, plan, stored}: the latest plan, live or rebuilt from state.db (plan.js)
- *   GET /session/<sid>/messages | /session/<sid>/call/<id> | /message/<id>/full   (Bearer token; history.js)
+ *   GET /session/<sid>/messages | /session/<sid>/tools | /session/<sid>/call/<id> | /message/<id>/full   (Bearer token; history.js)
  *   WS  /events                (Bearer token; ?token= only with queryToken)  hello -> snapshot -> {t:"evs"|"fleet"|"agents"} pushes
  *
  * `hooks` (optional; index.js deckHooks, Workspace tab): onConnect(ws), onMessage(ws, data, isBinary) ->

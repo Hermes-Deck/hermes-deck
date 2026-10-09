@@ -59,7 +59,7 @@ HTTP routes (all but `/health` need `Authorization: Bearer <token>`):
 | `GET /snapshot`, `/fleet`, `/tokens?range=24h\|7d\|14d\|30d\|all` (legacy `?days=N`) | The model, fleet health, token rollups for one Token-pane range. |
 | `GET /session/<sid>` | One session with its recent tools, children and `plan` (live, else rebuilt from `state.db`). |
 | `GET /session/<sid>/plan` | `{sid, plan, stored}`: the session's latest plan, also for a stored session the model no longer holds. `plan` is `null` when the agent published none. |
-| `GET /session/<sid>/messages`, `/session/<sid>/call/<id>`, `/message/<id>/full` | Message history (off with `DECK_HISTORY=0`). |
+| `GET /session/<sid>/messages`, `/session/<sid>/tools`, `/session/<sid>/call/<id>`, `/message/<id>/full` | Message history and tool calls grouped by turn (off with `DECK_HISTORY=0`). |
 | `POST /desktop/lease`, `POST /desktop/stop`, `GET /cu/<frame>` | Bot screen: Hermes' Bot Desktop lease, stop, stored frames. |
 | `POST /fleet/quotas/refresh` | Ask the plugins for fresh quota windows (at least 30 s apart). |
 | `/bundle/...` | Encrypted browser-transfer bundles between devices. |
@@ -406,7 +406,7 @@ The app's data folder is Electron's `userData` for the name `hermes-deck`: `%APP
 | Workspace end to end | `node app/scripts/workspace-e2e.js` | Relay, tunnel, a real headless browser and a plain CDP client: discovery, driving a page, the live view, user control, and switching hosting off. Needs the relay's dependencies installed. |
 | Screenshots | `npx electron . --shot=...` | Headless renders of the UI, with fixtures in `app/test/fixtures/`. |
 
-[`ci.yml`](../.github/workflows/ci.yml) runs on every push and pull request: `node --check` over all app and relay JavaScript, the app and relay tests after installing both dependency sets on Node 22 and 24, the plugin tests on Python 3.12, a gitleaks secret scan, and `scripts/check-public.sh` with a tracked-file size check.
+[`ci.yml`](../.github/workflows/ci.yml) runs on every push and pull request: `node --check` over all app and relay JavaScript, the app and relay tests after installing both dependency sets on Node 22 and 24, the plugin tests on Python 3.12, and `scripts/check-public.sh` with a tracked-file size check.
 
 ## Releases
 

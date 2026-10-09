@@ -64,7 +64,7 @@ Never test the installer against a Hermes home you use.
 ## Running tests
 
 CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs the JavaScript syntax check, the app, relay and plugin
-tests, a secret scan (gitleaks, configured by `.gitleaks.toml`) and `scripts/check-public.sh`. Run the ones for the
+tests and `scripts/check-public.sh`. Run the ones for the
 parts you changed before opening a pull request.
 
 ```bash
@@ -121,12 +121,10 @@ This is a public repository. Never put real data into it or into issues and pull
 - logs with tokens and personal identifiers removed.
 
 Use synthetic values such as `example.com`, `<relay-host>` and `owner/name`. Run `bash scripts/check-public.sh` before
-you push; CI runs it and a gitleaks secret scan on every pull request. If a match is a genuine false positive, add a
-narrow allowlist entry with a reason in the script (or `.gitleaks.toml`), never a whole-tree exception.
+you push; CI runs it on every pull request. If a match is a genuine false positive, add a narrow allowlist entry with
+a reason in the script, never a whole-tree exception.
 
-Maintainers can also keep their own identifiers out of the history without publishing them: put one extended regex
-per line in the repository secret `PRIVATE_DENYLIST`, and the secret scan job checks every new commit's author,
-message and added lines against it, reporting only the commit and `file:line`. Commit as your GitHub login
+Commit as your GitHub login
 with your GitHub noreply address (`git config user.name <login>`, `git config user.email
 <id>+<login>@users.noreply.github.com`). Pull requests land by rebase, so that identity is kept.
 
@@ -141,7 +139,7 @@ with your GitHub noreply address (`git config user.name <login>`, `git config us
 
 Every change goes through a reviewed pull request, rebased onto `main` (no merge commits). A maintainer lands it
 with a local fast-forward push (`git push origin <branch>:main`) once CI is green, never with GitHub's merge
-buttons: those rewrite the committer, which the secret scan only sees after the commit is on `main`.
+buttons: those rewrite the committer.
 
 ### Commit style
 

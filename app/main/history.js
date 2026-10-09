@@ -37,6 +37,12 @@ function register(ipcMain, getRelay) {
     return get(`/session/${encodeURIComponent(s)}/messages?limit=50${b ? `&before=${b}` : ""}`);
   });
   ipcMain.handle("relay:message-full", (_e, id) => get(`/message/${encodeURIComponent(check(MSG_ID_RE, id, i18nText("U0238")))}/full`));
+  // Run tab: tool calls grouped by turn; `before` is the turn cursor of the previous page
+  ipcMain.handle("relay:tools", (_e, sid, before) => {
+    const s = check(SID_RE, sid, i18nText("U0237"));
+    const b = before === undefined || before === null || before === "" ? null : check(/^\d{1,15}$/, before, i18nText("A0145"));
+    return get(`/session/${encodeURIComponent(s)}/tools?limit=5${b ? `&before=${b}` : ""}`);
+  });
   ipcMain.handle("relay:call", (_e, sid, call) =>
     get(`/session/${encodeURIComponent(check(SID_RE, sid, i18nText("U0237")))}/call/${encodeURIComponent(check(CALL_RE, call, i18nText("U0239")))}`)
   );
@@ -100,6 +106,11 @@ function fixtureGet(data, p) {
   if (m) {
     const id = dec(m[1]);
     return (data.full && data.full[id]) || find(id) || fail(404);
+  }
+  m = /^\/session\/([^/]+)\/tools$/.exec(u.pathname);
+  if (m) {
+    const d = (data.details || {})[dec(m[1])];
+    return d ? { turns: d.turns || [{ id: 1, ts: null, text: "", calls: d.recent || [] }], next: null } : { turns: [], next: null };
   }
   m = /^\/session\/([^/]+)\/call\/([^/]+)$/.exec(u.pathname);
   if (m) {

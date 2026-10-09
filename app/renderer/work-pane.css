@@ -95,3 +95,9 @@
 /* top bar surface chips */
 .wk-surface-chips { display: inline-flex; gap: 6px; align-items: center; }
 .wk-stopped { padding: 10px; border-top: 1px solid var(--line); color: var(--t3); }
+.wk-turns { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.wk-turn > summary { cursor: pointer; display: flex; flex-direction: column; gap: 2px; padding: 4px 0; }
+.wk-turn > summary b { color: var(--t1); font-size: 12.5px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wk-turn > summary small { color: var(--t4); font-size: 11.5px; }
+.wk-turn .wk-gantt { margin-bottom: 6px; }
+.wk-older { align-self: flex-start; margin-bottom: 16px; }

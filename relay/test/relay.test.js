@@ -268,3 +268,18 @@ test("model: generation speed inputs only come from calls with a real duration",
   m.apply({ ...base, ev: "llm", sid: "U", model: "m", usage: { in: 1, out: 40 } }, true);
   assert.strictEqual(m.sessions.get("U").genOut, undefined);
 });
+
+test("model: a new turn after a stopped turn runs again (top-level session); a finished sub-agent stays finished", () => {
+  const { Model } = require("../src/model");
+  const m = new Model({ profiles: {} });
+  const ev = (o) => m.apply({ profile: "p", ts: (ev.t = (ev.t || 1000) + 1), ...o }, true);
+  ev({ ev: "turn_start", sid: "s1" });
+  ev({ ev: "session_end", sid: "s1", interrupted: true });
+  assert.strictEqual(m.sessions.get("s1").state, "stopped");
+  ev({ ev: "turn_start", sid: "s1" });
+  assert.strictEqual(m.sessions.get("s1").state, "running", "the next message after Stop runs");
+  ev({ ev: "sub_start", sid: "s1", child: "c1" });
+  ev({ ev: "sub_stop", sid: "s1", child: "c1", status: "completed" });
+  ev({ ev: "turn_start", sid: "c1" });
+  assert.strictEqual(m.sessions.get("c1").state, "done");
+});

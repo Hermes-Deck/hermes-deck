@@ -514,3 +514,69 @@ test("Agents lists real failures and folds sub-agents that were stopped on purpo
   assert.ok(b.nodes().some(n => n.attrs?.class === "wk-note wk-stopped"));
   b.app.dispose();
 });
+
+test("relay roster: states map, finished children appear, bridge rows win for live ones", () => {
+  const relay = W.relayAgents([
+    { sid: "child-1", sa: "sa-0-aa", state: "running", goal: "Check links", route: { model: "model-b", effort: "high", category: "research" }, ntools: 4, tokens: { in: 10, out: 5, cr: 1, cw: 0 }, ms: 2500 },
+    { sid: "child-2", sa: "sa-1-bb", state: "done", goal: "Write", model: "model-a", summary: "Done fine", ntools: 2 },
+    { sid: "child-3", state: "stopped" }, { sid: "child-4", state: "failed" },
+  ]);
+  assert.deepEqual(relay.map(a => a.status), ["running", "completed", "interrupted", "failed"]);
+  assert.equal(relay[0].model, "model-b"); assert.equal(relay[0].elapsedS, 2.5); assert.equal(relay[0].tokens.input, 10);
+  const merged = W.mergeRoster(relay, [{ id: "sa-0-aa", goal: "", status: "running", acceptingSteer: true, tools: [] }]);
+  assert.equal(merged.length, 4);
+  assert.equal(merged[0].acceptingSteer, true); assert.equal(merged[0].goal, "Check links"); assert.equal(merged[0].toolCount, 4);
+  assert.equal(merged[1].relayOnly, true);
+  assert.deepEqual(W.mergeRoster(null, null), []);
+  assert.equal(W.notOwned(new Error("Error invoking remote method bridge:subagents: Error: session not found or not owned by this transport")), true);
+  assert.equal(W.notOwned(new Error("timeout")), false);
+});
+
+test("Sub-agents tab: not-owned bridge error is swallowed and relay rows are read-only with a hint", async () => {
+  const child = { sid: "child-1", sa: "sa-0-aa", state: "running", goal: "Check links", ntools: 3 };
+  const b = harness({ subagents: async () => { throw new Error("session not found or not owned by this transport"); } },
+    { session: async () => ({ ntools: 9, children: [child, { sid: "child-2", sa: "sa-1-bb", state: "done", goal: "Finished job", summary: "All good" }] }),
+      messages: async () => ({ items: [{ role: "assistant", text: "note", calls: [{ call: "c1", name: "terminal", args: "{}" }] }, { role: "tool", call: "c1", text: "out" }] }) });
+  b.shell.openRight("work", "agents");
+  await b.settle();
+  assert.doesNotMatch(b.text(), /not owned/);
+  assert.match(b.text(), /Check links/); assert.match(b.text(), /Finished job/);
+  b.app.openAgent("sa-0-aa");
+  await b.settle();
+  assert.match(b.text(), /Controls need the chat opened in this Deck/);
+  const buttons = b.nodes().filter(n => n.attrs?.["data-action"]);
+  assert.ok(buttons.length === 2 && buttons.every(n => n.attrs.disabled));
+  assert.match(b.text(), /terminal/);
+  b.app.openAgent("sa-1-bb"); await b.settle();
+  assert.match(b.text(), /All good/);
+});
+
+test("turn grouping: history turns, live calls join the newest turn", () => {
+  const turns = [{ id: 3, ts: 1, text: "old", calls: [{ call: "a" }] }, { id: 9, ts: 2, text: "new", calls: [{ call: "b", status: "running" }] }];
+  const g = W.groupTurns(turns, [{ call: "b", status: "ok", ms: 5 }, { call: "c", status: "running" }]);
+  assert.equal(g.length, 2);
+  assert.deepEqual(g[1].calls.map(c => [c.call, c.status]), [["b", "ok"], ["c", "running"]]);
+  assert.equal(g[0].calls.length, 1);
+  const only = W.groupTurns([], [{ call: "x", ts: 1700000000 }]);
+  assert.equal(only.length, 1); assert.equal(only[0].calls[0].call, "x");
+  assert.deepEqual(W.groupTurns(null, null), []);
+});
+
+test("Run tab: session-scoped stats, newest turn open, older page loads on demand", async () => {
+  const pages = [];
+  const b = harness({}, { session: async () => ({ ntools: 229, recent: [] }),
+    sessionTools: async (sid, before) => { pages.push(before); return before ? { turns: [{ id: 2, ts: 1, text: "Earlier request", calls: [{ call: "e1", tool: "read_file", status: "ok", ms: 100 }] }], next: null }
+      : { turns: [{ id: 8, ts: 5, text: "Latest request", calls: [{ call: "n1", tool: "terminal", status: "error", ms: 400 }] }], next: "8" }; } });
+  b.shell.openRight("work", "run");
+  await b.settle();
+  assert.match(b.text(), /229/); assert.doesNotMatch(b.text(), /latest published calls/);
+  const turns = b.nodes().filter(n => n.attrs?.["data-turn"]);
+  assert.equal(turns.length, 1); assert.equal(turns[0].attrs.open, true);
+  const more = b.nodes().find(n => n.attrs?.["data-action"] === "older");
+  more.attrs.onclick(); await b.settle();
+  assert.deepEqual(pages, [null, "8"]);
+  const after = b.nodes().filter(n => n.attrs?.["data-turn"]);
+  assert.deepEqual(after.map(n => n.attrs["data-turn"]), ["8", "2"]);
+  assert.equal(after[1].attrs.open, null);
+  assert.match(b.text(), /Earlier request/);
+});

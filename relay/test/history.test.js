@@ -327,3 +327,48 @@ test("provenance: OMH route labels the children of the next dispatch only", () =
   // internal route state never leaks into summaries
   assert.ok(!Object.keys(m.summary(m.sessions.get("P"))).some((k) => /pending|dispatch/i.test(k)));
 });
+
+test("history: /session/<sid>/tools groups calls by turn and pages back", { skip: !sqlite && "node:sqlite unavailable" }, () => {
+  const root = tmpDir();
+  const db = new sqlite.DatabaseSync(path.join(root, "state.db"));
+  db.exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT NOT NULL, model TEXT, parent_session_id TEXT, started_at REAL NOT NULL,
+      ended_at REAL, end_reason TEXT, message_count INTEGER DEFAULT 0, tool_call_count INTEGER DEFAULT 0, cost_status TEXT, title TEXT);
+    CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT,
+      tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, timestamp REAL NOT NULL, reasoning TEXT, active INTEGER NOT NULL DEFAULT 1);`);
+  const S = "20261002_090000_eeeeee";
+  db.prepare("INSERT INTO sessions (id, source, started_at, tool_call_count) VALUES (?,?,?,?)").run(S, "cli", T0, 4);
+  const msg = db.prepare("INSERT INTO messages (session_id, role, content, tool_call_id, tool_calls, tool_name, timestamp, active) VALUES (?,?,?,?,?,?,?,?)");
+  const calls = (...ids) => JSON.stringify(ids.map((id) => ({ id, type: "function", function: { name: "terminal", arguments: JSON.stringify({ command: `echo ${id}` }) } })));
+  msg.run(S, "assistant", "", null, calls("pre_0"), null, T0 + 1, 1); // before any user message
+  msg.run(S, "tool", "{}", "pre_0", null, "terminal", T0 + 2, 1);
+  msg.run(S, "user", "First task\nsecond line", null, null, null, T0 + 10, 1);
+  msg.run(S, "assistant", "", null, calls("a_1", "a_2"), null, T0 + 11, 1);
+  msg.run(S, "tool", "ok", "a_1", null, "terminal", T0 + 12, 1);
+  msg.run(S, "tool", '{"error": "boom"}', "a_2", null, "terminal", T0 + 13, 1);
+  msg.run(S, "user", "Second task token=abcdefghijklmnopqrstuvwx", null, null, null, T0 + 20, 1);
+  msg.run(S, "assistant", "", null, calls("b_1"), null, T0 + 21, 1);
+  msg.run(S, "assistant", "", null, calls("gone_1"), null, T0 + 22, 0); // rewound
+  db.close();
+  const h = new History({ hermesRoot: root });
+  try {
+    let r = get(h, `/session/${S}/tools?limit=1`);
+    assert.strictEqual(r.code, 200);
+    assert.strictEqual(r.body.turns.length, 1);
+    const t2 = r.body.turns[0];
+    assert.strictEqual(t2.ts, T0 + 20);
+    assert.ok(!/abcdefghijklmnopqrstuvwx/.test(t2.text), "user text is redacted");
+    assert.deepStrictEqual(t2.calls.map((c) => c.call), ["b_1"]);
+    assert.strictEqual(t2.calls[0].status, "running", "last call without a result is still running");
+    assert.ok(r.body.next);
+    r = get(h, `/session/${S}/tools?limit=5&before=${r.body.next}`);
+    assert.strictEqual(r.body.next, null);
+    assert.deepStrictEqual(r.body.turns.map((t) => t.calls.map((c) => c.call)), [["pre_0"], ["a_1", "a_2"]]);
+    assert.strictEqual(r.body.turns[1].text, "First task");
+    assert.deepStrictEqual(r.body.turns[1].calls.map((c) => c.status), ["ok", "error"]);
+    assert.strictEqual(r.body.turns[1].calls[0].ms, 1000);
+    assert.strictEqual(get(h, `/session/${S}/tools?before=12x`).code, 400);
+    assert.strictEqual(get(h, "/session/nope_nope/tools").code, 404);
+  } finally {
+    h.stop();
+  }
+});

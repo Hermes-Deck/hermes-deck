@@ -85,6 +85,7 @@ contextBridge.exposeInMainWorld("deck", {
   // full, one tool call in full
   messages: (sid, before) => ipcRenderer.invoke("relay:messages", sid, before),
   messageFull: (id) => ipcRenderer.invoke("relay:message-full", id),
+  sessionTools: (sid, before) => ipcRenderer.invoke("relay:tools", sid, before), // Run tab: {turns:[{id,ts,text,calls}], next}
   toolCall: (sid, call) => ipcRenderer.invoke("relay:call", sid, call),
   // Settings > Hermes config (relay only): schema, one profile's values, a save, restarts
   hermesConfig: {
