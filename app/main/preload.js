@@ -55,6 +55,7 @@ contextBridge.exposeInMainWorld("deck", {
     appshot: () => ipcRenderer.invoke("attach:appshot"),
     discard: (token) => ipcRenderer.invoke("tg:attach-discard", token),
     send: (key, token, opts) => ipcRenderer.invoke("tg:send-file", key, token, opts),
+    sendAlbum: (key, tokens, opts) => ipcRenderer.invoke("tg:send-album", key, tokens, opts),
     cancel: (token) => ipcRenderer.invoke("tg:upload-cancel", token),
   },
   // C5: "seen up to maxId" for read receipts (main batches them and checks the window is in front)

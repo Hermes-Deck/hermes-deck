@@ -199,7 +199,37 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       let caption = text;
       let sent = 0;
       try {
-        for (const it of list.slice()) {
+        // 2+ photos (not "as file", no window text) go as Telegram albums of up to 10, so a bot gets them as one
+        // message; anything else keeps the one-by-one path.
+        const albumable = (x) => x.kind === "photo" && !x.appshot;
+        if (!asFile.get(key) && list.length > 1 && list.every(albumable) && deck.attach.sendAlbum) {
+          for (let i = 0; i < list.length; i += 10) {
+            const group = list.slice(i, i + 10);
+            if (group.length === 1) break; // a lone last photo goes the usual way below
+            current = group[0].token;
+            for (const it of group) { it.state = "sending"; it.p = 0; }
+            note(i18nText("U0675", { name: group.map((x) => x.name).join(", ") }), false);
+            render();
+            const ms = await deck.attach.sendAlbum(key, group.map((x) => x.token), { caption: caption || undefined, replyTo: replyTo || undefined });
+            sent += group.length;
+            trays.set(key, items(key).filter((x) => !group.includes(x)));
+            if (caption) {
+              if (ctx.draftSent) ctx.draftSent(key, caption);
+              else if (els.input.value.trim() === caption) {
+                els.input.value = "";
+                els.input.dispatchEvent(new Event("input"));
+              }
+            }
+            caption = "";
+            if (replyTo) {
+              MV.clearReply(key);
+              replyTo = null;
+            }
+            for (const m of ms || []) onSent(m);
+          }
+        }
+        for (const it of items(key).slice()) {
+          if (!list.includes(it)) continue;
           current = it.token;
           it.state = "sending";
           it.p = 0;

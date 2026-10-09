@@ -104,6 +104,12 @@ class FixtureService extends EventEmitter {
     return this._msg(m, key);
   }
 
+  async sendAlbum(key, files, { caption = "", progress = null } = {}) {
+    const out = [];
+    for (const [i, f] of files.entries()) out.push(await this.sendFile(key, f, { caption: i ? "" : caption, progress }));
+    return out;
+  }
+
   /** ref: a rich message's photo/document ("p0", "d1"); its file sits under "<key>:<id>:<ref>" in "media". */
   async fetchMedia(key, id, variant, ref = null) {
     const entry = (this.data.media || {})[`${key}:${id}${ref ? `:${ref}` : ""}`] || {};

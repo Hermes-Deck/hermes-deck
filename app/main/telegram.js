@@ -932,6 +932,31 @@ class TelegramService extends EventEmitter {
     return this.ser(m, key);
   }
 
+  /**
+   * 2–10 photos as one Telegram album (one media group, so a bot sees them together). The caption goes on the
+   * first photo; reply and topic follow sendFile(). Resolves with the sent messages in order.
+   */
+  async sendAlbum(key, files, { caption = "", replyTo = null, progress = null } = {}) {
+    const { entity, topic } = this._target(key);
+    if (!Array.isArray(files) || files.length < 2 || files.length > 10) throw new Error("bad album");
+    for (const f of files) if (!f || f.kind !== "photo" || !(f.size > 0) || (!f.path && !Buffer.isBuffer(f.buffer))) throw new Error("bad file");
+    const params = {
+      file: files.map((f) => new CustomFile(f.name, f.size, f.path || "", f.path ? undefined : f.buffer)),
+      caption: [String(caption || "").slice(0, 1024)],
+      forceDocument: false,
+      workers: 4,
+    };
+    if (replyTo) {
+      params.replyTo = replyTo;
+      if (topic && topic !== 1) params.topMsgId = topic;
+    } else if (topic && topic !== 1) params.replyTo = topic;
+    if (progress) params.progressCallback = progress;
+    const sent = await this.client.sendFile(entity, params);
+    const list = (Array.isArray(sent) ? sent : [sent]).filter(Boolean);
+    for (const m of list) this._remember(key, m);
+    return list.map((m) => this.ser(m, key));
+  }
+
   // --- raw message cache (media downloads and button presses need the teleproto object) ----------
   _remember(key, m) {
     if (!m || !m.id) return;

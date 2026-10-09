@@ -283,3 +283,24 @@ test("quit: an in-flight Hermes message or file message finishes before its brid
     assert.deepEqual(h.exits, []);
   }
 });
+
+test("tg:send-album: validates tokens, sends one album, discards only after success", async () => {
+  const h = harness();
+  const discarded = [];
+  const store = { p1: { token: "p1", name: "a.jpg", size: 1, kind: "photo" }, p2: { token: "p2", name: "b.jpg", size: 1, kind: "photo" }, f1: { token: "f1", name: "r.pdf", size: 1, kind: "file" } };
+  h.access.attachments.get = (t) => store[t];
+  h.access.attachments.discard = (t) => discarded.push(t);
+  let fail = true, albums = 0;
+  h.access.setTg(Object.assign(new EventEmitter(), { sendAlbum: async (key, items, o) => { albums++; if (fail) throw new Error("FLOOD"); return items.map((it, i) => ({ key, id: i + 1 })); } }));
+  await assert.rejects(h.call("tg:send-album", "u1", ["p1", "f1"], {}));
+  await assert.rejects(h.call("tg:send-album", "u1", ["p1"], {}));
+  await assert.rejects(h.call("tg:send-album", "u1", ["p1", "p1"], {}));
+  assert.equal(albums, 0, "invalid albums never reach Telegram");
+  await assert.rejects(h.call("tg:send-album", "u1", ["p1", "p2"], { caption: "x" }));
+  assert.deepEqual(discarded, [], "a failed album keeps its photos staged");
+  assert.equal(h.access.uploads.size, 0);
+  fail = false;
+  const list = await h.call("tg:send-album", "u1", ["p1", "p2"], { caption: "x" });
+  assert.equal(list.length, 2);
+  assert.deepEqual(discarded, ["p1", "p2"]);
+});

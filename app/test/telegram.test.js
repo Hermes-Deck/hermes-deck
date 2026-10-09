@@ -646,3 +646,34 @@ test("fixture: a pretend upload reports progress, honours cancel and adds an in-
   };
   await assert.rejects(fx.sendFile(KEY, { name: "a.pdf", size: 9, kind: "file" }, { progress: stop }), /USER_CANCELED/);
 });
+
+test("sendAlbum: 2-10 photos go as one teleproto album call, caption on the first, topic and reply like sendFile", async () => {
+  const peer = new Api.PeerChannel({ channelId: big(sample.GROUP_CHANNEL) });
+  const calls = [];
+  const client = {
+    async sendFile(entity, params) {
+      calls.push({ entity, params });
+      return params.file.map((f, i) => new Api.Message({ id: 950 + i, out: true, peerId: peer, date: 0, message: i ? "" : params.caption[0], groupedId: big("77"), replyTo: new Api.MessageReplyHeader({ forumTopic: true, replyToMsgId: 5 }) }));
+    },
+  };
+  const svc = service(client);
+  const a = { name: "a.jpg", size: 10, kind: "photo", path: "/tmp/a.jpg" };
+  const b = { name: "b.png", size: 3, kind: "photo", buffer: Buffer.from("png") };
+  const recs = await svc.sendAlbum("t5", [a, b], { caption: "ikisine bak" });
+  assert.equal(calls.length, 1, "one album call, not two sends");
+  const p = calls[0].params;
+  assert.ok(Array.isArray(p.file) && p.file.every((f) => f instanceof CustomFile));
+  assert.deepEqual(p.file.map((f) => f.name), ["a.jpg", "b.png"], "order kept");
+  assert.deepEqual(p.caption, ["ikisine bak"]);
+  assert.equal(p.forceDocument, false);
+  assert.equal(p.replyTo, 5);
+  assert.deepEqual(recs.map((r) => r.id), [950, 951]);
+  assert.ok(svc.raw.has("t5:951"));
+  await svc.sendAlbum("t5", [a, b], { replyTo: 77 });
+  assert.equal(calls[1].params.replyTo, 77);
+  assert.equal(calls[1].params.topMsgId, 5);
+  await assert.rejects(svc.sendAlbum("t5", [a]), /bad album/);
+  await assert.rejects(svc.sendAlbum("t5", [a, { name: "r.pdf", size: 1, kind: "file", path: "/tmp/r.pdf" }]), /bad file/);
+  await assert.rejects(svc.sendAlbum("t5", Array(11).fill(a)), /bad album/);
+  assert.equal(calls.length, 2, "rejected albums send nothing");
+});

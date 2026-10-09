@@ -921,6 +921,30 @@ ipc.handle("tg:send-file", async (e, key, token, opts) => {
     uploads.delete(item.token);
   }
 });
+ipc.handle("tg:send-album", async (e, key, tokens, opts) => {
+  fromApp(e);
+  if (!tg || !tg.sendAlbum || !KEY_RE.test(String(key))) throw new Error(i18nText("U0256"));
+  if (!Array.isArray(tokens) || tokens.length < 2 || tokens.length > 10) throw new Error(i18nText("U0256"));
+  const o = opts && typeof opts === "object" ? opts : {};
+  const r = o.replyTo === undefined || o.replyTo === null ? null : Number(o.replyTo);
+  if (r !== null && !(Number.isSafeInteger(r) && r > 0)) throw new Error(i18nText("U0257"));
+  const items = tokens.map((t) => attachments.get(String(t ?? "")));
+  if (items.some((it) => it.kind !== "photo" || it.appshotText)) throw new Error(i18nText("U0256"));
+  if (new Set(items.map((it) => it.token)).size !== items.length || items.some((it) => uploads.has(it.token))) throw new Error(i18nText("U0261"));
+  const caption = checkCaption(o.caption);
+  // one tracker for the whole album: cancelling any of its photos stops the upload
+  const progress = progressTracker((p) => { for (const it of items) send("tg", { t: "upload", token: it.token, p }); });
+  for (const it of items) uploads.set(it.token, progress);
+  try {
+    const list = await tg.sendAlbum(String(key), items, { caption, replyTo: r, progress });
+    for (const it of items) attachments.discard(it.token);
+    return list;
+  } catch (err) {
+    throw new Error(uploadError(err));
+  } finally {
+    for (const it of items) uploads.delete(it.token);
+  }
+});
 ipc.handle("tg:upload-cancel", (e, token) => {
   fromApp(e);
   const p = uploads.get(String(token ?? ""));
