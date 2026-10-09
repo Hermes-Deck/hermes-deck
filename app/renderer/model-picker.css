@@ -114,3 +114,9 @@
 .pick-toggle.on .pick-switch { background: var(--patina-soft); box-shadow: inset 0 0 0 1px var(--patina); }
 .pick-toggle.on .pick-switch::after { transform: translateX(12px); background: var(--patina); }
 @media (prefers-reduced-motion: reduce) { .pick-switch, .pick-switch::after, .pick-group .pick-ic-chev { transition: none; } }
+
+/* Composer suggestions (suggest.js): "@" names and "/" commands, anchored to the left edge above the box. */
+.composer .suggest-pop { left: 8px; right: auto; width: min(420px, calc(100% - 16px)); max-height: min(300px, 46vh); border-color: var(--line2); border-radius: 12px; background: var(--l2); }
+.suggest-list { min-height: 0; }
+.suggest-row { padding-left: 8px; }
+.suggest-row .pick-id { font-family: var(--body); }

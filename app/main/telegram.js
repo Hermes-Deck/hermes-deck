@@ -14,6 +14,7 @@ const { UpdateConnectionState } = require("teleproto/network");
 const { MAX_FULL, safeName, extFor, writeAtomic, cachedSize, mb } = require("./media");
 const { Reactions, carryMine } = require("./reactions"); // C9: message reactions (serializer, picker, sending, live updates)
 const { ReadQueue } = require("./readsync");
+const { BotCommands } = require("./bot-commands"); // the composer's "/" suggestions
 
 const KEY_RE = /^(u|t)(\d+)$/;
 const RAW_KEEP = 1500; // raw teleproto messages kept for media downloads and button presses
@@ -545,6 +546,7 @@ class TelegramService extends EventEmitter {
     this._richQ = Promise.resolve();
     this._richSeen = new Set();
     this.reactions = new Reactions(this); // C9
+    this.commands = new BotCommands({ fetch: (entity) => this._fetchBotCommands(entity) });
     // C5 read receipts: outgoing marks are batched by the queue; readGate() is main's "window in front"
     this.readReceipts = readReceipts !== false;
     this._reads = new ReadQueue({ send: (key, maxId) => this._sendRead(key, maxId), gate: () => !!(this.client && readGate && readGate()) });
@@ -1115,6 +1117,43 @@ class TelegramService extends EventEmitter {
   /** The reactions the picker offers in this chat: {list: [{t, e|id}], max}. */
   reactionChoices(key) {
     return this.reactions.choices(key);
+  }
+
+  // --- slash commands (composer "/" suggestions; the work is in main/bot-commands.js) -------------------
+  /**
+   * The bot commands to offer in chat `key`: a bot DM lists that bot's, a topic every visible bot's as
+   * "/command@bot". [{insert, command, description, bot}]; [] when not connected or nothing is registered.
+   */
+  async botCommands(key) {
+    if (!this.client) return [];
+    const k = KEY_RE.exec(String(key));
+    if (!k) throw new Error("bad chat key");
+    const bots = k[1] === "u" ? [this.bots.get(k[2])].filter(Boolean) : [...this.bots.values()];
+    const targets = bots.map((b) => ({ entity: b.entity, username: (b.entity && b.entity.username) || "" }));
+    return this.commands.list(targets, { mention: k[1] === "t" });
+  }
+
+  /**
+   * The group members the Deck has seen (senders, reactors) who have a public username, for the composer's "@"
+   * suggestions: [{username, name}]. Only what is already in memory; Telegram is not asked for the member list.
+   */
+  members() {
+    const me = this.me && this.me.id != null ? this.me.id.toString() : "";
+    const out = [];
+    for (const [uid, s] of this._seen) {
+      const u = s && s.user;
+      if (uid === me || !u || typeof u.username !== "string" || !/^[A-Za-z0-9_]{4,32}$/.test(u.username)) continue;
+      const name = [u.firstName, u.lastName].filter((v) => typeof v === "string" && v).join(" ").slice(0, 80);
+      out.push({ username: u.username, name, bot: !!u.bot });
+      if (out.length >= 300) break;
+    }
+    return out;
+  }
+
+  async _fetchBotCommands(entity) {
+    const r = await this.client.invoke(new Api.users.GetFullUser({ id: utils.getInputUser(entity) }));
+    const info = r && r.fullUser && r.fullUser.botInfo;
+    return (info && info.commands) || [];
   }
 
   /** Set the user's own reactions on a message to exactly keys ("e:👍", "c:<id>"); resolves with the new reactions. */

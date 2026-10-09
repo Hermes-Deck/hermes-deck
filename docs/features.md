@@ -201,6 +201,13 @@ the message is queued.
   120 s. Needs the direct connection and microphone permission.
 - **Drafts.** Each chat keeps its own draft (text and staged files) when you switch chats. Drafts stay on this
   computer.
+- **`@` and `/` suggestions.** Type `@` to pick a name to tag, or `/` at the start of the box to pick a command.
+  **↑/↓** move, **Tab** or **Enter** inserts, **Esc** closes; **Enter** on a command typed out in full sends it.
+  In a Telegram chat, `@` lists the agents' and bots' usernames and, in a topic, the group members the Deck has
+  seen who have a public username; `/` lists the commands the chat's bot registered with Telegram (in a topic,
+  every bot's, as `/command@bot`). In a Hermes session, `@` lists the profile names and `/` lists Hermes' own
+  commands, quick commands, plugin commands and skills for that profile (needs the host plugin from this version;
+  an older one shows no commands).
 
 ## Model and reasoning pickers
 

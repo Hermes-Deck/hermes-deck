@@ -513,6 +513,7 @@ ipc.handle("bridge:answer-question", (_e, id, answers) => needBridge().answerQue
 // Bot Chat create that only a first message sent from the composer triggers
 const bName = (v) => String(v ?? "").slice(0, 64);
 ipc.handle("bridge:profiles", () => needBridge().profiles());
+ipc.handle("bridge:commands", (_e, profile) => needBridge().commandCatalog(bName(profile)));
 ipc.handle("bridge:avatar", (_e, name) => needBridge().avatar(bName(name)));
 ipc.handle("bridge:bot-chat", (_e, name, o) => needBridge().botChat(bName(name), { expect: bObj(o).expect === true }));
 ipc.handle("bridge:bot-chat-create", (_e, name, o) => needBridge().createBotChat(bName(name), { expect: bObj(o).expect === true }));
@@ -998,6 +999,19 @@ ipc.handle("tg:reaction-choices", (e, key) => {
   if (!tg || !tg.reactionChoices) throw new Error(i18nText("U0256"));
   if (!KEY_RE.test(k)) throw new Error(i18nText("U0267"));
   return tg.reactionChoices(k);
+});
+// the composer's "/" suggestions: the commands the chat's bot(s) registered with Telegram (reads only)
+ipc.handle("tg:bot-commands", (e, key) => {
+  fromApp(e);
+  const k = String(key);
+  if (!tg || !tg.botCommands) return [];
+  if (!KEY_RE.test(k)) throw new Error(i18nText("U0267"));
+  return tg.botCommands(k);
+});
+// the composer's "@" suggestions: group members already seen in memory who have a username (a read)
+ipc.handle("tg:members", (e) => {
+  fromApp(e);
+  return tg && tg.members ? tg.members() : [];
 });
 // keys: the user's whole new set ("e:<emoji>" | "c:<documentId>"), [] takes them all back
 ipc.handle("tg:react", (e, key, msgId, keys) => {

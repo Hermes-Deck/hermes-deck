@@ -67,6 +67,8 @@ contextBridge.exposeInMainWorld("deck", {
   callback: (key, msgId, row, col, where) => ipcRenderer.invoke("tg:callback", key, msgId, row, col, where),
   // reactions (C9): the chat's picker, the user's own set on a message, a custom emoji's picture
   reactionChoices: (key) => ipcRenderer.invoke("tg:reaction-choices", key),
+  botCommands: (key) => ipcRenderer.invoke("tg:bot-commands", key),
+  members: () => ipcRenderer.invoke("tg:members"),
   react: (key, msgId, keys) => ipcRenderer.invoke("tg:react", key, msgId, keys),
   emoji: (docId) => ipcRenderer.invoke("tg:emoji", docId),
   // forum topics of the configured group: op "create" | "rename" | "close" | "pin" | "delete"
@@ -157,6 +159,7 @@ contextBridge.exposeInMainWorld("deck", {
     answerQuestion: (id, answers) => ipcRenderer.invoke("bridge:answer-question", id, answers),
     // Botlar: profile roster + avatars, the read-only Bot Chat lookup, and its create (first message only)
     profiles: () => ipcRenderer.invoke("bridge:profiles"),
+    commands: (profile) => ipcRenderer.invoke("bridge:commands", profile),
     avatar: (name) => ipcRenderer.invoke("bridge:avatar", name),
     botChat: (name, opts) => ipcRenderer.invoke("bridge:bot-chat", name, opts),
     botChatCreate: (name, opts) => ipcRenderer.invoke("bridge:bot-chat-create", name, opts),

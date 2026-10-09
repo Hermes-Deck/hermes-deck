@@ -1795,6 +1795,17 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     // up to ~40% of the chat column (never above 220px, never below two lines)
     const cap = Math.max(88, Math.min(220, Math.round(((chat && chat.clientHeight) || 560) * 0.4)));
     box.style.setProperty("--composer-max", `${cap}px`);
+    // One row (tools, text, picker, Send) while the text fits on it. Measured in the one-row layout every time, so a
+    // line that fits only when the tools move below does not flip the two layouts back and forth.
+    const card = box.closest(".composer");
+    if (card) {
+      box.style.height = "";
+      card.classList.add("compact");
+      // An empty box always fits: Chromium counts a long placeholder in scrollWidth, which kept narrow panes on two rows.
+      const fits = !box.value.includes("\n") && (box.clientWidth === 0 || box.clientWidth >= 120 && (!box.value || box.scrollWidth <= box.clientWidth));
+      card.classList.toggle("compact", fits);
+      if (fits) { scrollCue(); return; }
+    }
     box.style.height = "auto";
     box.style.height = `${Math.min(cap, box.scrollHeight)}px`;
     scrollCue();
@@ -1807,6 +1818,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   els.input.addEventListener("scroll", scrollCue, { passive: true });
 
   els.input.addEventListener("input", autosize);
+  window.addEventListener("resize", autosize); // a narrower chat column can push the text off the one row
   els.input.addEventListener("input", () => renderNote()); // the Send button follows the box
   els.input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
@@ -2256,6 +2268,65 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     session: composerSession,
     sendCommand: (command, key) => send({ command, key }),
   });
+
+  // "@" and "/" suggestions in the composer (suggest.js). Lists are read when the popup opens and kept briefly.
+  const suggestCache = new Map(); // "<what>:<scope>" -> {at, items}
+  async function cachedList(id, ms, load) {
+    const hit = suggestCache.get(id);
+    if (hit && Date.now() - hit.at < ms) return hit.items;
+    const items = await load();
+    suggestCache.set(id, { at: Date.now(), items });
+    return items;
+  }
+  /** The names to tag with "@": Telegram usernames (agents, bots, seen group members) or Hermes profile names. */
+  async function mentionItems() {
+    if (!hermesMode()) {
+      if (!S.sel) return [];
+      const items = [];
+      const hidden = new Set(((S.settings && S.settings.hiddenBots) || []).map((v) => v.toLowerCase()));
+      for (const a of agentList()) {
+        if (a.bot && !hidden.has(a.bot.toLowerCase())) items.push({ insert: `@${a.bot}`, label: `${a.emoji ? `${a.emoji} ` : ""}${a.name}`, detail: `@${a.bot}`, keys: [a.profile || ""], tag: a.profile || "" });
+      }
+      for (const b of S.tg.bots) {
+        if (b.username && !hidden.has(b.username.toLowerCase())) items.push({ insert: `@${b.username}`, label: b.title || b.username, detail: `@${b.username}` });
+      }
+      if (S.sel[0] === "t" && deck.members) {
+        const people = await cachedList("members", 30000, () => deck.members()).catch(() => []);
+        for (const p of people) items.push({ insert: `@${p.username}`, label: p.name || p.username, detail: `@${p.username}` });
+      }
+      return items;
+    }
+    const names = new Set();
+    for (const a of agentList()) if (a.profile) names.add(a.profile);
+    for (const n of H.nodes.values()) if (n && n.profile) names.add(n.profile);
+    const rows = await cachedList("profiles", 300000, () => deck.bridge.profiles()).catch(() => []);
+    const shown = new Map(rows.map((r) => [r.name, r.displayName || ""]));
+    for (const r of rows) names.add(r.name);
+    return [...names].sort().map((name) => {
+      const agent = agentList().find((a) => a.profile === name);
+      return { insert: `@${name}`, label: name, detail: shown.get(name) || (agent ? `${agent.emoji ? `${agent.emoji} ` : ""}${agent.name}` : "") };
+    });
+  }
+  /** The slash commands of the chat on screen: the Telegram bot's registered commands, or Hermes' palette. */
+  async function commandItems() {
+    if (!hermesMode()) {
+      if (!S.sel || S.tg.status !== "open" || !deck.botCommands) return [];
+      const list = await cachedList(`tg:${S.sel}`, 60000, () => deck.botCommands(S.sel).catch(() => [])); // no commands to offer beats an error on every "/"
+      return list.map((c) => ({ insert: c.insert, label: c.insert, detail: c.description, tag: S.sel[0] === "t" ? c.bot : "" }));
+    }
+    if (!bridgeOpen()) return [];
+    const s = composerSession();
+    const profile = (s && s.profile) || "default";
+    const list = await cachedList(`hermes:${profile}`, 300000, () => deck.bridge.commands(profile).catch(() => [])); // an older host plugin refuses commands.catalog
+    return list.map((c) => ({ insert: c.command, label: c.command, detail: c.description, tag: c.category === "Skills" ? i18nText("suggest.skill") : "" }));
+  }
+  if (window.DeckSuggest) {
+    window.DeckSuggest.create({
+      h, i18nText, input: els.input, composer: document.querySelector(".composer"),
+      source: (kind) => (kind === "/" ? commandItems() : mentionItems()),
+      changed: () => { autosize(); DR.touch(); renderNote(); },
+    });
+  }
 
   /** Native title when it says something; generic names ("Hermes · Telegram") fall back to source + id. */
   /**

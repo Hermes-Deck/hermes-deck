@@ -64,7 +64,10 @@ DECK_METHODS = {"session.create", "session.list", "session.resume", "session.int
                 # Sub-agent detail (the Deck's Agents tab): the roster and a live child's transcript tail (reads,
                 # replies completed by enrich_subagent_reply), steer and interrupt (a click each). Hermes checks that
                 # the child belongs to the caller's session; allowed_request checks the shapes.
-                "subagent.list", "subagent.tail", "subagent.steer", "subagent.interrupt"}
+                "subagent.list", "subagent.tail", "subagent.steer", "subagent.interrupt",
+                # The composer's "/" suggestions: Hermes' own slash-command palette for one profile (a read; the
+                # Deck never passes a session, so no runtime session is resumed for it). allowed_request checks it.
+                "commands.catalog"}
 # Also allowed so an existing Hermes Desk install keeps working against this plugin until Desk is retired.
 DESK_METHODS = {"session.active_list", "session.close", "session.steer", "session.redirect",
                 "session.events.since", "subagent.list", "subagent.interrupt", "subagent.steer", "subagent.tail",
@@ -1191,6 +1194,9 @@ def allowed_request(method, params, created=()):
                 and bool(re.fullmatch(r"[\x21-\x7e]{1,512}", sid))
                 and ("profile" not in params or (isinstance(params["profile"], str)
                                                  and bool(PROFILE_NAME.fullmatch(params["profile"])))))
+    if method == "commands.catalog":            # one profile's palette, nothing else
+        return (set(params) == {"profile"} and isinstance(params["profile"], str)
+                and bool(PROFILE_NAME.fullmatch(params["profile"])))
     if method in SUBAGENT_METHODS:              # one session's children: strict shape, Hermes checks the owner
         return subagent_params_ok(method, params)
     if method != "config.set":

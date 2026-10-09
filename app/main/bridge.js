@@ -74,7 +74,9 @@ const TIMING = {
 // live transcript tail) and deck.plan (a stored session's latest plan, rebuilt read-only from state.db by the plugin);
 // and two click-driven writes on one child: subagent.steer and subagent.interrupt. Hermes checks that the child belongs
 // to the session this connection addresses; the plugin checks the shapes again (observer.py subagent_params_ok).
-const READS = ["deck.version", "session.list", "deck.session_index", "session.messages", "session.usage", "model.options", "profiles.list", "profiles.get_asset", "deck.transcribe", "deck.file_read", "subagent.list", "subagent.tail", "deck.plan"];
+const READS = ["deck.version", "session.list", "deck.session_index", "session.messages", "session.usage", "model.options", "profiles.list", "profiles.get_asset", "deck.transcribe", "deck.file_read", "subagent.list", "subagent.tail", "deck.plan", "commands.catalog"];
+// commands.catalog (Hermes' own slash-command palette: registry, quick commands, plugin commands, skills) feeds the
+// composer's "/" suggestions; the Deck asks it for one profile only, never with a session (no resume as a side effect).
 // deck.reasoning_view ("Show thinking") flips the in-memory show_reasoning flag of one runtime session this Deck created
 // or resumed (the plugin checks the session's transport is its own socket); it writes no file and no other session.
 const MUTATIONS = ["session.create", "session.resume", "deck.takeover", "prompt.submit", "deck.attach_submit", "native.steer", "native.redirect", "native.interrupt", "session.interrupt", "config.set", "request.answer", "session.title", "session.delete", "session.close", "deck.session_update", "session.archive", "session.branch_stored", "deck.reasoning_view", "subagent.steer", "subagent.interrupt"];
@@ -412,6 +414,7 @@ function checkRequest(method, params) {
   if (method === "profiles.get_asset" && !validAssetRead(params)) throw new Error(i18nText("U0055"));
   if (method.startsWith("subagent.") && !validSubagent(method, params)) throw new Error(i18nText("U0047"));
   if (method === "deck.plan" && !validPlanRead(params)) throw new Error(i18nText("U0047"));
+  if (method === "commands.catalog" && !validCatalogRead(params)) throw new Error(i18nText("U0047"));
 }
 
 /** A reply: string id, no method, exactly one of result / error{message} (hermes.rs:192-204). */
@@ -790,6 +793,38 @@ function projectSessionRef(s) {
     lastActive: num(s.last_active),
     messageCount: num(s.message_count),
   };
+}
+
+/** commands.catalog: one profile's palette, nothing else (no session_id: that would bind a runtime session). */
+function validCatalogRead(params) {
+  return isPlainObject(params) && Object.keys(params).length === 1 && validProfileParam(params.profile);
+}
+
+const CATALOG_KEY_RE = /^\/[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+const CATALOG_MAX = 800;
+/**
+ * commands.catalog -> [{command: "/name", description, category}] for the composer's "/" suggestions. Only the
+ * categorized registry/quick/plugin entries and the skill pairs; host paths, usage counts and the subcommand table
+ * are dropped. Keys must look like slash commands; descriptions are one bounded line.
+ */
+function projectCommandCatalog(result) {
+  const r = isPlainObject(result) ? result : {};
+  const out = [];
+  const seen = new Set();
+  const add = (pair, category) => {
+    if (!Array.isArray(pair) || typeof pair[0] !== "string" || !CATALOG_KEY_RE.test(pair[0])) return;
+    const key = pair[0];
+    if (seen.has(key.toLowerCase()) || out.length >= CATALOG_MAX) return;
+    seen.add(key.toLowerCase());
+    const desc = typeof pair[1] === "string" ? pair[1].replace(/\s+/g, " ").trim().slice(0, 200) : "";
+    out.push({ command: key, description: desc, category: typeof category === "string" ? category.slice(0, 64) : "" });
+  };
+  for (const c of Array.isArray(r.categories) ? r.categories : []) {
+    if (isPlainObject(c) && Array.isArray(c.pairs)) for (const p of c.pairs) add(p, c.name);
+  }
+  const skills = isPlainObject(r.skills) ? r.skills : {};
+  for (const p of Array.isArray(r.pairs) ? r.pairs : []) add(p, Array.isArray(p) && Object.prototype.hasOwnProperty.call(skills, p[0]) ? "Skills" : "");
+  return out;
 }
 
 /**
@@ -1844,6 +1879,12 @@ class BridgeClient extends EventEmitter {
     return projectProfiles(await this.request("profiles.list", {}));
   }
 
+  /** One profile's slash commands (commands.catalog, projected). Older hosts answer -32601: the caller shows none. */
+  async commandCatalog(profile) {
+    if (!validProfileParam(profile)) throw new Error(i18nText("U0081"));
+    return projectCommandCatalog(await this.request("commands.catalog", { profile }));
+  }
+
   /** A profile's avatar picture (profiles.get_asset), checked and size-capped; {found:false} when there is none. */
   async avatar(name) {
     if (typeof name !== "string" || !PROFILE_RE.test(name)) throw new Error(i18nText("U0081"));
@@ -2287,6 +2328,8 @@ module.exports = {
   validSessionArchive,
   validSessionBranch,
   projectModelOptions,
+  projectCommandCatalog,
+  validCatalogRead,
   classifyFailure,
   BOT_CHAT_TITLE,
   AVATAR_LIMIT,

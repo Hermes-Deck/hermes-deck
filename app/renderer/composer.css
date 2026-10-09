@@ -1,6 +1,17 @@
 /* Blend composer: keep existing input/actions, place transient decisions beside them. */
-.app .composer { position: relative; display: flex; flex-direction: column; flex: none; min-width: 0; max-height: min(62vh, 560px); border-radius: 16px; overflow: visible; }
+.app .composer { margin-top: 6px; position: relative; display: flex; flex-direction: column; flex: none; min-width: 0; max-height: min(62vh, 560px); border-radius: 16px; overflow: visible; }
 .app .composer > textarea { flex: 1 1 auto; min-height: 48px; }
+/* The card draws the focus ring; the square outline of .app :focus-visible would poke out of its rounded corners. */
+.app .composer textarea:focus-visible { outline: none; }
+/* Compact: one row while the text fits (app.js autosize). Trays, the working row, queue and errors keep full rows above. */
+.app .composer.compact { flex-flow: row wrap; align-items: center; gap: 2px; padding: 5px; }
+.app .composer.compact > :not(textarea, .composer-bar, .conv-filament) { flex: 0 0 100%; }
+.app .composer.compact > textarea { order: 2; flex: 1 1 0; width: auto; min-width: 60px; min-height: 32px; height: 32px; padding: 6px 8px; overflow: hidden; white-space: pre; text-overflow: ellipsis; scrollbar-gutter: auto; }
+.app .composer.compact > textarea::placeholder { text-overflow: ellipsis; }
+.app .composer.compact .composer-bar { display: contents; }
+.app .composer.compact .composer-tools { order: 1; }
+.app .composer.compact .pick-bar { order: 3; flex: none; margin-left: 0; }
+.app .composer.compact .send { order: 4; }
 .app .composer #composer-status { width: 100%; margin: 0; max-width: none; padding: 0; }
 .conv-status { display: flex; align-items: center; gap: 10px; min-width: 0; min-height: 40px; padding: 8px 10px 8px 16px; font: 12px/16px var(--sans); color: var(--t3); }
 .conv-spinner, .receipt-spinner { flex: none; width: 11px; height: 11px; border: 1px solid var(--line3); border-top-color: var(--teal); border-radius: 50%; animation: conv-spin 1s linear infinite; }
@@ -29,7 +40,8 @@
 .conv-queue .outbox-meta .linkbtn { font: 11px var(--sans); color: var(--t2); }
 .conv-queue .outbox-meta .linkbtn:first-of-type { color: var(--brass); }
 .conv-queue .outbox-meta .linkbtn.danger { color: var(--red); }
-.conv-footer { width: calc(100% - 36px); max-width: var(--col); margin: 6px auto 10px; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.conv-footer { width: calc(100% - 36px); max-width: var(--col); margin: 4px auto 6px; display: flex; flex-direction: column; gap: 0; min-width: 0; }
+.app .conv-footer .composer-note:empty { min-height: 0; }
 .app .conv-footer .composer-note { width: 100%; margin: 0; }
 .conv-via { display: flex; align-items: center; gap: 8px; margin: 0; min-width: 0; font: 11px/1.5 var(--sans); color: var(--t3); overflow-wrap: anywhere; }
 .conv-via::before { content: ""; width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--teal); }

@@ -761,7 +761,8 @@ class ProtocolTests(unittest.TestCase):
                   "subagent.list": {"session_id": "rpc-1"},
                   "subagent.tail": {"session_id": "rpc-1", "subagent_id": "sa-0-abc"},
                   "subagent.interrupt": {"session_id": "rpc-1", "subagent_id": "sa-0-abc"},
-                  "subagent.steer": {"session_id": "rpc-1", "subagent_id": "sa-0-abc", "text": "Focus"}}
+                  "subagent.steer": {"session_id": "rpc-1", "subagent_id": "sa-0-abc", "text": "Focus"},
+                  "commands.catalog": {"profile": "default"}}
         methods = self.methods()
         self.assertGreaterEqual(len(methods), 10)
         for method in methods:
@@ -781,10 +782,18 @@ class ProtocolTests(unittest.TestCase):
             "subagent.list", "subagent.interrupt", "subagent.steer", "subagent.tail", "approval.respond",
             "request.answer", "model.options", "session.usage",
             "profiles.list", "profiles.get_asset", "session.title", "session.delete",
-            "session.archive", "session.branch_stored"})
+            "session.archive", "session.branch_stored", "commands.catalog"})
         for method in ("profiles.configure", "profiles.create", "profiles.set_asset", "profiles.delete",
                        "cron.manage", "bot_relay.deliver", "session.set_hidden", "session.archive", "session.branch_stored"):
             self.assertFalse(observer.allowed_request(method, {"name": "default"}, {"rpc-1"}), method)
+
+
+class CommandCatalogTests(unittest.TestCase):
+    def test_one_profile_only(self):
+        self.assertTrue(observer.allowed_request("commands.catalog", {"profile": "default"}))
+        for params in ({}, {"profile": "../x"}, {"profile": "default", "session_id": "rpc-1"}, {"session_id": "rpc-1"},
+                       {"profile": 3}):
+            self.assertFalse(observer.allowed_request("commands.catalog", params), params)
 
 
 class ReasoningViewTests(unittest.TestCase):

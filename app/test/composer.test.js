@@ -32,3 +32,18 @@ test("via line is kept only for read-only and sub-agent routes", () => {
   assert.equal(C.via({ channel: "readonly" }).key, "conv.readonly");
   assert.deepEqual(C.via({ channel: "sub", id: "s" }, { title: "Review" }), { key: "conv.subagent", vars: { agent: "Review" } });
 });
+
+test("compact composer: card owns focus, one-row layout starts on and keeps status rows full width", () => {
+  const fs = require("node:fs"), path = require("node:path");
+  const css = fs.readFileSync(path.join(__dirname, "../renderer/composer.css"), "utf8");
+  const html = fs.readFileSync(path.join(__dirname, "../renderer/index.html"), "utf8");
+  assert.match(css, /\.app \.composer textarea:focus-visible \{ outline: none; \}/);
+  assert.match(css, /\.app \.composer\.compact > :not\(textarea, \.composer-bar, \.conv-filament\) \{ flex: 0 0 100%; \}/);
+  assert.match(html, /<div class="composer compact">/);
+});
+
+test("compact composer: an empty box fits one row even when the placeholder overflows", () => {
+  const fs = require("node:fs"), path = require("node:path");
+  const app = fs.readFileSync(path.join(__dirname, "../renderer/app.js"), "utf8");
+  assert.match(app, /box\.clientWidth >= 120 && \(!box\.value \|\| box\.scrollWidth <= box\.clientWidth\)/);
+});
