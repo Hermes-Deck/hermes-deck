@@ -40,6 +40,29 @@ test("usage UI: one block per provider with short window labels, relative resets
   assert.equal(cls(blocks[0], "unknown").length, 1, "a missing reset is shown as such, not blank");
 });
 
+test("usage UI: a model-family limit (Claude Max: Fable) gets its own row after the account windows", () => {
+  const U = load("tr");
+  const now = Date.parse("2030-01-01T10:00:00Z");
+  const claude = { provider: "claude", ok: true, windows: [{ minutes: 300, used: 12 }, { minutes: 10080, used: 65 }],
+    modelWindows: [{ model: "Fable", minutes: 10080, used: 2, resetsAt: "2030-01-01T18:00:00Z" }, { model: "", minutes: 10080, used: 9 }, { model: "Bad", minutes: 10080, used: "9" }] };
+  const [block] = U.quotaRows(h, { quotas: { claude } }, { now });
+  assert.ok(block.attrs.class.split(" ").includes("has-model"), "the block widens its label column");
+  const labels = cls(block, "q-win");
+  assert.deepEqual(labels.map(l => l.children[0]), ["5 sa", "7 g", "Fable"], "invalid model rows are dropped");
+  assert.ok(labels[2].attrs.class.includes("q-model"));
+  assert.equal(labels[2].attrs.title, "Fable haftalık limiti · 7 g pencere");
+  const bars = find(block, n => n.attrs && n.attrs.role === "progressbar");
+  assert.equal(bars.length, 3);
+  assert.equal(bars[2].attrs["aria-valuenow"], 2);
+  assert.equal(bars[2].attrs["aria-label"], "Claude · Fable haftalık limiti · 7 g pencere");
+  assert.ok(text(block).includes("8 sa 0 dk sonra sıfırlanır"));
+  // No model limit reported (no access to such a model): the block is unchanged.
+  const [plain] = load("en").quotaRows(h, { quotas: { claude: { ...claude, modelWindows: undefined } } }, { now });
+  assert.ok(!plain.attrs.class.includes("has-model"));
+  assert.deepEqual(cls(plain, "q-win").map(l => l.children[0]), ["5h", "7d"]);
+  assert.equal(cls(plain, "q-win")[1].attrs.title, "Weekly limit · 7d window");
+});
+
 test("usage UI: percent follows the UI language, not a fixed order", () => {
   const en = load("en");
   assert.equal(en.pct(58), "58%");

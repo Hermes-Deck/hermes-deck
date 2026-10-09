@@ -13,7 +13,9 @@
   display: grid; grid-template-columns: 30px minmax(0, 1fr) 44px; grid-template-areas: "win bar pct" ". reset reset";
   gap: 1px 10px; align-items: center; margin: 0 0 6px; font: 11.5px var(--mono); color: var(--t2);
 }
-.q-win { grid-area: win; color: var(--t3); }
+.q-win { grid-area: win; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--t3); }
+/* a model-family limit ("Fable") needs a wider label column; the whole block widens so its bars stay aligned */
+.qblock.has-model .quota { grid-template-columns: 44px minmax(0, 1fr) 44px; }
 .quota .bar { grid-area: bar; }
 .quota .pct { grid-area: pct; text-align: right; font-variant-numeric: tabular-nums; color: var(--t1); }
 .quota .pct.warn { color: var(--brass); }

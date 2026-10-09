@@ -72,11 +72,18 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   const PROVIDER_ORDER = ["claude", "codex"];
   const providerName = p => p === "claude" ? "Claude" : p === "codex" ? "ChatGPT / Codex" : String(p || "?");
 
+  /** A limit that caps one model family (Claude Max: "Fable"), not the account: its display name, or null. */
+  const modelName = w => typeof w.model === "string" && w.model.trim() ? w.model.trim().slice(0, 40) : null;
+
   function windowRow(h, name, w, now) {
     const used = Math.min(100, Math.max(0, w.used));
     const p = Math.round(used);
-    const short = windowLabel(w.minutes);
-    const long = i18nText(w.minutes >= 10080 ? "usage.winWeek" : "usage.winSession", { w: short });
+    const model = modelName(w);
+    const span = windowLabel(w.minutes);
+    const short = model || span;
+    const long = model
+      ? i18nText(w.minutes >= 10080 ? "usage.winModelWeek" : "usage.winModelSession", { m: model, w: span })
+      : i18nText(w.minutes >= 10080 ? "usage.winWeek" : "usage.winSession", { w: span });
     const reset = w.resetsAt ? new Date(w.resetsAt) : null;
     const known = reset && Number.isFinite(reset.getTime());
     const left = known ? reset.getTime() - now : null;
@@ -85,7 +92,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       : i18nText("usage.resetsIn", { v: untilText(left) });
     const absolute = known ? i18nText("U0513", { v: reset.toLocaleString(i18nLocale(), { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) }) : i18nText("usage.resetUnknownTitle");
     return h("div", { class: "quota" },
-      h("span", { class: "q-win", title: long }, short),
+      h("span", { class: `q-win${model ? " q-model" : ""}`, title: long }, short),
       h("span", { class: "bar", role: "progressbar", "aria-label": `${name} · ${long}`, "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": p },
         h("i", { class: used > WARN_AT ? "warn" : "", style: { width: `${p}%` } })),
       h("span", { class: `pct${used > WARN_AT ? " warn" : ""}` }, pct(p)),
@@ -113,10 +120,13 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
         const reason = q.error === "pending" ? i18nText("U0389") : q.err === "login-needed" ? i18nText("usage.loginNeeded") : i18nText("usage.quotaFailed");
         return h("section", { class: "qblock", "aria-label": name }, head, status(h, q.error === "pending" ? "info" : "warn", reason));
       }
-      const windows = (q.windows || []).filter(w => typeof w.used === "number" && Number.isFinite(w.used));
+      const valid = w => w && typeof w.used === "number" && Number.isFinite(w.used);
+      const windows = (q.windows || []).filter(valid);
+      // Model-family limits (Claude Max: Fable) come after the account windows, only when the account reports one.
+      const models = (Array.isArray(q.modelWindows) ? q.modelWindows : []).filter(w => valid(w) && modelName(w));
       const stale = q.stale || q.error;
-      return h("section", { class: `qblock${stale ? " is-stale" : ""}`, "aria-label": name }, head,
-        windows.length ? windows.map(w => windowRow(h, name, w, now)) : h("p", { class: "muted small" }, i18nNode("usage.noWindows")),
+      return h("section", { class: `qblock${stale ? " is-stale" : ""}${models.length ? " has-model" : ""}`, "aria-label": name }, head,
+        windows.length ? [...windows, ...models].map(w => windowRow(h, name, w, now)) : h("p", { class: "muted small" }, i18nNode("usage.noWindows")),
         stale ? status(h, "warn", i18nText("usage.staleShort"), stamp ? i18nText("usage.updatedAgo", { v: agoText(stamp, now) }) : null, i18nText("usage.stale")) : null);
     });
   }

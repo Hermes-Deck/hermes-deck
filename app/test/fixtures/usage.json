@@ -11,7 +11,7 @@
     "fleet": {
       "profiles": {}, "launchd": [],
       "quotas": {
-        "claude": { "provider": "claude", "ok": true, "source": "hermes-account-usage", "windows": [{ "minutes": 300, "used": 87, "resetsAt": "2030-01-01T14:00:00Z" }, { "minutes": 10080, "used": 56, "resetsAt": "2030-01-06T10:00:00Z" }] },
+        "claude": { "provider": "claude", "ok": true, "source": "hermes-account-usage", "windows": [{ "minutes": 300, "used": 87, "resetsAt": "2030-01-01T14:00:00Z" }, { "minutes": 10080, "used": 56, "resetsAt": "2030-01-06T10:00:00Z" }], "modelWindows": [{ "model": "Fable", "minutes": 10080, "used": 18, "resetsAt": "2030-01-06T10:00:00Z" }] },
         "codex": { "provider": "codex", "ok": true, "source": "hermes-account-usage", "windows": [{ "minutes": 300, "used": 0, "resetsAt": "2030-01-01T16:00:00Z" }, { "minutes": 10080, "used": 44, "resetsAt": "2030-01-07T12:00:00Z" }] }
       },
       "usage": { "source": "state.db", "attribution": "session-start", "profiles": { "default": { "ok": true }, "profile-b": { "ok": true } } }

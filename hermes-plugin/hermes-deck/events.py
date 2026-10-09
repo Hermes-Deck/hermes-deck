@@ -973,8 +973,83 @@ def _profile_secret_scope(home: Path):
                                          profile_home=str(home))
 
 
-def _fetch_quota(provider: str, home: "Path | None" = None) -> dict:
-    """One read-only Hermes account-usage fetch; return the CodexBar-compatible safe shape."""
+_MODEL_NAME_MAX = 40
+_MODEL_WINDOW_MINUTES = {"weekly": 10080, "session": 300}
+
+
+def _model_name(value) -> "str | None":
+    """A provider's display name for a model family ("Fable"), trimmed to plain printable text."""
+    if not isinstance(value, str):
+        return None
+    name = "".join(ch for ch in value if ch.isprintable()).strip()[:_MODEL_NAME_MAX].strip()
+    return name or None
+
+
+def _model_window(name, minutes, used, reset_at) -> "dict | None":
+    if not name or not minutes or isinstance(used, bool) or not isinstance(used, (int, float)) or not math.isfinite(used):
+        return None
+    return {"model": name, "minutes": minutes, "used": max(0, min(100, used)), "resetsAt": reset_at}
+
+
+def _anthropic_usage_body() -> "dict | None":
+    """The Claude OAuth usage body, read with the same ambient credential and request Hermes' own fetch uses.
+
+    Only needed while Hermes does not hand the body over (``AccountUsageSnapshot.raw``); model-scoped limits such as
+    the Claude Max Fable weekly limit appear only in its ``limits`` list. Any failure means "no model limits"."""
+    try:
+        from agent.account_usage import _get_json
+        from agent.anthropic_credentials import _is_oauth_token, resolve_anthropic_token
+        token = (resolve_anthropic_token() or "").strip()
+        if not token or not _is_oauth_token(token):
+            return None
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json",
+                   "anthropic-beta": "oauth-2025-04-20", "User-Agent": "claude-code/2.1.0"}
+        body = _get_json("https://api.anthropic.com/api/oauth/usage", headers, timeout=10.0)
+        return body if isinstance(body, dict) else None
+    except Exception:
+        return None
+
+
+def _model_windows(provider: str, snapshot, body_reader=None) -> list:
+    """Limits that cap one model family, not the account: Hermes' model-scoped windows ("Opus week") and Claude's
+    ``limits`` entries with a model scope (Claude Max: "Fable"). Empty when the account has none, so nothing is shown
+    to a user without access to such a model. Only the model's display name, percent and reset time leave here."""
+    found = {}
+    for window in getattr(snapshot, "windows", ()) or ():
+        if getattr(window, "scope", "account") != "model":
+            continue
+        label = str(getattr(window, "label", "") or "")
+        name = _model_name(re.sub(r"\s*week(ly)?$", "", label, flags=re.I))
+        minutes = 10080 if "week" in label.lower() else 300 if "session" in label.lower() else None
+        reset = getattr(window, "reset_at", None)
+        w = _model_window(name, minutes, getattr(window, "used_percent", None), reset.isoformat() if reset else None)
+        if w:
+            found[(name.lower(), minutes)] = w
+    if provider != "claude":
+        return list(found.values())
+    body = getattr(snapshot, "raw", None)
+    if not isinstance(body, dict):
+        body = (body_reader or _anthropic_usage_body)()
+    limits = body.get("limits") if isinstance(body, dict) else None
+    for limit in limits if isinstance(limits, list) else ():
+        if not isinstance(limit, dict):
+            continue
+        scope = limit.get("scope")
+        model = scope.get("model") if isinstance(scope, dict) else None
+        name = _model_name(model.get("display_name") or model.get("id")) if isinstance(model, dict) else None
+        minutes = _MODEL_WINDOW_MINUTES.get(limit.get("group"))
+        reset = limit.get("resets_at")
+        w = _model_window(name, minutes, limit.get("percent"), reset if isinstance(reset, str) else None)
+        if w:
+            found[(name.lower(), minutes)] = w
+    return sorted(found.values(), key=lambda w: (w["model"].lower(), w["minutes"]))
+
+
+def _fetch_quota(provider: str, home: "Path | None" = None, body_reader=None) -> dict:
+    """One read-only Hermes account-usage fetch; return the CodexBar-compatible safe shape.
+
+    ``modelWindows`` (only when the account has any) lists limits that cap a single model family; old clients ignore
+    the key, and these never go into ``windows`` because they do not mean the account itself is out of quota."""
     checked = round(time.time(), 3)
     q = {"provider": provider, "ok": False, "checkedAt": checked, "fetched_at": None,
          "error": None, "windows": [], "source": "hermes-account-usage"}
@@ -987,6 +1062,8 @@ def _fetch_quota(provider: str, home: "Path | None" = None) -> dict:
         if snapshot is None or snapshot.unavailable_reason:
             raise ValueError("unavailable")
         for window in snapshot.windows:
+            if getattr(window, "scope", "account") == "model":
+                continue
             label = window.label.lower()
             minutes = 10080 if "week" in label else 300 if "session" in label else None
             used = window.used_percent
@@ -996,6 +1073,12 @@ def _fetch_quota(provider: str, home: "Path | None" = None) -> dict:
         if not q["windows"]:
             raise ValueError("no windows")
         q.update(ok=True, fetched_at=snapshot.fetched_at.timestamp(), updatedAt=snapshot.fetched_at.isoformat())
+        try:
+            models = _model_windows(provider, snapshot, body_reader)
+        except Exception:
+            models = []                   # a model-limit problem never hides the account windows
+        if models:
+            q["modelWindows"] = models
     except Exception:
         # Errors can contain credentials/identities; only expose a coarse reason.
         q.update(error="unavailable", err="unavailable")

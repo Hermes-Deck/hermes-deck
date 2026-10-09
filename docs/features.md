@@ -223,7 +223,8 @@ from your next message.
 
 - **Quotas** (Claude and Codex subscription windows: session and weekly limits with reset times, brass above 60%,
   and a **Refresh** button), today's usage across all agents, and **Gateways** (each profile's gateway and platform
-  health, plus cron job summaries).
+  health, plus cron job summaries). A limit that caps only one model family gets its own row named after the model,
+  for example **Fable** on a Claude Max plan that includes it; accounts without such a limit show no extra row.
 - Tokens, cost, calls and cache hit over **24h**, **7d** (default), **14d**, **30d** or **All**, with a chart of fresh
   versus cached tokens, breakdowns by **Agents** and **Models**, and **Refresh**.
 

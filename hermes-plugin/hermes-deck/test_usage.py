@@ -41,6 +41,65 @@ class UsageTests(unittest.TestCase):
         self.assertEqual(q["error"], "unavailable")
         self.assertNotIn("secret", json.dumps(q))
 
+    def _claude_snapshot(self, raw=None, extra=()):
+        return SimpleNamespace(windows=(
+            SimpleNamespace(label="Current session", used_percent=12, reset_at=None, scope="account"),
+            SimpleNamespace(label="Current week", used_percent=65, reset_at=None, scope="account"), *extra),
+            fetched_at=datetime(2030, 1, 1, tzinfo=timezone.utc), unavailable_reason=None, raw=raw)
+
+    def test_model_scoped_limit_is_reported_apart_from_the_account_windows(self):
+        # Claude Max reports a weekly limit for one model family in its usage body's `limits` list.
+        body = {"email": "private@example.invalid", "limits": [
+            {"kind": "session", "group": "session", "percent": 12, "resets_at": "2030-01-01T05:00:00+00:00", "scope": None},
+            {"kind": "weekly_all", "group": "weekly", "percent": 65, "resets_at": "2030-01-03T07:00:00+00:00", "scope": None},
+            {"kind": "weekly_scoped", "group": "weekly", "percent": 2, "resets_at": "2030-01-03T07:00:00+00:00",
+             "scope": {"model": {"id": None, "display_name": "Fable\u0007"}, "surface": None}},
+            {"kind": "weekly_scoped", "group": "weekly", "percent": 9, "scope": {"model": None, "surface": {"id": "x"}}},
+            {"kind": "weekly_scoped", "group": "monthly", "percent": 9, "scope": {"model": {"display_name": "Other"}}},
+            {"kind": "weekly_scoped", "group": "weekly", "percent": "9", "scope": {"model": {"display_name": "Bad"}}}]}
+        stub = ModuleType("agent.account_usage")
+        stub.fetch_account_usage = lambda provider: self._claude_snapshot()
+        reads = []
+        with patch.dict("sys.modules", {"agent.account_usage": stub}):
+            q = events._fetch_quota("claude", body_reader=lambda: reads.append(1) or body)
+        self.assertTrue(q["ok"])
+        self.assertEqual(reads, [1])
+        self.assertEqual([w["minutes"] for w in q["windows"]], [300, 10080])
+        self.assertEqual(q["modelWindows"], [{"model": "Fable", "minutes": 10080, "used": 2,
+                                              "resetsAt": "2030-01-03T07:00:00+00:00"}])
+        self.assertNotIn("private", json.dumps(q))
+
+    def test_body_handed_over_by_hermes_needs_no_second_read(self):
+        body = {"limits": [{"group": "weekly", "percent": 140, "scope": {"model": {"display_name": "Fable"}}}]}
+        stub = ModuleType("agent.account_usage")
+        stub.fetch_account_usage = lambda provider: self._claude_snapshot(raw=body)
+        with patch.dict("sys.modules", {"agent.account_usage": stub}):
+            q = events._fetch_quota("claude", body_reader=lambda: self.fail("read the body twice"))
+        self.assertEqual(q["modelWindows"], [{"model": "Fable", "minutes": 10080, "used": 100, "resetsAt": None}])
+
+    def test_no_model_limit_means_no_model_windows(self):
+        # An account without access to a model-limited family (or any read failure) shows the account windows only.
+        stub = ModuleType("agent.account_usage")
+        stub.fetch_account_usage = lambda provider: self._claude_snapshot()
+        for reader in (lambda: {"limits": [{"group": "weekly", "percent": 65, "scope": None}]}, lambda: None,
+                       lambda: (_ for _ in ()).throw(RuntimeError("Bearer private-secret"))):
+            with patch.dict("sys.modules", {"agent.account_usage": stub}):
+                q = events._fetch_quota("claude", body_reader=reader)
+            self.assertTrue(q["ok"])
+            self.assertEqual(len(q["windows"]), 2)
+            self.assertNotIn("modelWindows", q)
+            self.assertNotIn("secret", json.dumps(q))
+
+    def test_hermes_model_scoped_windows_never_count_as_the_account_week(self):
+        week = SimpleNamespace(label="Opus week", used_percent=80, reset_at=datetime(2030, 1, 3, tzinfo=timezone.utc), scope="model")
+        stub = ModuleType("agent.account_usage")
+        stub.fetch_account_usage = lambda provider: self._claude_snapshot(extra=(week,))
+        with patch.dict("sys.modules", {"agent.account_usage": stub}):
+            q = events._fetch_quota("claude", body_reader=lambda: None)
+        self.assertEqual([w["used"] for w in q["windows"]], [12, 65])
+        self.assertEqual(q["modelWindows"], [{"model": "Opus", "minutes": 10080, "used": 80,
+                                              "resetsAt": "2030-01-03T00:00:00+00:00"}])
+
     def test_quota_fetch_binds_profile_secret_scope_on_bare_thread(self):
         # A multiplexing gateway fails closed on credential reads from an unscoped thread; the
         # quota worker must bind the profile scope for the fetch and release it afterwards.
