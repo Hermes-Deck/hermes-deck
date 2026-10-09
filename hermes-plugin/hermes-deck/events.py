@@ -994,23 +994,42 @@ def _model_window(name, minutes, used, reset_at) -> "dict | None":
 def _anthropic_usage_body() -> "dict | None":
     """The Claude OAuth usage body, read with the same ambient credential and request Hermes' own fetch uses.
 
-    Only needed while Hermes does not hand the body over (``AccountUsageSnapshot.raw``); model-scoped limits such as
-    the Claude Max Fable weekly limit appear only in its ``limits`` list. Any failure means "no model limits"."""
+    Returns None when this Hermes cannot read it (internals moved, no OAuth credential); the caller then uses Hermes'
+    own fetch. A failed request (429, timeout) raises instead: Hermes' fetch would only repeat the same request."""
     try:
         from agent.account_usage import _get_json
         from agent.anthropic_credentials import _is_oauth_token, resolve_anthropic_token
-        token = (resolve_anthropic_token() or "").strip()
-        if not token or not _is_oauth_token(token):
-            return None
-        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json",
-                   "anthropic-beta": "oauth-2025-04-20", "User-Agent": "claude-code/2.1.0"}
-        body = _get_json("https://api.anthropic.com/api/oauth/usage", headers, timeout=10.0)
-        return body if isinstance(body, dict) else None
     except Exception:
         return None
+    token = (resolve_anthropic_token() or "").strip()
+    if not token or not _is_oauth_token(token):
+        return None
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json",
+               "anthropic-beta": "oauth-2025-04-20", "User-Agent": "claude-code/2.1.0"}
+    body = _get_json("https://api.anthropic.com/api/oauth/usage", headers, timeout=10.0)
+    return body if isinstance(body, dict) else None
 
 
-def _model_windows(provider: str, snapshot, body_reader=None) -> list:
+_CLAUDE_ACCOUNT_WINDOWS = (("five_hour", 300), ("seven_day", 10080))
+
+
+def _claude_account_windows(body: dict) -> list:
+    """Session and weekly windows from the Claude usage body.
+
+    ``utilization`` is already a percent: 1.0 means 1%. Hermes' normalizer treats any value <= 1 as a fraction, so a
+    1% session reads as 100% there; the body is read unscaled instead."""
+    out = []
+    for key, minutes in _CLAUDE_ACCOUNT_WINDOWS:
+        window = body.get(key)
+        used = window.get("utilization") if isinstance(window, dict) else None
+        if isinstance(used, bool) or not isinstance(used, (int, float)) or not math.isfinite(used):
+            continue
+        reset = window.get("resets_at")
+        out.append({"minutes": minutes, "used": max(0, min(100, used)), "resetsAt": reset if isinstance(reset, str) else None})
+    return out
+
+
+def _model_windows(snapshot=None, body: "dict | None" = None) -> list:
     """Limits that cap one model family, not the account: Hermes' model-scoped windows ("Opus week") and Claude's
     ``limits`` entries with a model scope (Claude Max: "Fable"). Empty when the account has none, so nothing is shown
     to a user without access to such a model. Only the model's display name, percent and reset time leave here."""
@@ -1025,11 +1044,6 @@ def _model_windows(provider: str, snapshot, body_reader=None) -> list:
         w = _model_window(name, minutes, getattr(window, "used_percent", None), reset.isoformat() if reset else None)
         if w:
             found[(name.lower(), minutes)] = w
-    if provider != "claude":
-        return list(found.values())
-    body = getattr(snapshot, "raw", None)
-    if not isinstance(body, dict):
-        body = (body_reader or _anthropic_usage_body)()
     limits = body.get("limits") if isinstance(body, dict) else None
     for limit in limits if isinstance(limits, list) else ():
         if not isinstance(limit, dict):
@@ -1045,11 +1059,28 @@ def _model_windows(provider: str, snapshot, body_reader=None) -> list:
     return sorted(found.values(), key=lambda w: (w["model"].lower(), w["minutes"]))
 
 
-def _fetch_quota(provider: str, home: "Path | None" = None, body_reader=None) -> dict:
-    """One read-only Hermes account-usage fetch; return the CodexBar-compatible safe shape.
+def _snapshot_windows(snapshot) -> list:
+    out = []
+    for window in snapshot.windows:
+        if getattr(window, "scope", "account") == "model":
+            continue
+        label = window.label.lower()
+        minutes = 10080 if "week" in label else 300 if "session" in label else None
+        used = window.used_percent
+        if minutes and isinstance(used, (int, float)) and math.isfinite(used):
+            out.append({"minutes": minutes, "used": max(0, min(100, used)),
+                        "resetsAt": window.reset_at.isoformat() if window.reset_at else None})
+    return out
 
+
+def _fetch_quota(provider: str, home: "Path | None" = None, body_reader=None) -> dict:
+    """One read-only account-usage fetch; return the CodexBar-compatible safe shape.
+
+    Claude is read once from its usage body (account windows unscaled, plus model limits); Hermes'
+    ``fetch_account_usage`` is the fallback when this Hermes cannot read the body. Codex always uses Hermes' fetch.
     ``modelWindows`` (only when the account has any) lists limits that cap a single model family; old clients ignore
     the key, and these never go into ``windows`` because they do not mean the account itself is out of quota."""
+    from datetime import datetime, timezone
     checked = round(time.time(), 3)
     q = {"provider": provider, "ok": False, "checkedAt": checked, "fetched_at": None,
          "error": None, "windows": [], "source": "hermes-account-usage"}
@@ -1057,24 +1088,27 @@ def _fetch_quota(provider: str, home: "Path | None" = None, body_reader=None) ->
     try:
         if home is not None:
             token = _profile_secret_scope(home)
-        from agent.account_usage import fetch_account_usage
-        snapshot = fetch_account_usage(_QUOTA_PROVIDERS[provider])
-        if snapshot is None or snapshot.unavailable_reason:
-            raise ValueError("unavailable")
-        for window in snapshot.windows:
-            if getattr(window, "scope", "account") == "model":
-                continue
-            label = window.label.lower()
-            minutes = 10080 if "week" in label else 300 if "session" in label else None
-            used = window.used_percent
-            if minutes and isinstance(used, (int, float)) and math.isfinite(used):
-                q["windows"].append({"minutes": minutes, "used": max(0, min(100, used)),
-                                     "resetsAt": window.reset_at.isoformat() if window.reset_at else None})
+        body = (body_reader or _anthropic_usage_body)() if provider == "claude" else None
+        snapshot = None
+        fetched = datetime.now(timezone.utc)
+        if isinstance(body, dict):
+            q["windows"] = _claude_account_windows(body)
+        if not q["windows"]:
+            from agent.account_usage import fetch_account_usage
+            snapshot = fetch_account_usage(_QUOTA_PROVIDERS[provider])
+            if snapshot is None or snapshot.unavailable_reason:
+                raise ValueError("unavailable")
+            raw = getattr(snapshot, "raw", None)
+            if provider == "claude" and isinstance(raw, dict):
+                body = raw
+                q["windows"] = _claude_account_windows(raw)
+            q["windows"] = q["windows"] or _snapshot_windows(snapshot)
+            fetched = snapshot.fetched_at
         if not q["windows"]:
             raise ValueError("no windows")
-        q.update(ok=True, fetched_at=snapshot.fetched_at.timestamp(), updatedAt=snapshot.fetched_at.isoformat())
+        q.update(ok=True, fetched_at=fetched.timestamp(), updatedAt=fetched.isoformat())
         try:
-            models = _model_windows(provider, snapshot, body_reader)
+            models = _model_windows(snapshot, body if provider == "claude" else None)
         except Exception:
             models = []                   # a model-limit problem never hides the account windows
         if models:
