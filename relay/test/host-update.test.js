@@ -31,7 +31,7 @@ async function setup(t, over = {}, serverOptions = {}) {
     tokensFile, presence, plugins: () => ({ default: "1.2.0" }), restarts: { rows: () => [], restartNow: async (p) => ({ ok: true, state: "restarted", profile: p }) },
     platform: "linux", uid: 1000, node: "/usr/bin/node", now: () => clock.ms, fs, env: {},
     run: async (cmd, args) => { runs.push([cmd, ...args].join(" ")); return { code: 0, out: "" }; },
-    broadcast: (m) => pushed.push(m), ...over,
+    broadcast: (m) => pushed.push(m), service: null, ...over, // service: no detection from the test runner's own cgroup
   });
   const relay = createServer({ token: RELAY_TOKEN, model: { sessions: new Map(), snapshot: () => ({}), tokens: () => ({}) }, fleet: { data: {} }, hostUpdate: hu, ...serverOptions });
   relay.server.listen(0, "127.0.0.1");
@@ -96,13 +96,25 @@ test("stale running status (no update for 15 min) no longer blocks", async (t) =
   assert.equal(x.runs.length, 2);
 });
 
-test("refused: kill switch, plain checkout, bad version, unsupported platform, job start failure", async (t) => {
-  assert.equal((await (await setup(t, { remoteUpdate: false })).post("/host/update", { version: "1.3.0" })).status, 403);
+test("a plain checkout is adopted by the update; its plugin step alone runs without adopting", async (t) => {
   const plain = await setup(t);
   plain.hu.relayDir = path.join(plain.dir, "checkout", "relay");
+  assert.deepEqual(plain.hu.info().remote, { enabled: true, managed: false, adopt: true });
   const r = await plain.post("/host/update", { version: "1.3.0" });
-  assert.equal(r.status, 409);
-  assert.match((await r.json()).command, /deck-relay-update init/);
+  assert.equal(r.status, 202);
+  assert.match(plain.runs[0], new RegExp(`${path.join(plain.dir, "checkout", "relay", "bin", "deck-relay-update").replace(/[\\/.]/g, "\\$&")} apply --version 1\\.3\\.0 --no-downgrade --with-plugin --adopt --status-file `));
+  const pluginOnly = await setup(t, { version: "1.3.0", plugins: () => ({ default: "1.2.0" }) });
+  pluginOnly.hu.relayDir = path.join(pluginOnly.dir, "checkout", "relay");
+  assert.equal((await pluginOnly.post("/host/update", { version: "1.3.0" })).status, 202);
+  assert.match(pluginOnly.runs[0], /deck-relay-update plugin --status-file /);
+  assert.doesNotMatch(pluginOnly.runs[0], /--adopt/);
+  const windows = await setup(t, { platform: "win32" });
+  windows.hu.relayDir = path.join(windows.dir, "checkout", "relay");
+  assert.equal(windows.hu.info().remote.adopt, false, "no service to switch on Windows");
+});
+
+test("refused: kill switch, bad version, unsupported platform, job start failure", async (t) => {
+  assert.equal((await (await setup(t, { remoteUpdate: false })).post("/host/update", { version: "1.3.0" })).status, 403);
   assert.equal((await (await setup(t)).post("/host/update", { version: "v1.3" })).status, 400);
   assert.equal((await (await setup(t, { platform: "win32" })).post("/host/update", { version: "1.3.0" })).status, 501);
   const failing = await setup(t, { run: async () => ({ code: 1, out: "Failed to connect to bus" }) });
@@ -245,7 +257,7 @@ test("queue-only changes push hostUpdate and unchanged polls stay quiet", async 
   rows = [{ profile: "research", state: "busy" }];
   x.hu.poll();
   assert.equal(x.pushed.length, before + 1);
-  assert.deepEqual(x.pushed.at(-1), { t: "hostUpdate", remote: { enabled: true, managed: true }, status: null, restarts: rows, queueError: null, plugins: { default: "1.2.0" } });
+  assert.deepEqual(x.pushed.at(-1), { t: "hostUpdate", remote: { enabled: true, managed: true, adopt: false }, status: null, restarts: rows, queueError: null, plugins: { default: "1.2.0" } });
   x.hu.poll();
   assert.equal(x.pushed.length, before + 1);
 });
@@ -461,3 +473,22 @@ test("poll() leaves a fresh running status alone", async (t) => {
   assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).state, "running");
 });
 
+
+test("the job names the relay's own service: launchd label from XPC_SERVICE_NAME, systemd unit from the cgroup", async (t) => {
+  const { ownService } = require("../src/host-update");
+  const cgroup = (text) => ({ readFileSync: (f) => { assert.equal(f, "/proc/self/cgroup"); return text; } });
+  assert.equal(ownService({ platform: "darwin", env: { XPC_SERVICE_NAME: "com.example.deck-relay" } }), "com.example.deck-relay");
+  assert.equal(ownService({ platform: "darwin", env: { XPC_SERVICE_NAME: "0" } }), null, "not started by launchd");
+  assert.equal(ownService({ platform: "darwin", env: { XPC_SERVICE_NAME: "application.com.apple.Terminal.1234" } }), null, "a terminal");
+  assert.equal(ownService({ platform: "darwin", env: { XPC_SERVICE_NAME: "com.example.deck-relay", DECK_RELAY_SERVICE: "x" } }), null, "set by hand: kept");
+  assert.equal(ownService({ platform: "linux", env: {}, fs: cgroup("0::/user.slice/user-1000.slice/user@1000.service/app.slice/deck-relay.service\n") }), "deck-relay");
+  assert.equal(ownService({ platform: "linux", env: {}, fs: cgroup("0::/user.slice/user-1000.slice/session-2.scope\n") }), null);
+  assert.equal(ownService({ platform: "linux", env: {}, fs: { readFileSync: () => { throw new Error("ENOENT"); } } }), null);
+
+  assert.equal(ownService({ platform: "linux", env: {}, fs: cgroup("0::/system.slice/hosted-agent.service\n") }), null, "a system unit is not ours to restart");
+  const mac = await setup(t, { platform: "darwin", uid: 501, env: { XPC_SERVICE_NAME: "com.example.deck-relay" }, service: undefined });
+  assert.equal((await mac.post("/host/update", { version: "1.3.0" })).status, 202);
+  const plist = fs.readFileSync(path.join(mac.root, "shared", "data", "update-job.plist"), "utf8");
+  assert.match(plist, /<key>DECK_RELAY_SERVICE<\/key>\n\s*<string>com\.example\.deck-relay<\/string>/);
+  assert.doesNotMatch(plist, /XPC_SERVICE_NAME/);
+});

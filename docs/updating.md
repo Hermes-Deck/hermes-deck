@@ -66,11 +66,45 @@ reconnecting or restarting does not repeat them.
 Each release links its `relay/.env`, `relay/agents.json`, `relay/devices.json`, `relay/data` and `relay/logs` to `<root>/shared/`.
 
 A plain checkout (`relay/` inside a git clone) still works without this layout. You update it with
-`git pull` and `npm ci --omit=dev` in `relay/`, then restart. `apply` refuses to run on a plain checkout.
+`git pull` and `npm ci --omit=dev` in `relay/`, then restart. `apply` refuses to run on a plain checkout unless you
+pass `--adopt`, which converts it first (see below). **Update the host** in the app does that for you.
 
-### Converting a checkout (once)
+### Converting a checkout with its service (adopt)
 
-Run this from the checkout you are converting. Do a dry run first:
+`adopt` converts the checkout and moves the relay's service in one step. Run it from the checkout the service runs,
+dry run first:
+
+```sh
+node relay/bin/deck-relay-update adopt --dry-run
+node relay/bin/deck-relay-update adopt
+```
+
+The install root is the directory you pass (`adopt DIR`), else `DECK_RELAY_ROOT` (from the environment or the
+relay's `.env`), else `~/.local/share/hermes-deck-relay`. `adopt` does the following:
+
+1. Finds the service that runs this checkout's `relay/`. On Linux that is the systemd `--user` unit named by
+   `DECK_RELAY_SERVICE` (default `hermes-deck-relay`) whose `WorkingDirectory` or `ExecStart` names the checkout. On
+   macOS it is the launchd agent `~/Library/LaunchAgents/<label>.plist` (label `DECK_RELAY_SERVICE`, default
+   `com.hermes-deck.relay`) that names it. Paths are compared by their real path, so a service that names the checkout
+   through a symlink matches too. An update started from the app passes the relay's own service name (its launchd
+   label, or its systemd unit), so a service with another name needs no setting. When there is no such service,
+   `adopt` stops before changing anything.
+2. Runs `init` (below) into the install root.
+3. Stops the service and copies `.env`, `agents.json`, `devices.json`, `data/` and `logs/` to `<root>/shared/` again, so
+   nothing the relay wrote during the copy is lost.
+4. Points the service at `<root>/current/relay`. On Linux it writes the drop-in
+   `~/.config/systemd/user/<unit>.service.d/hermes-deck-install-root.conf` (`WorkingDirectory`, and `ExecStart` when that
+   names the checkout); the unit file itself is not changed. On macOS it replaces the checkout's path in the plist and
+   keeps the old file as `<root>/.adopt/service.plist`.
+5. Starts the service and polls `/health` for the same version, for up to 30 s. If the relay does not come up, it
+   puts the service back (removes the drop-in or restores the plist), restarts it, and removes the install root.
+
+The checkout is never changed. After `adopt` the service no longer uses it, so you can keep it or delete it.
+
+### Converting a checkout without its service (init)
+
+`init` makes the install root but leaves the service alone. Run this from the checkout you are converting. Do a dry
+run first:
 
 ```sh
 node relay/bin/deck-relay-update init ~/hermes-deck --dry-run
@@ -143,9 +177,16 @@ The Hermes root is `HERMES_ROOT`, otherwise `~/.hermes`. The Python used is `DEC
 Settings › Relay and › Hermes show **Update** when the relay or a profile's plugin is older than the app. It sends
 `POST /host/update {version}` (the app's version) to the relay. The relay starts `deck-relay-update apply --with-plugin`
 (or `deck-relay-update plugin` when only the plugin is behind) as a separate job, outside its own service: a
-transient `systemd-run --user` unit on Linux, a generated launchd job on macOS. The relay must run from an install
-root (see [Converting a checkout](#converting-a-checkout-once)). Progress is written to `<data>/update-status.json`
-and shown in the app.
+transient `systemd-run --user` unit on Linux, a generated launchd job on macOS. Progress is written to
+`<data>/update-status.json` and shown in the app.
+
+- A relay that runs from a plain checkout gets `apply --adopt`: the job first moves it to an install root
+  ([adopt](#converting-a-checkout-with-its-service-adopt), shown as "Moving the relay to an install root"), then
+  updates it. The status file and restart queue move with `data/` to `<root>/shared/data/`. On macOS that job's
+  own log stays in the checkout's `relay/logs/update-job.log` until it ends, since launchd opened it before the move.
+- `deck-relay-update plugin` on a plain checkout installs the checkout's own `hermes-plugin/`, without an install root.
+- A relay older than this feature cannot adopt its checkout: the app then shows the command to update it once by
+  hand, in its folder (`git pull && cd relay && npm ci --omit=dev`, then restart the relay).
 
 - Only a desktop Deck with the relay token and its device key, connected at that moment, can start it. The iOS app cannot.
 - The host never moves to an older version, and only one update runs at a time.
@@ -179,8 +220,8 @@ from an install root.
 | Variable | Meaning |
 |---|---|
 | `DECK_UPDATE_REPO` | GitHub `owner/name` to update from (default: `repository` in `relay/package.json`) |
-| `DECK_RELAY_ROOT` | the install root, if the updater cannot work it out from its own path |
-| `DECK_RELAY_SERVICE` | systemd `--user` unit (default `hermes-deck-relay`), or the launchd label on macOS (default `com.hermes-deck.relay`) |
+| `DECK_RELAY_ROOT` | the install root, if the updater cannot work it out from its own path; also where `adopt` puts a new one (default `~/.local/share/hermes-deck-relay`) |
+| `DECK_RELAY_SERVICE` | systemd `--user` unit (default `hermes-deck-relay`), or the launchd label on macOS (default `com.hermes-deck.relay`); `adopt` switches this service. Updates started from the app use the relay's own service name when this is not set |
 | `DECK_RELAY_AUTO_UPDATE` | `1`: the daily `--check --auto` also applies the update |
 | `DECK_HERMES_PYTHON` | Python for `--with-plugin` |
 | `GH_TOKEN` / `GITHUB_TOKEN` | needed only while the update repository is private (a token with read access to it); otherwise optional, it raises GitHub's rate limit. Read from the environment, else from the relay's `.env` (updates started from the app read it there) |

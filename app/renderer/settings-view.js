@@ -223,7 +223,7 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
       return group(node("hostupd.group"), ...rows);
     }
 
-    const UPDATE_STEPS = ["download", "verify", "install", "switch", "health", "plugin"];
+    const UPDATE_STEPS = ["adopt", "download", "verify", "install", "switch", "health", "plugin"];
     const UPDATE_FINAL = ["done", "failed", "rolled-back", "plugin-failed"];
     function statusText(st) {
       const v = { version: st.version || "", from: st.from || "", step: st.step || "", error: st.error || "" };
@@ -238,7 +238,8 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
       const u = state.update;
       const st = u.status;
       const running = !!st && !UPDATE_FINAL.includes(st.state);
-      const blocked = !u.remote || !u.remote.enabled || !u.remote.managed;
+      // adopt: a relay running from a checkout moves itself to an install root; an older relay cannot (needInit)
+      const blocked = !u.remote || !u.remote.enabled || !(u.remote.managed || u.remote.adopt);
       const label = st && UPDATE_FINAL.includes(st.state) && st.state !== "done" && !(state.relay && state.relay.older) ? "hostupd.tryAgain" : "hostupd.update";
       const btn = h("button", { class: "btn mini", type: "button", title: T("hostupd.updateHelp"), disabled: running || blocked ? true : null, dataset: { fk: "hostupd:update" },
         onclick: async () => {
@@ -249,7 +250,8 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
       return h("div", { class: "sv-row sv-block" },
         st ? h("p", { class: `hostver hostver-step ${st.state === "done" ? "ok" : running ? "info" : "warn"}`, role: "status" }, statusText(st)) : null,
         u.remote && !u.remote.enabled ? h("p", { class: "hostver warn" }, T("hostupd.remoteOff")) : null,
-        u.remote && u.remote.enabled && !u.remote.managed ? h("p", { class: "hostver-cmd" }, T("hostupd.needInit"), " ", h("code", { class: "sv-path" }, "node relay/bin/deck-relay-update init ~/hermes-deck --dry-run")) : null,
+        u.remote && u.remote.enabled && !u.remote.managed && u.remote.adopt && state.relay && state.relay.older && !running ? h("p", { class: "hostver-cmd" }, T("hostupd.willAdopt")) : null,
+        u.remote && u.remote.enabled && !u.remote.managed && !u.remote.adopt ? h("p", { class: "hostver-cmd" }, T("hostupd.needInit"), " ", h("code", { class: "sv-path" }, "git pull && cd relay && npm ci --omit=dev")) : null,
         eligible ? h("div", { class: "sv-end" }, btn) : null); // a finished update on a current host shows only its result
     }
 

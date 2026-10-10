@@ -2,7 +2,7 @@
 // Host update from the app (docs/updating.md, Updating from the app): POST /host/update {version: this app's
 // version} and POST /host/restart {profile} to the relay, with the relay token and this device's key. maybeAuto()
 // is the opt-in automatic mode: only when Settings › Updates › host is on, the host is behind, remote updates are
-// allowed and the relay runs from an install root; once per version, and never again for a version that failed.
+// allowed and the relay runs from an install root or can move to one (adopt); once per version, never again after a failure.
 const fs = require("fs");
 const path = require("path");
 const { newer } = require("./updates");
@@ -58,7 +58,7 @@ function createHostUpdater({ relay, settings, deviceId, app, file, fetch: fetchI
       if (!(settings.data.updates && settings.data.updates.host === true)) return;
       if (!behind(state)) return; // host current: a second Deck sends nothing
       const u = state.update;
-      if (!u || !u.remote || !u.remote.enabled || !u.remote.managed) return;
+      if (!u || !u.remote || !u.remote.enabled || !(u.remote.managed || u.remote.adopt)) return;
       if (u.status && u.status.version === app && FAILED.has(u.status.state)) {
         if (tried[app] !== "failed") { tried[app] = "failed"; save(); }
         return;

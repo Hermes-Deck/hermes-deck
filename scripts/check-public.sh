@@ -17,6 +17,11 @@ allowlist = [
     ('relay/test/host-version.test.js', re.compile(r'(?<=")\.local(?=", "bin", "hermes")')),
     ('docs/relay.md', re.compile(r'(?<=~/)\.local(?=/bin/hermes\b)')),
     ('relay/.env.example', re.compile(r'(?<=~/)\.local(?=/bin/hermes\b)')),
+    # The default install root deck-relay-update adopt creates under the per-user data directory (XDG); not a hostname.
+    ('relay/tools/update.js', re.compile(r'(?<=")\.local(?=", "share", "hermes-deck-relay")|(?<=~/)\.local(?=/share/hermes-deck-relay\b)')),
+    ('relay/test/update.test.js', re.compile(r'(?<=")\.local(?=", "share", "hermes-deck-relay")|(?<=/home/u/)\.local(?=/share/hermes-deck-relay\b)')),
+    ('docs/updating.md', re.compile(r'(?<=~/)\.local(?=/share/hermes-deck-relay\b)')),
+    ('CHANGELOG.md', re.compile(r'(?<=~/)\.local(?=/share/hermes-deck-relay\b)')),
     # Detector definitions describe forbidden prefixes, not an infrastructure location.
     ('scripts/check-public.sh', re.compile(r'/root/(?=\|)|/srv/(?=\|)|(?<=command directory ~/)\.local(?=/bin \(XDG\), where Hermes installs the hermes command; not a hostname\.$)')),
     # Local properties and the legacy filename are not private hostnames.

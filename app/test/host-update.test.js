@@ -64,6 +64,12 @@ test("auto: off by default, only when the host is behind, once per version, also
   assert.equal(again.calls.length, 0, "remembered across restarts");
 });
 
+test("auto: a relay that adopts its checkout is updated like an install root", async () => {
+  const x = setup();
+  await x.hu.maybeAuto(stateWith("1.2.0", [["default", "1.2.0"]], update({ remote: { enabled: true, managed: false, adopt: true } })));
+  assert.equal(x.calls.length, 1);
+});
+
 test("auto: nothing while an update runs, when remote updates are off, or without an install root", async () => {
   const x = setup();
   await x.hu.maybeAuto(stateWith("1.2.0", [], update({ status: { version: "1.3.0", state: "running" } })));

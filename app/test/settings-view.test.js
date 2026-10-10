@@ -818,16 +818,42 @@ test("Host version: a declined confirm restarts nothing; pending and restarting 
   assert.match(root().querySelector('.sv-section[data-section="hermes"]').text, /aurora: the plugin install has not finished/);
 });
 
-test("Host version: no install root disables the button and shows the init command; remote off says so", () => {
+test("Host version: an older relay on a checkout disables the button and says to update it once; remote off says so", () => {
   const deck = { hostUpdate: { update: async () => ({}), restart: async () => ({}) } };
   const a = mount({ deck, hostVersions: () => hostState({ remote: { enabled: true, managed: false }, status: null, restarts: [], queueError: null }) });
   a.sv.open("relay");
   assert.equal(a.root().querySelector('[data-fk="hostupd:update"]').disabled, true);
-  assert.match(a.root().querySelector('.sv-section[data-section="relay"]').text, /deck-relay-update init/);
+  assert.match(a.root().querySelector('.sv-section[data-section="relay"]').text, /Update it once on the host.*git pull && cd relay && npm ci --omit=dev/);
   const b = mount({ deck, hostVersions: () => hostState({ remote: { enabled: false, managed: true }, status: null, restarts: [], queueError: null }) });
   b.sv.open("relay");
   assert.equal(b.root().querySelector('[data-fk="hostupd:update"]').disabled, true);
   assert.match(b.root().querySelector('.sv-section[data-section="relay"]').text, /DECK_REMOTE_UPDATE=0/);
+});
+
+test("Host version: a relay that can adopt its checkout enables the button and says the first update moves it", async () => {
+  const calls = [];
+  const deck = { hostUpdate: { update: async () => { calls.push("update"); return { ok: true, state: "started" }; }, restart: async () => ({}) } };
+  let state = hostState({ remote: { enabled: true, managed: false, adopt: true }, status: null, restarts: [], queueError: null });
+  const { sv, root } = mount({ deck, hostVersions: () => state });
+  sv.open("relay");
+  const btn = root().querySelector('[data-fk="hostupd:update"]');
+  assert.ok(!btn.disabled);
+  const text = () => root().querySelector('.sv-section[data-section="relay"]').text;
+  assert.match(text(), /first update copies it to an install root/);
+  assert.doesNotMatch(text(), /git pull/);
+  btn.dispatch("click");
+  await flushAll();
+  assert.deepEqual(calls, ["update"]);
+  state = hostState({ remote: { enabled: true, managed: false, adopt: true }, status: { version: "1.3.0", step: "adopt", state: "running" }, restarts: [], queueError: null });
+  sv.refresh({ force: true });
+  assert.match(text(), /Moving the relay to an install root/);
+  assert.doesNotMatch(text(), /first update copies/, "the note goes once the update runs");
+  // only the plugin behind: the plugin step runs from the checkout and moves nothing
+  state = hostState({ remote: { enabled: true, managed: false, adopt: true }, status: null, restarts: [], queueError: null }, { relay: { version: "1.3.0", older: false, mismatch: false } });
+  sv.open("hermes");
+  sv.refresh({ force: true });
+  assert.ok(root().querySelector('[data-fk="hostupd:update"]'));
+  assert.doesNotMatch(root().querySelector('.sv-section[data-section="hermes"]').text, /first update copies/);
 });
 
 test("Host version: a relay without host updates keeps only the command; a current host shows no button", () => {

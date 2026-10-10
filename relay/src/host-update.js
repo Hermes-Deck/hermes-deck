@@ -2,7 +2,8 @@
 // Host update from the app (docs/updating.md): POST /host/update {version} starts relay/bin/deck-relay-update as a
 // transient job (update-job.js) and follows <data>/update-status.json; POST /host/restart {profile} restarts one
 // queued gateway now (restarts.js). Both need the relay bearer header, a desktop device token and a live desktop
-// connection with that device id; mobile connections never qualify. DECK_REMOTE_UPDATE=0 turns both off.
+// connection with that device id; mobile connections never qualify. DECK_REMOTE_UPDATE=0 turns both off. A relay that runs
+// from a plain checkout is moved to an install root first (apply --adopt); the plugin step alone runs from the checkout.
 const path = require("path");
 const devtokens = require("./devtokens");
 const job = require("./update-job");
@@ -32,6 +33,30 @@ function readBody(req, max = 4096) {
     });
     req.on("error", reject);
   });
+}
+
+/**
+ * The relay's own service, so the updater stops and restarts the right one when DECK_RELAY_SERVICE is not set: launchd
+ * gives a job its label in XPC_SERVICE_NAME; a systemd --user unit is the *.service under user@<uid>.service in the process's
+ * cgroup (a system unit is not one `systemctl --user` could restart). null: unknown (a relay run from a terminal), and the
+ * updater keeps its default.
+ */
+function ownService({ platform, env, fs }) {
+  if (env.DECK_RELAY_SERVICE) return null;
+  const ok = (name) => (typeof name === "string" && /^[\w@.-]{1,200}$/.test(name) ? name : null);
+  if (platform === "darwin") {
+    const label = ok(env.XPC_SERVICE_NAME);
+    return label && label !== "0" && !label.startsWith("application.") ? label : null; // application.*: started from an app's terminal
+  }
+  if (platform === "linux") {
+    try {
+      const m = /\/user@\d+\.service\/(?:[^\s]*\/)?([^/\s]+)\.service\s*$/m.exec(fs.readFileSync("/proc/self/cgroup", "utf8"));
+      return m ? ok(m[1]) : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 class HostUpdate {
@@ -70,7 +95,9 @@ class HostUpdate {
   }
   info() {
     // plugins: the profiles' installed versions now, so an app sees a finished plugin step without a new hello
-    return { remote: { enabled: this.remoteUpdate, managed: this.managed() }, status: this.status(), restarts: this.restarts ? this.restarts.rows() : [], queueError: this.restarts?.queueError ?? null, plugins: this.plugins() };
+    // adopt: a plain checkout is moved to an install root by the update itself (deck-relay-update apply --adopt)
+    const managed = this.managed();
+    return { remote: { enabled: this.remoteUpdate, managed, adopt: !managed && (this.platform === "linux" || this.platform === "darwin") }, status: this.status(), restarts: this.restarts ? this.restarts.rows() : [], queueError: this.restarts?.queueError ?? null, plugins: this.plugins() };
   }
   publicInfo() {
     const st = this.status();
@@ -136,16 +163,17 @@ class HostUpdate {
     const recover = st?.state === "plugin-failed" || readQueue(this.queueFile, { fs: this.fs }).some((entry) => entry?.pending === true);
     if (relayOk && pluginsOk && !recover) return reply(res, 200, { state: "current", version });
     if (this.cleaning) throw fail(409, "previous update cleanup is still running; try again when it ends");
-    if (!this.managed()) throw fail(409, "the relay is not running from an install root", { command: "node relay/bin/deck-relay-update init ~/hermes-deck --dry-run" });
     // Recovery skips newer profiles in the installer under --no-downgrade.
     if (newerPlugin && !(relayOk && pluginsOk && recover)) throw fail(409, "an installed plugin is newer than this release; refusing a downgrade");
     const updater = path.join(this.relayDir, "bin", "deck-relay-update");
     const args = relayOk
       ? ["plugin", "--status-file", this.statusFile, "--restart-queue", this.queueFile, "--no-downgrade"]
-      : ["apply", "--version", version, "--no-downgrade", "--with-plugin", "--status-file", this.statusFile, "--restart-queue", this.queueFile];
+      : ["apply", "--version", version, "--no-downgrade", "--with-plugin", ...(this.managed() ? [] : ["--adopt"]), "--status-file", this.statusFile, "--restart-queue", this.queueFile];
     let spec;
     try {
-      spec = job.jobSpec({ platform: this.platform, uid: this.uid, node: this.node, updater, args, dataDir: this.dataDir, logDir: path.join(path.dirname(this.dataDir), "logs"), env: this.env, now: this.now });
+      const service = this.o.service !== undefined ? this.o.service : ownService({ platform: this.platform, env: this.env, fs: this.fs });
+      const env = service ? { ...this.env, DECK_RELAY_SERVICE: service } : this.env;
+      spec = job.jobSpec({ platform: this.platform, uid: this.uid, node: this.node, updater, args, dataDir: this.dataDir, logDir: path.join(path.dirname(this.dataDir), "logs"), env, now: this.now });
     } catch (e) {
       throw fail(501, e.message);
     }
@@ -179,4 +207,4 @@ class HostUpdate {
   }
 }
 
-module.exports = { HostUpdate, FINAL };
+module.exports = { HostUpdate, FINAL, ownService };

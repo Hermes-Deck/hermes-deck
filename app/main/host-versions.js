@@ -24,7 +24,7 @@ const MAX_KEYS = 200;
 const cleanVersion = (v) => (typeof v === "string" && SEMVER.test(v) ? v.replace(/^v/, "") : null);
 /** The relay's hostUpdate (relay 1.3+), kept as plain data for the renderer; null when the relay has none. */
 const cleanUpdate = (u) => (u && typeof u === "object" && !Array.isArray(u)
-  ? { remote: u.remote && typeof u.remote === "object" ? { enabled: u.remote.enabled === true, managed: u.remote.managed === true } : null,
+  ? { remote: u.remote && typeof u.remote === "object" ? { enabled: u.remote.enabled === true, managed: u.remote.managed === true, adopt: u.remote.adopt === true } : null,
     status: u.status && typeof u.status === "object" ? u.status : null,
     restarts: Array.isArray(u.restarts) ? u.restarts.slice(0, MAX_PROFILES) : [],
     queueError: typeof u.queueError === "string" ? u.queueError : null }

@@ -139,7 +139,7 @@ test("deck.version over the direct connection: a 0.3.6+ plugin answers, an older
 test("hostUpdate from the hello and from relay pushes reaches state().update; a lost relay clears it", () => {
   const states = [];
   const hv = new HostVersions({ app: "1.3.0", onChange: (s) => states.push(s) });
-  const info = { remote: { enabled: true, managed: true }, status: { version: "1.3.0", step: "download", state: "running" }, restarts: [], queueError: null };
+  const info = { remote: { enabled: true, managed: false, adopt: true }, status: { version: "1.3.0", step: "download", state: "running" }, restarts: [], queueError: null };
   hv.relayHello({ t: "hello", v: "1.2.0", protocol: 1, plugins: {}, hostUpdate: info });
   assert.deepEqual(hv.state().update, info);
   hv.hostUpdate({ t: "hostUpdate", ...info, status: { ...info.status, step: "done", state: "done" } });

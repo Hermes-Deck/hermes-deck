@@ -420,8 +420,8 @@ Check for updates automatically**, **Check now**). On Windows, **Install the new
 verifies it against the release's `SHA256SUMS.txt` (a release without it is refused) and runs it; Deck then restarts
 on the new version. On macOS, install the new DMG from the release page (**Open the release page**). The relay's version is
 also compared with the app's: a newer relay announces a newer app; an older relay or plugin shows the command to
-update it on the host, and **Update the host** (Settings → Relay) updates both from the app when the relay runs from
-an install root. **Automatically update the host to this app's version** (off by default) does that after the app
+update it on the host, and **Update the host** (Settings → Relay) updates both from the app. A relay that runs from a
+plain checkout is first moved to an install root by that update (Linux systemd and macOS launchd services). **Automatically update the host to this app's version** (off by default) does that after the app
 updates.
 
 **Needs.** Network access to GitHub. The host side (relay and plugin) is updated on the host:

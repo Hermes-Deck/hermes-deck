@@ -838,3 +838,273 @@ test("withToken never adds a token when neither the process nor the .env has one
   const deps = { env: { PATH: "/bin" } };
   assert.strictEqual(U.withToken(deps, {}), deps);
 });
+
+// ------------------------------------------------------------------ adopt: a plain checkout and its service
+/** A checkout at <base>/clone (relay 1.2.4, state, plugin) and a home with the relay's service pointing at it. */
+function checkoutHost({ platform = "linux", execStart = "/usr/bin/env node src/index.js" } = {}) {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "deck-adopt-"));
+  const checkout = path.join(base, "clone");
+  const relay = path.join(checkout, "relay");
+  fs.mkdirSync(path.join(relay, "src"), { recursive: true });
+  fs.mkdirSync(path.join(relay, "data"), { recursive: true });
+  fs.mkdirSync(path.join(checkout, ".git"), { recursive: true });
+  fs.writeFileSync(path.join(relay, "package.json"), JSON.stringify({ name: "deck-relay", version: "1.2.4", repository: `github:${REPO}` }));
+  fs.writeFileSync(path.join(relay, "src", "index.js"), "// relay\n");
+  fs.writeFileSync(path.join(relay, ".env"), "DECK_RELAY_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nDECK_RELAY_PORT=9555\n");
+  fs.writeFileSync(path.join(relay, "agents.json"), "{}");
+  fs.writeFileSync(path.join(relay, "data", "checkpoint.json"), '{"n":1}');
+  fs.mkdirSync(path.join(checkout, "hermes-plugin", "hermes-deck"), { recursive: true });
+  fs.writeFileSync(path.join(checkout, "hermes-plugin", "hermes-deck", "install.py"), "# installer\n");
+  fs.writeFileSync(path.join(checkout, "hermes-plugin", "hermes-deck", "plugin.yaml"), "version: '1.2.4'\n");
+  const home = path.join(base, "home");
+  fs.mkdirSync(home, { recursive: true });
+  const plist = path.join(home, "Library", "LaunchAgents", "com.hermes-deck.relay.plist");
+  if (platform === "darwin") {
+    fs.mkdirSync(path.dirname(plist), { recursive: true });
+    fs.writeFileSync(plist, `<plist><dict><key>Label</key><string>com.hermes-deck.relay</string><key>ProgramArguments</key><array><string>/opt/node</string><string>${relay}/src/index.js</string></array><key>WorkingDirectory</key><string>${relay}</string><key>StandardOutPath</key><string>${relay}/logs/relay.log</string><key>EnvironmentVariables</key><dict><key>OTHER</key><string>${relay}-not-it</string></dict></dict></plist>`);
+  }
+  return { base, checkout, relay, home, plist, platform, execStart, root: path.join(home, ".local", "share", "hermes-deck-relay"), dropIn: path.join(home, ".config", "systemd", "user", "hermes-deck-relay.service.d", "hermes-deck-install-root.conf") };
+}
+
+/** fakes() plus a service manager: systemctl/launchctl run the relay from the directory the unit or plist names. */
+function serviceFakes(host, { broken = [], unit = "loaded", wd = host.relay, linger = 0, onExit = () => {}, ...over } = {}) {
+  const f = fakes({ ...over, hermesRoot: over.hermesRoot });
+  f.deps.platform = host.platform;
+  f.deps.home = host.home;
+  let up = true;
+  let dir = host.relay;
+  let stopping = 0; // launchctl print calls that still show the old pid after a bootout (it writes its state on SIGTERM)
+  const runningVersion = () => {
+    if (!up) return null;
+    const real = fs.realpathSync(dir);
+    if (broken.some((b) => real.startsWith(b))) return null;
+    return JSON.parse(fs.readFileSync(path.join(real, "package.json"), "utf8")).version;
+  };
+  const configured = () => {
+    if (host.platform === "darwin") return /<key>WorkingDirectory<\/key><string>([^<]+)<\/string>/.exec(fs.readFileSync(host.plist, "utf8"))[1];
+    const drop = fs.existsSync(host.dropIn) ? /WorkingDirectory=(.+)/.exec(fs.readFileSync(host.dropIn, "utf8"))[1] : null;
+    return drop || wd;
+  };
+  const inner = f.deps.run;
+  f.deps.run = async (cmd, args, opts = {}) => {
+    if (cmd === "systemctl" || cmd === "launchctl") {
+      f.calls.push([cmd, ...args].join(" "));
+      if (args[1] === "show") return { code: 0, out: `LoadState=${unit}\nWorkingDirectory=${wd}\nExecStart={ path=/usr/bin/env ; argv[]=${host.execStart} ; ignore_errors=no }\n` };
+      if (args[0] === "print") {
+        if (stopping > 0 && --stopping === 0) { onExit(); up = false; }
+        return stopping > 0 ? { code: 0, out: "state = running\n\tpid = 4242\n" } : { code: 113, out: "Could not find service" };
+      }
+      if (args[0] === "bootout" && linger > 0) stopping = linger;
+      else if (args[1] === "stop" || args[0] === "bootout") up = false;
+      if (["start", "restart"].includes(args[1]) || args[0] === "bootstrap" || args[0] === "kickstart") { up = true; dir = configured(); }
+      return { code: 0, out: "" };
+    }
+    return inner(cmd, args, opts);
+  };
+  const fetch = f.deps.fetch;
+  f.deps.fetch = async (url, o) => {
+    if (!url.endsWith("/health")) return fetch(url, o);
+    f.fetched.push(url);
+    const v = runningVersion();
+    if (!v) throw new Error("ECONNREFUSED");
+    return { ok: true, status: 200, json: async () => ({ ok: true, v, protocol: 1, plugins: {} }) };
+  };
+  return { ...f, dir: () => dir, up: () => up };
+}
+
+test("adopt (systemd): copies the checkout, moves the unit with a drop-in, health-checks; the checkout is untouched", async () => {
+  const host = checkoutHost();
+  const before = tree(host.checkout);
+  const s = serviceFakes(host);
+  // the relay keeps writing while init copies: the copy after the stop carries the newest state
+  const inner = s.deps.run;
+  s.deps.run = async (cmd, args, opts) => {
+    if (cmd === "systemctl" && args[1] === "stop") fs.writeFileSync(path.join(host.relay, "data", "checkpoint.json"), '{"n":2}');
+    return inner(cmd, args, opts);
+  };
+  const r = await U.adopt(s.deps, { checkout: host.checkout });
+  assert.strictEqual(r.root, host.root);
+  assert.strictEqual(current(host.root), path.join("releases", "1.2.4"));
+  assert.strictEqual(fs.readFileSync(path.join(host.root, "shared", "data", "checkpoint.json"), "utf8"), '{"n":2}');
+  assert.strictEqual(fs.readFileSync(host.dropIn, "utf8"), `# Written by deck-relay-update adopt: run the relay from its install root (docs/updating.md).\n[Service]\nWorkingDirectory=${path.join(host.root, "current", "relay")}\n`);
+  assert.strictEqual(s.dir(), path.join(host.root, "current", "relay"));
+  assert.deepStrictEqual(s.calls.filter((c) => c.startsWith("systemctl")), ["systemctl --user show hermes-deck-relay -p LoadState -p WorkingDirectory -p ExecStart",
+    "systemctl --user stop hermes-deck-relay", "systemctl --user daemon-reload", "systemctl --user start hermes-deck-relay"]);
+  fs.writeFileSync(path.join(host.relay, "data", "checkpoint.json"), '{"n":1}');
+  assert.deepStrictEqual(tree(host.checkout), before, "the checkout itself is never changed");
+  const again = serviceFakes(checkoutHost());
+  await assert.rejects(U.apply(again.deps, { here: again.dir() }), /plain checkout.*deck-relay-update adopt --dry-run/, "without --adopt apply still refuses a checkout");
+});
+
+test("adopt (systemd): an ExecStart that names the checkout is replaced too", async () => {
+  const host = checkoutHost({ execStart: "/opt/node/bin/node /CHECKOUT/src/index.js --flag" });
+  host.execStart = host.execStart.replace("/CHECKOUT", host.relay);
+  const s = serviceFakes(host, { wd: "/somewhere/else" });
+  await U.adopt(s.deps, { checkout: host.checkout });
+  const to = path.join(host.root, "current", "relay");
+  assert.match(fs.readFileSync(host.dropIn, "utf8"), new RegExp(`\\nExecStart=\\nExecStart=/opt/node/bin/node ${to.replace(/[.\\/]/g, "\\$&")}/src/index\\.js --flag\\n$`));
+});
+
+test("adopt refuses before changing anything when no service runs this checkout", async () => {
+  for (const [what, opts] of [["missing unit", { unit: "not-found" }], ["unit runs another directory", { wd: "/opt/other/relay" }]]) {
+    const host = checkoutHost();
+    const s = serviceFakes(host, opts);
+    await assert.rejects(U.adopt(s.deps, { checkout: host.checkout }), /systemd --user unit hermes-deck-relay/, what);
+    assert.ok(!fs.existsSync(host.root) && !fs.existsSync(host.dropIn), `${what}: nothing written`);
+    assert.ok(s.up(), `${what}: the relay keeps running`);
+  }
+  const win = checkoutHost();
+  const w = serviceFakes(win);
+  w.deps.platform = "win32";
+  await assert.rejects(U.adopt(w.deps, { checkout: win.checkout }), /systemd \(Linux\) and launchd \(macOS\)/);
+});
+
+test("adopt: a relay that does not come up from the install root is moved back and the root removed", async () => {
+  const host = checkoutHost();
+  const s = serviceFakes(host, { broken: [path.join(fs.realpathSync(host.home), ".local", "share", "hermes-deck-relay")] });
+  const status = path.join(host.relay, "data", "update-status.json");
+  const writer = U.statusWriter(s.deps, status, { version: "1.3.0", from: "1.2.4" });
+  await assert.rejects(U.adopt(s.deps, { checkout: host.checkout, healthTimeoutMs: 5000, status: writer }), /did not come up.*runs from .*clone\/relay again/);
+  assert.ok(!fs.existsSync(host.dropIn), "drop-in removed");
+  assert.ok(!fs.existsSync(host.root), "the root it made is gone, so a retry starts clean");
+  assert.strictEqual(s.dir(), host.relay);
+  assert.ok(s.up());
+  assert.deepStrictEqual([readStatus(status).step, readStatus(status).state], ["adopt", "rolled-back"]);
+  assert.ok(s.calls.includes("systemctl --user restart hermes-deck-relay"));
+});
+
+test("adopt (launchd): rewrites only the checkout's paths in the plist, boots it out and in; restores it on failure", async () => {
+  const host = checkoutHost({ platform: "darwin" });
+  const original = fs.readFileSync(host.plist, "utf8");
+  const s = serviceFakes(host);
+  await U.adopt(s.deps, { checkout: host.checkout });
+  const to = path.join(host.root, "current", "relay");
+  assert.strictEqual(fs.readFileSync(host.plist, "utf8"), original.split(`<string>${host.relay}/`).join(`<string>${to}/`).split(`<string>${host.relay}<`).join(`<string>${to}<`));
+  assert.match(fs.readFileSync(host.plist, "utf8"), new RegExp(`${host.relay.replace(/[.\\/]/g, "\\$&")}-not-it`), "a longer path that only starts the same stays");
+  assert.strictEqual(fs.readFileSync(path.join(host.root, ".adopt", "service.plist"), "utf8"), original);
+  assert.deepStrictEqual(s.calls.filter((c) => c.startsWith("launchctl")), ["launchctl bootout gui/1000/com.hermes-deck.relay", "launchctl print gui/1000/com.hermes-deck.relay", `launchctl bootstrap gui/1000 ${host.plist}`]);
+  assert.ok(fs.statSync(path.join(host.root, "shared", "logs")).isDirectory(), "the plist's log path has a directory behind it");
+
+  const bad = checkoutHost({ platform: "darwin" });
+  const before = fs.readFileSync(bad.plist, "utf8");
+  const b = serviceFakes(bad, { broken: [path.join(fs.realpathSync(bad.home), ".local", "share", "hermes-deck-relay")] });
+  await assert.rejects(U.adopt(b.deps, { checkout: bad.checkout, healthTimeoutMs: 5000 }), /did not come up/);
+  assert.strictEqual(fs.readFileSync(bad.plist, "utf8"), before);
+  assert.strictEqual(b.dir(), bad.relay);
+});
+
+test("adopt (launchd): waits for the old relay to exit before the second state copy; skips its *.tmp files", async () => {
+  const host = checkoutHost({ platform: "darwin" });
+  const data = path.join(host.relay, "data");
+  fs.writeFileSync(path.join(data, "checkpoint.json.tmp"), "partial");
+  // The relay writes its last checkpoint (tmp + rename) on SIGTERM, after launchctl bootout has returned.
+  const s = serviceFakes(host, { linger: 3, onExit: () => {
+    fs.writeFileSync(path.join(data, "checkpoint.json"), '{"n":2}');
+    fs.rmSync(path.join(data, "checkpoint.json.tmp"));
+  } });
+  await U.adopt(s.deps, { checkout: host.checkout });
+  assert.strictEqual(s.calls.filter((c) => c.startsWith("launchctl print")).length, 3);
+  assert.strictEqual(fs.readFileSync(path.join(host.root, "shared", "data", "checkpoint.json"), "utf8"), '{"n":2}', "the copy has the state written at exit");
+  assert.ok(!fs.existsSync(path.join(host.root, "shared", "data", "checkpoint.json.tmp")));
+  assert.strictEqual(s.dir(), path.join(host.root, "current", "relay"));
+});
+
+test("copyState skips *.tmp files and entries that vanish while it copies", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "deck-copy-"));
+  const from = path.join(base, "data");
+  fs.mkdirSync(path.join(from, "sub"), { recursive: true });
+  fs.writeFileSync(path.join(from, "keep.json"), "1");
+  fs.writeFileSync(path.join(from, "sub", "keep.json"), "2");
+  fs.writeFileSync(path.join(from, "state.json.tmp"), "x");
+  fs.writeFileSync(path.join(from, "gone.json"), "y");
+  const lstatSync = (p, o) => {
+    if (path.basename(p) === "gone.json") throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    return fs.lstatSync(p, o);
+  };
+  U.copyState({ fs: { ...fs, lstatSync } }, from, path.join(base, "out"));
+  assert.deepStrictEqual(tree(path.join(base, "out")), { "keep.json": "1", [path.join("sub", "keep.json")]: "2" });
+  assert.throws(() => U.copyState({ fs: { ...fs, lstatSync: () => { throw Object.assign(new Error("EACCES"), { code: "EACCES" }); } } }, from, path.join(base, "out2")), /EACCES/);
+});
+
+test("adopt --dry-run reads the service and changes nothing", async () => {
+  const host = checkoutHost();
+  const before = tree(host.base);
+  const s = serviceFakes(host);
+  await U.adopt(s.deps, { checkout: host.checkout, dry: true });
+  assert.deepStrictEqual(tree(host.base), before);
+  assert.deepStrictEqual(s.calls, ["systemctl --user show hermes-deck-relay -p LoadState -p WorkingDirectory -p ExecStart"]);
+  assert.match(s.logs.join("\n"), /would point the systemd --user unit hermes-deck-relay at .*hermes-deck-relay\/current\/relay/);
+});
+
+test("DECK_RELAY_ROOT in the relay's .env chooses where adopt puts the install root", () => {
+  assert.strictEqual(U.defaultRoot({ env: {}, home: "/home/u" }, {}), path.resolve("/home/u/.local/share/hermes-deck-relay"));
+  assert.strictEqual(U.defaultRoot({ env: {}, home: "/home/u" }, { DECK_RELAY_ROOT: "/var/deck" }), path.resolve("/var/deck"));
+  assert.strictEqual(U.defaultRoot({ env: { DECK_RELAY_ROOT: "/opt/deck" }, home: "/home/u" }, { DECK_RELAY_ROOT: "/var/deck" }), path.resolve("/opt/deck"));
+});
+
+test("apply --adopt (the app's update): adopts the checkout, then updates relay and plugin; status follows the data", async () => {
+  const host = checkoutHost();
+  const hermes = path.join(host.base, ".hermes");
+  fs.mkdirSync(path.join(hermes, "plugins", "hermes-deck"), { recursive: true });
+  fs.writeFileSync(path.join(hermes, "config.yaml"), "plugins: {enabled: [hermes-deck]}\n");
+  fs.mkdirSync(path.join(hermes, "hermes-deck"), { recursive: true });
+  fs.writeFileSync(path.join(hermes, "hermes-deck", "installed.json"), JSON.stringify({ version: "1.2.4" }));
+  const s = serviceFakes(host, { latest: "1.3.0", env: { HERMES_ROOT: hermes, DECK_HERMES_PYTHON: "/opt/py" } });
+  const status = path.join(host.relay, "data", "update-status.json");
+  const queue = path.join(host.relay, "data", "restart-queue.json");
+  const jobPlist = path.join(host.relay, "data", "update-job.plist");
+  fs.writeFileSync(jobPlist, "<plist/>");
+  fs.writeFileSync(status, JSON.stringify({ state: "running", step: "starting", job: { kind: "launchd", label: "hermes-deck-update-1", plistFile: jobPlist } }));
+  // apply() locates the relay from its own path; this test's checkout stands in for it
+  const r = await U.apply({ ...s.deps }, { version: "1.3.0", noDowngrade: true, withPlugin: true, adopt: true, statusFile: status, restartQueue: queue, healthTimeoutMs: 5000, root: null, here: host.relay });
+  assert.deepStrictEqual([r.status, r.from, r.to], ["updated", "1.2.4", "1.3.0"]);
+  assert.strictEqual(current(host.root), path.join("releases", "1.3.0"));
+  assert.strictEqual(fs.realpathSync(s.dir()), fs.realpathSync(path.join(host.root, "releases", "1.3.0", "relay")));
+  const moved = path.join(host.root, "shared", "data", "update-status.json");
+  assert.deepStrictEqual([readStatus(moved).state, readStatus(moved).version, readStatus(moved).job.label], ["done", "1.3.0", "hermes-deck-update-1"]);
+  assert.strictEqual(readStatus(status).step, "adopt", "the checkout's copy stopped at the move");
+  assert.ok(fs.existsSync(jobPlist) && !fs.existsSync(path.join(host.root, "shared", "data", "update-job.plist")), "the relay's job cleanup removes the plist the status names; the moved copy is gone");
+  assert.strictEqual(readStatus(path.join(hermes, "hermes-deck", "installed.json")).version, "1.3.0");
+  assert.strictEqual(readStatus(path.join(host.root, "shared", "data", "restart-queue.json"))[0].profile, "default");
+});
+
+test("plugin subcommand on a plain checkout installs the checkout's own plugin, no install root needed", async () => {
+  const host = checkoutHost();
+  const hermes = path.join(host.base, ".hermes");
+  fs.mkdirSync(path.join(hermes, "plugins", "hermes-deck"), { recursive: true });
+  fs.writeFileSync(path.join(hermes, "config.yaml"), "plugins: {enabled: [hermes-deck]}\n");
+  const s = serviceFakes(host, { env: { HERMES_ROOT: hermes, DECK_HERMES_PYTHON: "/opt/py" } });
+  const status = path.join(host.relay, "data", "update-status.json");
+  await U.pluginOnly(s.deps, { statusFile: status, here: host.relay });
+  assert.deepStrictEqual(s.calls.filter((c) => c.startsWith("/opt/py")).map((c) => c.split(" ")[1]), [path.join(host.checkout, "hermes-plugin", "hermes-deck", "install.py"), path.join(host.checkout, "hermes-plugin", "hermes-deck", "install.py")]);
+  assert.deepStrictEqual([readStatus(status).state, readStatus(status).version], ["done", "1.2.4"]);
+  assert.ok(!fs.existsSync(host.root) && !s.calls.some((c) => c.startsWith("systemctl")), "nothing adopted, no service touched");
+});
+
+test("adopt matches a service that names the checkout through a symlink (macOS /tmp, a linked folder)", async () => {
+  for (const platform of ["linux", "darwin"]) {
+    const host = checkoutHost({ platform });
+    const link = path.join(host.base, "linked");
+    fs.symlinkSync(host.checkout, link);
+    const named = path.join(link, "relay");
+    if (platform === "darwin") fs.writeFileSync(host.plist, fs.readFileSync(host.plist, "utf8").split(host.relay).join(named));
+    const s = serviceFakes(host, { wd: named });
+    await U.adopt(s.deps, { checkout: host.checkout });
+    const to = path.join(host.root, "current", "relay");
+    if (platform === "linux") assert.match(fs.readFileSync(host.dropIn, "utf8"), new RegExp(`WorkingDirectory=${to.replace(/[.\\/]/g, "\\$&")}\\n`));
+    else {
+      const plist = fs.readFileSync(host.plist, "utf8");
+      assert.ok(!plist.includes(`<string>${named}/`) && !plist.includes(`<string>${named}<`), `${platform}: no checkout path left`);
+      assert.ok(plist.includes(`<string>${named}-not-it</string>`), "a longer path that only starts the same stays");
+      assert.ok(plist.includes(`<string>${to}/src/index.js</string>`) && plist.includes(`<string>${to}/logs/relay.log</string>`));
+      assert.strictEqual(fs.statSync(path.join(host.root, ".adopt", "service.plist")).mode & 0o777, 0o600);
+    }
+  }
+});
+
+test("adopt from the old checkout after it was adopted says where the relay runs now", async () => {
+  const host = checkoutHost({ platform: "darwin" });
+  const s = serviceFakes(host);
+  await U.adopt(s.deps, { checkout: host.checkout });
+  await assert.rejects(U.adopt(s.deps, { checkout: host.checkout, root: path.join(host.base, "other") }), /already runs the relay from the install root .*hermes-deck-relay; update it with/);
+});

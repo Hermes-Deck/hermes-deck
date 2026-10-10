@@ -7,7 +7,8 @@
 //   <root>/current -> releases/<version>   the service runs <root>/current/relay
 //   <root>/shared/                .env, agents.json, devices.json and data/ — retained across updates; each release
 //                                 links its relay state files and directories into it
-// A plain checkout (relay/ in a git clone) keeps working without any of this; `init` converts one, dry-run first.
+// A plain checkout (relay/ in a git clone) keeps working without any of this; `init` converts one, dry-run first, and
+// `adopt` (or `apply --adopt`, what the app starts) converts one and points the relay's service at it in one go.
 //
 // Every effect goes through `deps` (fetch, run, fs, sleep, now, log) so test/update.test.js drives it all with fakes.
 const crypto = require("crypto");
@@ -25,6 +26,7 @@ const EXIT = { ok: 0, failed: 1, usage: 2, updateAvailable: 10 };
 const SHARED = [".env", "agents.json", "devices.json", "data", "logs"]; // relative to relay/, kept in <root>/shared/ (logs: macOS launchd)
 // what a release copy never takes from a checkout (init): VCS data, installed modules, the relay's own state
 const SKIP = new Set([".git", "node_modules"]);
+const DROP_IN = "hermes-deck-install-root.conf"; // adopt's systemd drop-in, under ~/.config/systemd/user/<unit>.service.d/
 
 // ------------------------------------------------------------------ versions, repo, release lookup
 /** [major, minor, patch] of "1.2.3" / "v1.2.3", else null (pre-releases are not offered). */
@@ -228,6 +230,24 @@ function migrateDevices(deps, root, relayDir) {
   deps.fs.chmodSync(target, 0o600);
 }
 
+/**
+ * Copy a relay state file or directory, overwriting. Not state: sockets and FIFOs (a live agent browser's), *.tmp files
+ * (an atomic write in progress, renamed a moment later) and entries gone by the time they are reached.
+ */
+function copyState(deps, from, to) {
+  const keep = (p) => {
+    if (p !== from && p.endsWith(".tmp")) return false;
+    try {
+      const st = deps.fs.lstatSync(p);
+      return !st.isSocket() && !st.isFIFO();
+    } catch (e) {
+      if (e.code === "ENOENT") return false;
+      throw e;
+    }
+  };
+  deps.fs.cpSync(from, to, { recursive: true, force: true, preserveTimestamps: true, verbatimSymlinks: true, filter: keep });
+}
+
 /** Release state files and directories -> <root>/shared/<same> (those that exist there). */
 function linkShared(deps, root, relayDir) {
   for (const name of SHARED) {
@@ -244,9 +264,9 @@ function linkShared(deps, root, relayDir) {
  * checkout (without .git and node_modules) to <root>/releases/<version>/, copies relay/.env, agents.json, devices.json, data/ and
  * logs/ to <root>/shared/ (the checkout keeps its own: it goes on working until the service is pointed elsewhere),
  * links them into the release, runs npm ci --omit=dev and the self-check, and points <root>/current at it.
- * Never touches a service: it prints the change to make.
+ * Never touches a service: it prints the change to make (adopt makes it).
  */
-async function init(deps, { root, checkout, dry = false }) {
+async function init(deps, { root, checkout, dry = false, next = true }) {
   const step = stepper(deps, dry);
   root = path.resolve(root);
   checkout = path.resolve(checkout);
@@ -268,7 +288,7 @@ async function init(deps, { root, checkout, dry = false }) {
       if (name === "data" || name === "logs") await step(`create ${path.join(root, "shared", name)}`, () => deps.fs.mkdirSync(path.join(root, "shared", name), { recursive: true, mode: 0o700 }));
       continue;
     }
-    await step(`copy ${from} -> ${path.join(root, "shared", name)}`, () => deps.fs.cpSync(from, path.join(root, "shared", name), { recursive: true, preserveTimestamps: true, verbatimSymlinks: true }));
+    await step(`copy ${from} -> ${path.join(root, "shared", name)}`, () => copyState(deps, from, path.join(root, "shared", name)));
   }
   const skip = (p) => {
     const relp = path.relative(checkout, p);
@@ -284,8 +304,253 @@ async function init(deps, { root, checkout, dry = false }) {
   await step(`npm ci --omit=dev in ${path.join(rel, "relay")}`, () => must(deps, "npm", ["ci", "--omit=dev", "--no-audit", "--no-fund"], { cwd: path.join(rel, "relay") }));
   await step(`self-check ${path.join(rel, "relay")}`, () => must(deps, deps.node, ["src/index.js", "--self-check"], { cwd: path.join(rel, "relay") }));
   await step(`point ${path.join(root, "current")} at releases/${version}`, () => deps.fs.symlinkSync(path.join("releases", version), path.join(root, "current")));
+  if (!next) return { root, version };
   deps.log(`Next: run the relay from ${path.join(root, "current", "relay")} (systemd: WorkingDirectory=${path.join(root, "current", "relay")}; macOS: bash ${path.join(root, "current", "relay", "install", "macos.sh")}), restart it once, then update with: deck-relay-update apply --root ${root}`);
   return { root, version };
+}
+
+// ------------------------------------------------------------------ adopt: checkout -> install root, service included
+/** Where adopt puts the install root: DECK_RELAY_ROOT (process, else the relay's .env), else ~/.local/share/hermes-deck-relay. */
+function defaultRoot(deps, env) {
+  const named = deps.env.DECK_RELAY_ROOT || env.DECK_RELAY_ROOT;
+  return path.resolve(named || path.join(deps.home, ".local", "share", "hermes-deck-relay"));
+}
+
+const xml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/** The real path of `p`, resolving its longest existing ancestor (a log file named in a plist may not exist yet). */
+function realish(deps, p) {
+  let cur = path.resolve(p);
+  let tail = "";
+  for (;;) {
+    try { return deps.fs.realpathSync(cur) + tail; } catch { /* go up */ }
+    const up = path.dirname(cur);
+    if (up === cur) return path.resolve(p);
+    tail = path.sep + path.basename(cur) + tail;
+    cur = up;
+  }
+}
+
+/**
+ * Paths a service file names, mapped from the checkout's relay/ to `to`: swap(p) is the new path, or null when p is not
+ * under relayDir. Compared by real path, so a service that names the checkout through a symlink (macOS /tmp, a linked
+ * ~/code) still matches. installRoot(p): the install root when p is already <root>/current/relay (adopted before).
+ */
+function relayPaths(deps, relayDir, to) {
+  const real = realish(deps, relayDir);
+  const under = (p, d) => (p === d ? "" : p.startsWith(d + path.sep) ? p.slice(d.length) : null);
+  return {
+    swap: (p) => {
+      if (typeof p !== "string" || !path.isAbsolute(p)) return null;
+      for (const d of [path.resolve(relayDir), real]) {
+        const rest = under(path.resolve(p), d);
+        if (rest !== null) return to + rest;
+      }
+      const rest = under(realish(deps, p), real);
+      return rest === null ? null : to + rest;
+    },
+    installRoot: (p) => {
+      if (typeof p !== "string" || !path.isAbsolute(p)) return null;
+      const m = /^(.*)\/current\/relay\/?$/.exec(path.resolve(p));
+      return m && exists(deps, path.join(m[1], "current")) ? m[1] : null;
+    },
+  };
+}
+const xmlText = (s) => String(s).replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+
+/** Poll /health until it stops answering: the old relay has written its last checkpoint and closed its server. */
+async function waitDown(deps, url, timeoutMs) {
+  const end = deps.now() + timeoutMs;
+  while (deps.now() < end) {
+    try {
+      await deps.fetch(url, typeof AbortSignal !== "undefined" && AbortSignal.timeout ? { signal: AbortSignal.timeout(2000) } : {});
+    } catch {
+      return true;
+    }
+    await deps.sleep(500);
+  }
+  return false;
+}
+
+/** launchctl bootstrap right after a bootout can fail with "Input/output error" for a few seconds (install/macos.sh). */
+async function bootstrap(deps, plist) {
+  let r = null;
+  for (let i = 0; i < 5; i++) {
+    r = await deps.run("launchctl", ["bootstrap", `gui/${deps.uid}`, plist]);
+    if (r && r.code === 0) return r;
+    await deps.sleep(3000);
+  }
+  throw Object.assign(new Error(`launchctl bootstrap gui/${deps.uid} ${plist} failed (exit ${r ? r.code : "?"})`), { detail: String((r && r.out) || "").slice(-1200) });
+}
+
+/**
+ * The service that runs the checkout's relay, and how to point it at `to` (<root>/current/relay):
+ *   Linux  the systemd --user unit DECK_RELAY_SERVICE (default hermes-deck-relay); a drop-in sets WorkingDirectory,
+ *          and ExecStart when that names the checkout. The unit file itself is not edited; removing the drop-in undoes it.
+ *   macOS  the launchd agent ~/Library/LaunchAgents/<label>.plist (label DECK_RELAY_SERVICE, default com.hermes-deck.relay);
+ *          the checkout's relay path is replaced in place, the old file is kept in memory and in <root>/.adopt/.
+ * Reads only. Throws when there is no such service or it does not run this checkout: then nothing can be switched safely.
+ */
+async function serviceFor(deps, env, relayDir, to) {
+  const paths = relayPaths(deps, relayDir, to);
+  const adopted = (what, p) => {
+    const root = paths.installRoot(p);
+    if (root) throw new Error(`the ${what} already runs the relay from the install root ${root}; update it with ${path.join(root, "current", "relay", "bin", "deck-relay-update")} apply`);
+  };
+  if (deps.platform === "linux") {
+    const unit = env.DECK_RELAY_SERVICE || "hermes-deck-relay";
+    const r = await deps.run("systemctl", ["--user", "show", unit, "-p", "LoadState", "-p", "WorkingDirectory", "-p", "ExecStart"]);
+    if (!r || r.code !== 0) throw Object.assign(new Error(`cannot read the systemd --user unit ${unit}`), { detail: String((r && r.out) || "").slice(-1200) });
+    const props = {};
+    for (const line of String(r.out || "").split(/\r?\n/)) {
+      const eq = line.indexOf("=");
+      if (eq > 0) props[line.slice(0, eq)] = line.slice(eq + 1);
+    }
+    if (props.LoadState !== "loaded") throw new Error(`no systemd --user unit ${unit} runs the relay (set DECK_RELAY_SERVICE to its name)`);
+    const wd = String(props.WorkingDirectory || "").replace(/^[-!+]+/, "");
+    const argv = (/argv\[\]=([^;]*)/.exec(props.ExecStart || "") || [])[1];
+    const words = argv ? argv.trim().split(/\s+/) : [];
+    const execNames = words.some((w) => paths.swap(w) !== null);
+    if (paths.swap(wd) === null && !execNames) adopted(`systemd --user unit ${unit}`, wd);
+    if (paths.swap(wd) === null && !execNames) throw new Error(`the systemd --user unit ${unit} does not run ${relayDir}; point it at ${to} yourself (docs/updating.md)`);
+    const dir = path.join(deps.home, ".config", "systemd", "user", `${unit}.service.d`);
+    const file = path.join(dir, DROP_IN);
+    const swap = (w) => paths.swap(w) ?? w;
+    const text = ["# Written by deck-relay-update adopt: run the relay from its install root (docs/updating.md).", "[Service]", `WorkingDirectory=${to}`,
+      ...(execNames ? ["ExecStart=", `ExecStart=${words.map(swap).join(" ")}`] : []), ""].join("\n");
+    return {
+      name: `systemd --user unit ${unit}`,
+      change: `drop-in ${file}: WorkingDirectory=${to}${execNames ? " and ExecStart" : ""}`,
+      stop: () => must(deps, "systemctl", ["--user", "stop", unit]),
+      point: () => {
+        deps.fs.mkdirSync(dir, { recursive: true });
+        deps.fs.writeFileSync(file, text);
+      },
+      start: async () => {
+        await must(deps, "systemctl", ["--user", "daemon-reload"]);
+        await must(deps, "systemctl", ["--user", "start", unit]);
+      },
+      restore: async () => {
+        deps.fs.rmSync(file, { force: true });
+        try { deps.fs.rmdirSync(dir); } catch { /* other drop-ins stay */ }
+        await must(deps, "systemctl", ["--user", "daemon-reload"]);
+        await must(deps, "systemctl", ["--user", "restart", unit]);
+      },
+    };
+  }
+  if (deps.platform === "darwin") {
+    const label = env.DECK_RELAY_SERVICE || "com.hermes-deck.relay";
+    const file = path.join(deps.home, "Library", "LaunchAgents", `${label}.plist`);
+    const before = readText(deps, file);
+    if (before === null) throw new Error(`no launchd agent ${file} runs the relay (set DECK_RELAY_SERVICE to its label)`);
+    const strings = /<string>([^<]*)<\/string>/g;
+    let names = false;
+    const after = before.replace(strings, (all, value) => {
+      const swapped = paths.swap(xmlText(value));
+      if (swapped === null) return all;
+      names = true;
+      return `<string>${xml(swapped)}</string>`;
+    });
+    if (!names) {
+      const wd = /<key>WorkingDirectory<\/key>\s*<string>([^<]*)<\/string>/.exec(before);
+      if (wd) adopted(`launchd agent ${label}`, xmlText(wd[1]));
+      throw new Error(`the launchd agent ${file} does not run ${relayDir}; point it at ${to} yourself (docs/updating.md)`);
+    }
+    const domain = `gui/${deps.uid}`;
+    return {
+      name: `launchd agent ${label}`,
+      change: `${file}: ${relayDir} -> ${to}`,
+      before,
+      stop: async () => {
+        await deps.run("launchctl", ["bootout", `${domain}/${label}`]);
+        // bootout returns while the relay still shuts down (it writes its state on SIGTERM); wait until it has exited
+        for (let i = 0; i < 60; i++) {
+          const r = await deps.run("launchctl", ["print", `${domain}/${label}`]);
+          if (!r || r.code !== 0 || !/\bpid = \d+/.test(String(r.out || ""))) return;
+          await deps.sleep(500);
+        }
+        throw new Error(`the launchd agent ${label} did not stop`);
+      },
+      point: () => deps.fs.writeFileSync(file, after),
+      start: () => bootstrap(deps, file),
+      restore: async () => {
+        deps.fs.writeFileSync(file, before);
+        await deps.run("launchctl", ["bootout", `${domain}/${label}`]);
+        await bootstrap(deps, file);
+      },
+    };
+  }
+  throw new Error(`adopt switches systemd (Linux) and launchd (macOS) services, not ${deps.platform}; use init and switch the service yourself`);
+}
+
+/**
+ * adopt: turn the checkout the relay runs from into an install root and move its service there, so `apply` can work.
+ *   1 find the service that runs <checkout>/relay (serviceFor); refuse before changing anything when there is none
+ *   2 init <root> from the checkout (copies; the checkout itself is never changed)
+ *   3 stop the service, copy the relay's state again (it changed while it ran), point the service at <root>/current/relay
+ *   4 start it and poll /health for the same version; on failure put the service back, restart it and remove <root>
+ * Returns {root, version}.
+ */
+async function adopt(deps, { root = null, checkout, dry = false, healthTimeoutMs = HEALTH_TIMEOUT_MS, status = () => {} }) {
+  checkout = path.resolve(checkout);
+  const relayDir = path.join(checkout, "relay");
+  const env = relayEnv(deps, relayDir);
+  root = root ? path.resolve(root) : defaultRoot(deps, env);
+  const version = plain((readJsonFile(deps, path.join(relayDir, "package.json")) || {}).version || "");
+  const to = path.join(root, "current", "relay");
+  const svc = await serviceFor(deps, env, relayDir, to);
+  const created = !exists(deps, root);
+  const step = stepper(deps, dry);
+  const url = healthUrl(env);
+  deps.log(`adopt ${checkout} as the install root ${root}; the ${svc.name} moves there${dry ? " — dry run, nothing is changed" : ""}`);
+  status({ step: "adopt", state: "running" });
+  let stopped = false;
+  try {
+    await init(deps, { root, checkout, dry, next: false });
+    if (svc.before !== undefined) await step(`keep a copy of the service file in ${path.join(root, ".adopt")}`, () => {
+      deps.fs.mkdirSync(path.join(root, ".adopt"), { recursive: true, mode: 0o700 });
+      deps.fs.writeFileSync(path.join(root, ".adopt", "service.plist"), svc.before, { mode: 0o600 });
+    });
+    await step(`stop the ${svc.name} and wait until ${url} stops answering`, async () => {
+      stopped = true;
+      await svc.stop();
+      if (!(await waitDown(deps, url, healthTimeoutMs))) throw new Error(`the relay still answers on ${url} after its service stopped`);
+    });
+    await step(`copy relay/${SHARED.join(", relay/")} again to ${path.join(root, "shared")} (they changed while the relay ran)`, () => {
+      for (const name of SHARED) if (exists(deps, path.join(relayDir, name))) copyState(deps, path.join(relayDir, name), path.join(root, "shared", name));
+    });
+    await step(`point the ${svc.name} at ${to} (${svc.change})`, () => svc.point());
+    const healthy = await step(`start it; wait up to ${Math.round(healthTimeoutMs / 1000)} s for ${url} to report v ${version}`, async () => {
+      await svc.start();
+      return waitHealthy(deps, url, version, healthTimeoutMs);
+    });
+    if (!dry && !healthy) throw new Error(`the relay did not come up from ${to}`);
+  } catch (e) {
+    if (!dry && stopped) {
+      deps.log(`adopt failed (${e.message}): moving the ${svc.name} back to ${relayDir}`);
+      let back = false;
+      try {
+        await svc.restore();
+        back = await waitHealthy(deps, url, version, healthTimeoutMs);
+      } catch (r) {
+        deps.log(`could not restore the service: ${r.message}`);
+      }
+      e.message = `${e.message}; the relay runs from ${relayDir} again${back ? "" : `, but ${url} does not report ${version}: check the service`}`;
+      e.rolledBack = true;
+    }
+    if (!dry && created) deps.fs.rmSync(root, { recursive: true, force: true });
+    status({ step: "adopt", state: e.rolledBack ? "rolled-back" : "failed", error: e.message });
+    throw e;
+  }
+  deps.log(dry ? "Dry run: nothing was changed." : `relay ${version} runs from ${to}; the checkout ${checkout} is no longer used by the service.`);
+  return { root, version };
+}
+
+/** A status or queue file inside the checkout's relay/data moves with the data to <root>/shared/data. */
+function movedWithData(file, relayDir, root) {
+  if (!file) return file;
+  const rel = path.relative(path.join(relayDir, "data"), path.resolve(file));
+  return rel && !rel.startsWith("..") && !path.isAbsolute(rel) ? path.join(root, "shared", "data", rel) : file;
 }
 
 // ------------------------------------------------------------------ apply
@@ -489,16 +754,18 @@ async function updatePlugin(deps, { releaseDir, env, dry, noDowngrade = false, r
 }
 
 /** `deck-relay-update plugin`: the plugin step alone, from the running release (the app's "Try again"). */
-async function pluginOnly(deps, { root = null, dry = false, noDowngrade = false, statusFile = null, restartQueue = null }) {
-  const loc = locate(deps, { root });
-  if (!loc.managed) throw new Error(`the relay in ${loc.relay} is a plain checkout; see deck-relay-update init`);
+// A plain checkout installs its own hermes-plugin/ (the version it runs); there is no install root to lock.
+async function pluginOnly(deps, { root = null, dry = false, noDowngrade = false, statusFile = null, restartQueue = null, here = undefined }) {
+  const loc = locate(deps, { root, here });
   const env = relayEnv(deps, loc.relay);
-  const version = currentVersion(deps, loc.root);
-  const unlock = dry ? () => {} : lock(deps, loc.root);
+  const releaseDir = loc.managed ? path.join(loc.root, "current") : path.dirname(loc.relay);
+  if (!loc.managed && !exists(deps, path.join(releaseDir, "hermes-plugin", "hermes-deck", "install.py"))) throw new Error(`the checkout ${releaseDir} has no hermes-plugin/hermes-deck/install.py`);
+  const version = loc.managed ? currentVersion(deps, loc.root) : plain((readJsonFile(deps, path.join(loc.relay, "package.json")) || {}).version || "");
+  const unlock = dry || !loc.managed ? () => {} : lock(deps, loc.root);
   const status = dry ? () => {} : statusWriter(deps, statusFile, { version, from: version });
   try {
     status({ step: "plugin", state: "running" });
-    const r = await updatePlugin(deps, { releaseDir: path.join(loc.root, "current"), env: { ...deps.env, ...env }, dry, noDowngrade, restartQueue });
+    const r = await updatePlugin(deps, { releaseDir, env: { ...deps.env, ...env }, dry, noDowngrade, restartQueue });
     status({ step: "done", state: "done" });
     return r;
   } catch (e) {
@@ -519,9 +786,27 @@ async function pluginOnly(deps, { root = null, dry = false, noDowngrade = false,
  *   6 keep the last 3 releases; --with-plugin: the release's install.py (dry run, then real), no gateway restart
  * Returns {status: "updated"|"current"|"dry-run", from, to}.
  */
-async function apply(deps, { root, version = null, noDowngrade = false, withPlugin = false, dry = false, force = false, healthTimeoutMs = HEALTH_TIMEOUT_MS, statusFile = null, restartQueue = null }) {
-  const loc = locate(deps, { root });
-  if (!loc.managed) throw new Error(`the relay in ${loc.relay} is a plain checkout; update it with git, or convert it first: deck-relay-update init <dir> --dry-run`);
+async function apply(deps, { root, version = null, noDowngrade = false, withPlugin = false, dry = false, force = false, adopt: adoptFirst = false, healthTimeoutMs = HEALTH_TIMEOUT_MS, statusFile = null, restartQueue = null, here = undefined }) {
+  let loc = locate(deps, { root, here });
+  if (!loc.managed && !adoptFirst) throw new Error(`the relay in ${loc.relay} is a plain checkout; update it with git, or convert it first: deck-relay-update adopt --dry-run`);
+  if (!loc.managed) {
+    // --adopt (the app's update): move the checkout to an install root first, then update that as usual
+    const from = plain((readJsonFile(deps, path.join(loc.relay, "package.json")) || {}).version || "");
+    const early = dry ? () => {} : statusWriter(deps, statusFile, { version: version || null, from });
+    const made = await adopt(deps, { checkout: path.dirname(loc.relay), dry, healthTimeoutMs, status: early });
+    if (dry) {
+      deps.log(`then: apply${version ? ` --version ${version}` : ""} in ${made.root}`);
+      return { status: "dry-run", from, to: version };
+    }
+    statusFile = movedWithData(statusFile, loc.relay, made.root);
+    restartQueue = movedWithData(restartQueue, loc.relay, made.root);
+    // The data copy took this job's launchd plist along; the relay's cleanup removes only the one the status names.
+    let job;
+    try { job = JSON.parse(deps.fs.readFileSync(statusFile, "utf8")).job; } catch { job = null; }
+    const jobCopy = job && typeof job.plistFile === "string" ? movedWithData(job.plistFile, loc.relay, made.root) : null;
+    if (jobCopy && jobCopy !== job.plistFile) deps.fs.rmSync(jobCopy, { force: true });
+    loc = locate(deps, { root: made.root });
+  }
   root = loc.root;
   const env = relayEnv(deps, loc.relay);
   deps = withToken(deps, env);
@@ -668,12 +953,17 @@ const USAGE = `deck-relay-update: update the Hermes Deck relay from GitHub relea
 
   deck-relay-update --check [--auto]      is a newer release out? exit 0: up to date, 10: newer release available
                                           (--auto, for the timer: then apply it when DECK_RELAY_AUTO_UPDATE=1)
-  deck-relay-update apply [--version X.Y.Z] [--no-downgrade] [--with-plugin] [--dry-run] [--root DIR]
+  deck-relay-update apply [--version X.Y.Z] [--no-downgrade] [--with-plugin] [--adopt] [--dry-run] [--root DIR]
                                           [--status-file FILE] [--restart-queue FILE]
                                           install a release next to the running one, switch, restart, health-check;
                                           switches back by itself when the new relay does not come up
   deck-relay-update plugin [--root DIR] [--no-downgrade] [--status-file F] [--restart-queue F] [--dry-run]   reinstall the plugin from the running release
   deck-relay-update init DIR [--dry-run]  turn this checkout into an install root at DIR (releases/, current, shared/)
+  deck-relay-update adopt [DIR] [--dry-run]
+                                          init DIR (default: DECK_RELAY_ROOT, else ~/.local/share/hermes-deck-relay),
+                                          then point the relay's systemd/launchd service at it and health-check;
+                                          puts the service back by itself when the relay does not come up there
+  (apply --adopt adopts first when the relay runs from a plain checkout; the app's update does this)
 
 Environment: DECK_UPDATE_REPO (owner/name; default: relay/package.json "repository"), DECK_RELAY_ROOT (install root),
 DECK_RELAY_SERVICE (systemd --user unit, default hermes-deck-relay; launchd label on macOS, default
@@ -682,23 +972,24 @@ also read from the relay's .env).`;
 
 /** Parse argv: {cmd, flags, dir}; throws on anything unknown. */
 function parseArgs(argv) {
-  const out = { cmd: null, dir: null, version: null, root: null, statusFile: null, restartQueue: null, dry: false, noDowngrade: false, withPlugin: false, auto: false, force: false };
+  const out = { cmd: null, dir: null, version: null, root: null, statusFile: null, restartQueue: null, dry: false, noDowngrade: false, withPlugin: false, auto: false, force: false, adopt: false };
   const a = [...argv];
   while (a.length) {
     const x = a.shift();
     if (x === "--check" || x === "check") out.cmd = "check";
-    else if (x === "apply" || x === "init" || x === "plugin" || x === "help" || x === "--help" || x === "-h") out.cmd = x.replace(/^-+/, "") === "h" ? "help" : x.replace(/^-+/, "");
+    else if (x === "apply" || x === "init" || x === "adopt" || x === "plugin" || x === "help" || x === "--help" || x === "-h") out.cmd = x.replace(/^-+/, "") === "h" ? "help" : x.replace(/^-+/, "");
     else if (x === "--dry-run") out.dry = true;
     else if (x === "--with-plugin") out.withPlugin = true;
     else if (x === "--no-downgrade") out.noDowngrade = true;
     else if (x === "--auto") out.auto = true;
     else if (x === "--force") out.force = true;
+    else if (x === "--adopt") out.adopt = true;
     else if (x === "--version" || x === "--root" || x === "--status-file" || x === "--restart-queue") {
       const v = a.shift();
       if (!v) throw new Error(`${x} needs a value`);
       if (x === "--version" && !parse(v)) throw new Error(`--version must be X.Y.Z, not "${v}"`);
       out[{ "--version": "version", "--root": "root", "--status-file": "statusFile", "--restart-queue": "restartQueue" }[x]] = v;
-    } else if (out.cmd === "init" && !out.dir && !x.startsWith("-")) out.dir = x;
+    } else if ((out.cmd === "init" || out.cmd === "adopt") && !out.dir && !x.startsWith("-")) out.dir = x;
     else throw new Error(`unknown argument: ${x}`);
   }
   if (out.cmd === "init" && !out.dir) throw new Error("init needs a directory: deck-relay-update init DIR [--dry-run]");
@@ -754,6 +1045,12 @@ async function main(argv, deps = defaultDeps()) {
       await init(deps, { root: args.dir, checkout: path.join(__dirname, "..", ".."), dry: args.dry });
       return EXIT.ok;
     }
+    if (args.cmd === "adopt") {
+      const loc = locate(deps, {});
+      if (loc.managed) throw new Error(`the relay already runs from the install root ${loc.root}`);
+      await adopt(deps, { root: args.dir, checkout: path.join(__dirname, "..", ".."), dry: args.dry });
+      return EXIT.ok;
+    }
     if (args.cmd === "check") {
       const loc = locate(deps, { root: args.root });
       const r = await check(deps, { relayDir: loc.relay });
@@ -771,7 +1068,7 @@ async function main(argv, deps = defaultDeps()) {
       await pluginOnly(deps, { root: args.root, dry: args.dry, noDowngrade: args.noDowngrade, statusFile: args.statusFile, restartQueue: args.restartQueue });
       return EXIT.ok;
     }
-    await apply(deps, { root: args.root, version: args.version, noDowngrade: args.noDowngrade, withPlugin: args.withPlugin, dry: args.dry, force: args.force, statusFile: args.statusFile, restartQueue: args.restartQueue });
+    await apply(deps, { root: args.root, version: args.version, noDowngrade: args.noDowngrade, withPlugin: args.withPlugin, dry: args.dry, force: args.force, adopt: args.adopt, statusFile: args.statusFile, restartQueue: args.restartQueue });
     return EXIT.ok;
   } catch (e) {
     deps.log(`error: ${e.message}${e.detail ? `\n${e.detail}` : ""}`);
@@ -779,4 +1076,4 @@ async function main(argv, deps = defaultDeps()) {
   }
 }
 
-module.exports = { withToken, main, parseArgs, check, apply, init, prune, locate, repoOf, compare, sumFor, sourceName, healthUrl, restartCommand, pluginProfiles, profileHome, pluginOnly, parseEnv, statusWriter, EXIT, KEEP, USAGE };
+module.exports = { withToken, main, parseArgs, check, apply, init, adopt, defaultRoot, copyState, prune, locate, repoOf, compare, sumFor, sourceName, healthUrl, restartCommand, pluginProfiles, profileHome, pluginOnly, parseEnv, statusWriter, EXIT, KEEP, USAGE };
