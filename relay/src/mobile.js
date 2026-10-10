@@ -106,8 +106,10 @@ async function object(req) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw fail('bad_request', 'Expected JSON object');
   return value;
 }
-const READ_OPS = new Set(['sessions', 'history', 'profiles', 'avatar', 'botChat', 'modelOptions', 'sessionPage', 'sessionIndex']);
+const READ_OPS = new Set(['sessions', 'history', 'profiles', 'avatar', 'botChat', 'modelOptions', 'sessionPage', 'sessionIndex', 'plan', 'toolCalls', 'subagents', 'subagentTail', 'commands']);
 const OPS = {
+  plan: ['sid', 'profile'], toolCalls: ['sid', 'profile'], subagents: ['sid', 'profile'],
+  subagentTail: ['sid', 'profile', 'id'], steerSubagent: ['sid', 'profile', 'id', 'text'], interruptSubagent: ['sid', 'profile', 'id'], commands: ['profile'],
   sessionPage: ['profile', 'archived', 'offset'], sessionIndex: ['archived', 'force'],
   renameSession: ['sid', 'profile', 'title'], pinSession: ['sid', 'profile', 'pinned'], archiveSession: ['sid', 'profile', 'archived'], branchSession: ['sid', 'profile'], discard: ['sid', 'profile'],
   setEffort: ['sid', 'profile', 'effort'], reasoning: ['show'],
@@ -165,6 +167,7 @@ class MobileRelay {
     return { v: 1, relayVersion: compat.VERSION, protocol: compat.PROTOCOL, bridge: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', history: !!this.available.history,
       takeover: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off',
       sessionBrowser: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', reasoning: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off',
+      work: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', subagents: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', commands: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off',
       workspace: !!this.available.workspace, desktop: !!this.available.desktop, push: !!this.push?.configured, transcribeLanguage: true, limits: LIMITS };
   }
   authenticate(req) {
@@ -442,6 +445,20 @@ class MobileRelay {
   async dispatch(device, op, args) {
     const bridge = this.bridge(device);
     switch (op) {
+      case 'plan': case 'toolCalls': case 'subagents': case 'subagentTail': case 'steerSubagent': case 'interruptSubagent': case 'commands': {
+        // This allowlist crosses mobile -> runtime: validate here, before any bridge binding or request.
+        if (typeof args.profile !== 'string' || !PROFILE_NAME.test(args.profile)) throw fail('bad_request', 'Explicit profile required');
+        if (op === 'commands') return bridge.commandCatalog(args.profile);
+        if (typeof args.sid !== 'string' || !/^[\x21-\x7e]{1,512}$/.test(args.sid)) throw fail('bad_request', 'Invalid session ID');
+        const options = { profile: args.profile };
+        if (['plan', 'toolCalls', 'subagents'].includes(op)) return bridge[op](args.sid, options);
+        if (typeof args.id !== 'string' || !/^[\x21-\x7e]{1,128}$/.test(args.id)) throw fail('bad_request', 'Invalid sub-agent ID');
+        if (op === 'steerSubagent') {
+          if (typeof args.text !== 'string' || !args.text.trim() || args.text.length > 32000) throw fail('bad_request', 'Invalid guidance text');
+          return bridge.steerSubagent(args.sid, args.id, args.text, options);
+        }
+        return bridge[op](args.sid, args.id, options);
+      }
       case 'sessions': return bridge.sessions(args);
       case 'sessionPage': case 'sessionIndex':
         if ('archived' in args && typeof args.archived !== 'boolean' || 'force' in args && typeof args.force !== 'boolean' || 'offset' in args && (!Number.isSafeInteger(args.offset) || args.offset < 0)) throw fail('bad_request', 'Invalid session index arguments');
