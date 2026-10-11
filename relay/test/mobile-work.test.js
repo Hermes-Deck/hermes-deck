@@ -2,6 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { MobileRelay } = require('../src/mobile');
@@ -14,7 +15,7 @@ const argsFor = op => op === 'commands' ? { profile: 'research' } : {
   ...(op === 'steerSubagent' ? { text: 'Focus on tests' } : {}),
 };
 function setup(t, configured = false) {
-  const dir = fs.mkdtempSync(path.join(process.env.TMPDIR, 'mobile-work-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mobile-work-'));
   const mobile = new MobileRelay({ tokensFile: path.join(dir, 'devices.json'), bridgeConfig: configured ? { mode: 'local' } : { mode: 'off' } });
   t.after(async () => { await mobile.stop(); fs.rmSync(dir, { recursive: true, force: true }); });
   return mobile;
@@ -24,7 +25,7 @@ test('work capability flags require a configured bridge', t => {
     const mobile = setup(t, configured);
     for (const flag of ['work', 'subagents', 'commands']) assert.equal(mobile.capabilities()[flag], configured);
   }
-  const absent = new MobileRelay({ tokensFile: path.join(process.env.TMPDIR, `mobile-${crypto.randomUUID()}.json`) });
+  const absent = new MobileRelay({ tokensFile: path.join(os.tmpdir(), `mobile-${crypto.randomUUID()}.json`) });
   t.after(() => absent.stop());
   assert.equal(absent.capabilities().work, false);
 });

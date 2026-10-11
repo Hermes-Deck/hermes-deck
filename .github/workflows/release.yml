@@ -91,7 +91,7 @@ jobs:
     if: needs.version.outputs.release == 'true'
     runs-on: ${{ matrix.os }}
     permissions:
-      contents: read
+      contents: write # attaches the installers to the draft release (no Actions artifacts: they count against storage)
     strategy:
       fail-fast: false
       matrix:
@@ -122,15 +122,30 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false" # unsigned builds: never pick up a keychain certificate
 
-      - uses: actions/upload-artifact@v7
-        with:
-          name: hermes-deck-${{ runner.os }}
-          path: |
-            app/dist/*.exe
-            app/dist/*.dmg
-            app/dist/*.zip
-          if-no-files-found: error
-          retention-days: 7
+      # Installers go straight to the draft release instead of Actions artifacts: a private repository's artifact
+      # storage quota fills up after a few releases (~650 MB per run) and then blocks every release. Drafts are never
+      # listed by releases/latest, so installed Decks do not see the files until the release job publishes them.
+      - name: Attach installers to the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          shopt -s nullglob
+          files=(dist/*.exe dist/*.dmg dist/*.zip)
+          [ ${#files[@]} -gt 0 ] || { echo "::error::No installers in app/dist"; exit 1; }
+          state() { gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq 'if .isDraft then "draft" else "published" end' 2>/dev/null || echo none; }
+          # Both matrix jobs may try to create the draft; the loser sees it on the next look.
+          for i in 1 2 3 4 5 6; do
+            case "$(state)" in
+              draft) break ;;
+              published) echo "::error::Release $TAG is already published. Bump app/package.json for a new build."; exit 1 ;;
+              none) gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --title "Hermes Deck $TAG" \
+                      --notes "Building…" --target "$GITHUB_SHA" || sleep $((i * 5)) ;;
+            esac
+          done
+          [ "$(state)" = draft ] || { echo "::error::Could not create or find the draft release $TAG"; exit 1; }
+          gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
 
   release:
     name: Publish release
@@ -146,11 +161,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: hermes-deck-*
-          path: release
-          merge-multiple: true
+      - name: Installers from the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          mkdir -p release
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir release \
+            --pattern '*.exe' --pattern '*.dmg' --pattern '*.zip'
+          ls -la release
 
       - name: Source archive
         env:
@@ -236,7 +255,7 @@ jobs:
                 --title "Hermes Deck $TAG" --notes-file notes.md --target "$GITHUB_SHA" ;;
             draft)
               echo "Draft $TAG exists: replacing its files and notes"
-              gh release upload "$TAG" release/* --repo "$GITHUB_REPOSITORY" --clobber
+              gh release upload "$TAG" release/SHA256SUMS.txt release/hermes-deck-*-source.tar.gz --repo "$GITHUB_REPOSITORY" --clobber
               gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md --target "$GITHUB_SHA" ;;
             *)
               echo "::error::Release $TAG was published while this run was building. Bump app/package.json for a new build."
