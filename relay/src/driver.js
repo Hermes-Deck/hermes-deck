@@ -16,6 +16,7 @@ const { execFile } = require("child_process");
 const { randomUUID } = require("node:crypto");
 const { risky, preview, advance } = require("./risky-commands");
 const wire = require("./driver-wire");
+const { hermesPython } = require("./hermes-python");
 const devtokens = require("./devtokens");
 const { McpFence, checkCall, checkSpaceCall, lines, toolError, filterListing, appsAnswer, fenceGrant, int } = require("./mcpfence");
 const { McpHttpBridge } = require("./space-mcp");
@@ -171,7 +172,7 @@ function driverConfig(env = process.env) {
     sockPath: env.DECK_DRIVER_SOCK || wire.defaultSockPath(deckHome),
     cuDir: path.join(deckHome, "cu"),
     tokensFile: env.DECK_DEVICE_TOKENS || path.join(path.dirname(envFile), "devices.json"),
-    hermesPython: wire.expandHome(env.DECK_HERMES_PYTHON) || (fs.existsSync(venvPython) ? venvPython : ""),
+    hermesPython: hermesPython({ configured: [["DECK_HERMES_PYTHON", wire.expandHome(env.DECK_HERMES_PYTHON)]], venv: venvPython, exists: fs.existsSync, warn: (m) => console.warn("deck-relay driver:", m) }),
     desktopHost: /^(1|true|yes|on)$/i.test(String(env.DECK_DESKTOP_HOST || "").trim()),
     stickyMs: Math.max(30, Math.min(900, Number.isFinite(stickySec) ? stickySec : 120)) * 1000,
   };
@@ -1041,7 +1042,7 @@ class Driver {
   lease(profile, hold) {
     return new Promise((resolve) => {
       if (!wire.PROFILE_RE.test(profile)) return resolve({ code: 400, body: { ok: false, error: "bad profile name" } });
-      if (!this.o.hermesPython) return resolve({ code: 503, body: { ok: false, error: "DECK_HERMES_PYTHON is not set in the relay's .env" } });
+      if (!this.o.hermesPython) return resolve({ code: 503, body: { ok: false, error: "Hermes' Python not found; set DECK_HERMES_PYTHON in the relay's .env" } });
       const args = [this.o.leaseScript, "--profile", profile, hold ? "--hold" : "--release"];
       execFile(this.o.hermesPython, args, { timeout: this.o.leaseTimeoutMs, maxBuffer: 64 * 1024, windowsHide: true }, (err, stdout) => {
         let out = null;

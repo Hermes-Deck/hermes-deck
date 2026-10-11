@@ -69,7 +69,7 @@ function fakes({ root = null, latest = "0.3.6", releases = {}, broken = [], fail
   const assets = (v) => [{ id: `${v}-sums`, name: "SHA256SUMS.txt" }, { id: `${v}-src`, name: `hermes-deck-${v}-source.tar.gz` }, { id: `${v}-exe`, name: `Hermes-Deck-${v}-Setup.exe` }];
   const deps = {
     env: { ...env },
-    fs,
+    fs: { ...fs, lstatSync: (p, o) => fs.lstatSync(p === "/opt/py" ? process.execPath : p, o) }, // the configured Hermes Python exists
     node: "node",
     platform: "linux",
     uid: 1000,
@@ -480,6 +480,19 @@ test("--restart-queue keeps earlier entries and replaces a profile's older reaso
   assert.strictEqual(await U.main(["apply", "--root", root, "--with-plugin", "--restart-queue", queue], f.deps), 0);
   const q = JSON.parse(fs.readFileSync(queue, "utf8"));
   assert.deepStrictEqual(q.map((x) => [x.profile, x.reason]), [["other", "plugin 0.3.5"], ["default", "plugin 0.3.6"]]);
+});
+
+test("a configured Hermes Python that no longer exists falls back to Hermes' own venv, with a warning", async () => {
+  const root = installRoot(["0.3.6"]);
+  const hermes = pluginHermes(root, [["default", "0.3.5"]]);
+  fs.mkdirSync(path.join(root, "releases", "0.3.6", "hermes-plugin", "hermes-deck"), { recursive: true });
+  const venv = path.join(hermes, "hermes-agent", "venv", "bin", "python");
+  fs.mkdirSync(path.dirname(venv), { recursive: true });
+  fs.writeFileSync(venv, "");
+  const f = fakes({ root, hermesRoot: hermes, env: { HERMES_ROOT: hermes, DECK_HERMES_PYTHON: "/opt/gone/bin/python" } });
+  assert.strictEqual(await U.main(["plugin", "--root", root], f.deps), 0, f.logs.join("\n"));
+  assert.deepStrictEqual(f.calls.filter((c) => c.includes("install.py")).map((c) => c.split(" ")[0]), [venv, venv]);
+  assert.match(f.logs.join("\n"), /DECK_HERMES_PYTHON=\/opt\/gone\/bin\/python does not exist; ignoring it/);
 });
 
 test("plugin subcommand: runs only the current release's installer and writes plugin status", async () => {
@@ -1024,6 +1037,21 @@ test("copyState skips *.tmp files and entries that vanish while it copies", () =
   U.copyState({ fs: { ...fs, lstatSync } }, from, path.join(base, "out"));
   assert.deepStrictEqual(tree(path.join(base, "out")), { "keep.json": "1", [path.join("sub", "keep.json")]: "2" });
   assert.throws(() => U.copyState({ fs: { ...fs, lstatSync: () => { throw Object.assign(new Error("EACCES"), { code: "EACCES" }); } } }, from, path.join(base, "out2")), /EACCES/);
+});
+
+test("adopt leaves state the service keeps outside the checkout where it is, and says so", async () => {
+  const host = checkoutHost({ platform: "darwin" });
+  const state = path.join(host.base, "deck-state");
+  fs.mkdirSync(path.join(state, "data"), { recursive: true });
+  fs.writeFileSync(path.join(state, "data", "checkpoint.json"), '{"n":7}');
+  fs.writeFileSync(host.plist, fs.readFileSync(host.plist, "utf8").replace("<key>OTHER</key>", `<key>DECK_DATA_DIR</key><string>${state}/data</string><key>DECK_RELAY_ENV</key><string>${host.relay}/.env</string><key>OTHER</key>`));
+  const s = serviceFakes(host);
+  await U.adopt(s.deps, { checkout: host.checkout, dry: true });
+  assert.match(s.logs.join("\n"), new RegExp(`state kept outside the checkout stays where it is; .*: DECK_DATA_DIR=${state.replace(/[.\\/]/g, "\\$&")}/data$`, "m"), "only the outside path is listed");
+  await U.adopt(s.deps, { checkout: host.checkout });
+  assert.strictEqual(fs.readFileSync(path.join(state, "data", "checkpoint.json"), "utf8"), '{"n":7}');
+  assert.match(fs.readFileSync(host.plist, "utf8"), new RegExp(`<key>DECK_DATA_DIR</key><string>${state.replace(/[.\\/]/g, "\\$&")}/data</string>`), "the service still points the relay at it");
+  assert.strictEqual(s.dir(), path.join(host.root, "current", "relay"));
 });
 
 test("adopt --dry-run reads the service and changes nothing", async () => {

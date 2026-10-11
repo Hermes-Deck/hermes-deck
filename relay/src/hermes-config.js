@@ -17,6 +17,7 @@ const { execFile, spawn } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { hermesPython } = require("./hermes-python");
 
 const PROFILE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const SCRIPT = path.join(__dirname, "..", "tools", "hermes-config.py");
@@ -55,7 +56,7 @@ function readBody(req, max = BODY_MAX) {
 function hermesConfigOptions(env = process.env) {
   const home = os.homedir();
   const venv = path.join(home, ".hermes", "hermes-agent", "venv", "bin", "python");
-  const python = env.DECK_HERMES_PYTHON || env.DECK_MOBILE_BRIDGE_PYTHON || (fs.existsSync(venv) ? venv : "");
+  const python = hermesPython({ configured: [["DECK_HERMES_PYTHON", env.DECK_HERMES_PYTHON], ["DECK_MOBILE_BRIDGE_PYTHON", env.DECK_MOBILE_BRIDGE_PYTHON]], venv, exists: fs.existsSync, warn: (m) => console.warn("deck-relay hermes config:", m) });
   return {
     enabled: !/^(0|false|no|off)$/i.test(String(env.DECK_HERMES_CONFIG ?? "").trim()),
     python,

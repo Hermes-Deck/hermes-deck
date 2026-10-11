@@ -85,7 +85,7 @@ file named by `DECK_RELAY_ENV`); restart it to apply changes.
 | `DECK_FALLBACK_BROWSER_CDP`, `DECK_FALLBACK_BROWSER_CDP_AGENT` | Attach one already running loopback CDP browser to one agent (owner defaults to `DECK_CDP_DEFAULT_AGENT`) |
 | `DECK_HOST_NAME` | Agent-host label in the Workspace host picker |
 | `DECK_DESKTOP_HOST` | `1` lets desktop control fall back to the agent host's own screen; default off |
-| `DECK_HERMES_PYTHON` | Hermes' Python for the Bot Desktop lease and Settings › Hermes config; auto-detects `~/.hermes/hermes-agent/venv/bin/python` (Hermes config also falls back to `DECK_MOBILE_BRIDGE_PYTHON`) |
+| `DECK_HERMES_PYTHON` | Hermes' Python for the Bot Desktop lease and Settings › Hermes config; auto-detects `~/.hermes/hermes-agent/venv/bin/python` (Hermes config also falls back to `DECK_MOBILE_BRIDGE_PYTHON`); a set path that no longer exists is skipped with a warning |
 | `DECK_HERMES_CONFIG`, `HERMES_AGENT_DIR`, `DECK_HERMES_BIN` | Settings › Hermes config: `0` turns it off; Hermes' install directory when it is not the folder around that Python's venv; the `hermes` command for Restart gateway (default `hermes` on PATH); also the gateway restarts after a host update (fallback `~/.local/bin/hermes`) |
 | `DECK_CUA_DRIVER` | The real cua-driver `deck-cua` runs for the agent-host route; default `cua-driver` on PATH |
 | `DECK_SPACES`, `DECK_SPACESD_URL`, `DECK_SPACESD_TOKEN_FILE` | Agent spaces ([agent-spaces.md](agent-spaces.md)) |

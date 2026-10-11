@@ -125,8 +125,13 @@ test("restart: gateway runs `hermes gateway restart` once at a time; relay exits
 test("options: off switch, Python fallbacks, supervisor detection", () => {
   assert.strictEqual(hermesConfigOptions({ DECK_HERMES_CONFIG: "0" }).enabled, false);
   assert.strictEqual(hermesConfigOptions({}).enabled, true);
-  assert.strictEqual(hermesConfigOptions({ DECK_MOBILE_BRIDGE_PYTHON: "/m/py" }).python, "/m/py");
-  assert.strictEqual(hermesConfigOptions({ DECK_HERMES_PYTHON: "/h/py", DECK_MOBILE_BRIDGE_PYTHON: "/m/py" }).python, "/h/py");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "deck-hcfg-py-"));
+  const [h, m] = ["h-py", "m-py"].map((n) => path.join(dir, n));
+  for (const p of [h, m]) fs.writeFileSync(p, "");
+  assert.strictEqual(hermesConfigOptions({ DECK_MOBILE_BRIDGE_PYTHON: m }).python, m);
+  assert.strictEqual(hermesConfigOptions({ DECK_HERMES_PYTHON: h, DECK_MOBILE_BRIDGE_PYTHON: m }).python, h);
+  assert.strictEqual(hermesConfigOptions({ DECK_HERMES_PYTHON: path.join(dir, "gone"), DECK_MOBILE_BRIDGE_PYTHON: m }).python, m, "a configured path that no longer exists is skipped");
+  assert.strictEqual(hermesConfigOptions({ DECK_HERMES_PYTHON: "python3" }).python, "python3", "a bare command name is looked up on PATH");
   assert.strictEqual(hermesConfigOptions({ INVOCATION_ID: "abc" }).supervised, true);
   assert.strictEqual(hermesConfigOptions({}).supervised, false);
 });

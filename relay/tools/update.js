@@ -16,6 +16,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { withQueue } = require("../src/queue-file");
+const { hermesPython } = require("../src/hermes-python");
 
 const API = "https://api.github.com";
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
@@ -457,8 +458,12 @@ async function serviceFor(deps, env, relayDir, to) {
       throw new Error(`the launchd agent ${file} does not run ${relayDir}; point it at ${to} yourself (docs/updating.md)`);
     }
     const domain = `gui/${deps.uid}`;
+    const envDict = /<key>EnvironmentVariables<\/key>\s*<dict>([\s\S]*?)<\/dict>/.exec(before);
+    const vars = {};
+    for (const m of (envDict ? envDict[1] : "").matchAll(/<key>([^<]+)<\/key>\s*<string>([^<]*)<\/string>/g)) vars[xmlText(m[1])] = xmlText(m[2]);
     return {
       name: `launchd agent ${label}`,
+      env: vars,
       change: `${file}: ${relayDir} -> ${to}`,
       before,
       stop: async () => {
@@ -503,6 +508,8 @@ async function adopt(deps, { root = null, checkout, dry = false, healthTimeoutMs
   const step = stepper(deps, dry);
   const url = healthUrl(env);
   deps.log(`adopt ${checkout} as the install root ${root}; the ${svc.name} moves there${dry ? " — dry run, nothing is changed" : ""}`);
+  const outside = stateOutside({ ...env, ...deps.env, ...(svc.env || {}) }, relayDir);
+  if (outside.length) deps.log(`state kept outside the checkout stays where it is; the service keeps pointing the relay at it: ${outside.join(", ")}`);
   status({ step: "adopt", state: "running" });
   let stopped = false;
   try {
@@ -544,6 +551,16 @@ async function adopt(deps, { root = null, checkout, dry = false, healthTimeoutMs
   }
   deps.log(dry ? "Dry run: nothing was changed." : `relay ${version} runs from ${to}; the checkout ${checkout} is no longer used by the service.`);
   return { root, version };
+}
+
+/** Settings that put relay state outside relay/ (.env.example): adopt leaves that state where it is. */
+const STATE_VARS = ["DECK_RELAY_ENV", "DECK_DATA_DIR", "DECK_AGENTS", "DECK_DEVICE_TOKENS"];
+function stateOutside(vars, relayDir) {
+  return STATE_VARS.filter((k) => {
+    if (!vars[k]) return false;
+    const rel = path.relative(relayDir, path.resolve(relayDir, vars[k]));
+    return rel.startsWith("..") || path.isAbsolute(rel);
+  }).map((k) => `${k}=${vars[k]}`);
 }
 
 /** A status or queue file inside the checkout's relay/data moves with the data to <root>/shared/data. */
@@ -699,7 +716,7 @@ async function updatePlugin(deps, { releaseDir, env, dry, noDowngrade = false, r
     if (!profiles.length) return { profiles, changed: [] };
   }
   const venv = path.join(hermesRoot, "hermes-agent", "venv", "bin", "python");
-  const python = env.DECK_HERMES_PYTHON || (exists(deps, venv) ? venv : "python3");
+  const python = hermesPython({ configured: [["DECK_HERMES_PYTHON", env.DECK_HERMES_PYTHON]], venv, exists: (p) => exists(deps, p), fallback: "python3", warn: (m) => deps.log(`plugin: ${m}`) });
   const installer = path.join(releaseDir, "hermes-plugin", "hermes-deck", "install.py");
   const args = [installer, "--home", hermesRoot, ...profiles.flatMap((p) => ["--profile", p])];
   const step = stepper(deps, dry);

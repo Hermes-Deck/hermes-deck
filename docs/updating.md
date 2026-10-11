@@ -101,6 +101,10 @@ relay's `.env`), else `~/.local/share/hermes-deck-relay`. `adopt` does the follo
 
 The checkout is never changed. After `adopt` the service no longer uses it, so you can keep it or delete it.
 
+State that the service keeps outside the checkout through `DECK_RELAY_ENV`, `DECK_DATA_DIR`, `DECK_AGENTS` or
+`DECK_DEVICE_TOKENS` (in the service's environment or the relay's `.env`) is not moved: the service keeps those
+settings, so the relay goes on using that state, and `adopt` lists those paths before it starts.
+
 ### Converting a checkout without its service (init)
 
 `init` makes the install root but leaves the service alone. Run this from the checkout you are converting. Do a dry
@@ -170,7 +174,8 @@ running work, so it prints the commands for you to run at a quiet moment (`herme
 `hermes -p <profile> gateway restart`).
 
 The Hermes root is `HERMES_ROOT`, otherwise `~/.hermes`. The Python used is `DECK_HERMES_PYTHON`, otherwise
-`<HERMES_ROOT>/hermes-agent/venv/bin/python` if it exists, otherwise `python3`.
+`<HERMES_ROOT>/hermes-agent/venv/bin/python` if it exists, otherwise `python3`. A `DECK_HERMES_PYTHON` path that no
+longer exists (Hermes reinstalled elsewhere) is skipped with a warning in the log.
 
 ### Updating from the app
 
