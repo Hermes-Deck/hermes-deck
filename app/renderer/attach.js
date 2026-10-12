@@ -12,7 +12,8 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
 //  - Photos go as compressed photos unless "Send as file" is ticked. A running upload shows its
 //    progress and can be cancelled.
 //  - Both channels take any file (paste, drop, picker; screenshots, video, text, PDF...). Telegram uploads them
-//    one by one; direct Hermes sends the whole tray with the message through its bounded host method.
+//    one by one; direct Hermes sends the whole tray with the message through its bounded host method, or, when the
+//    relay and the plugin share the host's upload spool, streams each file to the relay first (with progress and Cancel).
 //    A window capture (the explicit "▣" button) is just one more tray item: an image plus its window text.
 (() => {
   const NS = "http://www.w3.org/2000/svg";
@@ -329,21 +330,43 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     }
 
     // progress from main: {t: "upload", token, p}; only the bar is touched, so a fast upload stays cheap
+    function paint(it) {
+      const el = tray.querySelector(`.att[data-token="${CSS.escape(it.token)}"]`);
+      if (!el) return;
+      const pct = Math.round((it.p || 0) * 100);
+      const fill = el.querySelector(".att-fill");
+      if (fill) fill.style.width = `${pct}%`;
+      const bar = el.querySelector(".att-bar");
+      if (bar) bar.setAttribute("aria-valuenow", String(pct));
+      const c = el.querySelector(".att-cancel");
+      if (c && !c.disabled) i18nBind(c, "textContent", "U0689", { pct: pct });
+    }
+    // A direct Hermes send whose files go through the relay (large attachments): {t: "upload", token, p, hermes: true}
+    // per file, then {done: true}. The chip shows the bar and Cancel like a Telegram upload; done resets it (a sent
+    // message clears the tray anyway).
+    function hermesProgress(m) {
+      for (const list of trays.values()) {
+        const it = list.find((x) => x.token === m.token);
+        if (!it) continue;
+        const busy = it.state === "sending" || it.state === "canceling";
+        if (m.done) {
+          if (busy) { it.state = null; it.p = null; render(); }
+          continue;
+        }
+        it.p = typeof m.p === "number" ? m.p : it.p;
+        if (!busy) { it.state = "sending"; render(); }
+        else paint(it);
+      }
+    }
     deck.onTelegram((m) => {
-      if (!m || m.t !== "upload" || m.token !== current) return;
+      if (!m || m.t !== "upload") return;
+      if (m.hermes) return hermesProgress(m);
+      if (m.token !== current) return;
       for (const list of trays.values()) {
         const it = list.find((x) => x.token === m.token);
         if (!it || it.state !== "sending") continue;
         it.p = m.p;
-        const el = tray.querySelector(`.att[data-token="${CSS.escape(it.token)}"]`);
-        if (!el) continue;
-        const pct = Math.round(m.p * 100);
-        const fill = el.querySelector(".att-fill");
-        if (fill) fill.style.width = `${pct}%`;
-        const bar = el.querySelector(".att-bar");
-        if (bar) bar.setAttribute("aria-valuenow", String(pct));
-        const c = el.querySelector(".att-cancel");
-        if (c && !c.disabled) i18nBind(c, "textContent", "U0689", { pct: pct });
+        paint(it);
       }
     });
 

@@ -11,6 +11,7 @@ The home is inferred from the installed entry point.
 Only the Hermes Deck schema and runtime layout are supported.
 """
 import argparse
+import hashlib
 import json
 import os
 import time
@@ -36,8 +37,13 @@ TRANSCRIBE_LINE_MAX = 25 * 1024 * 1024 * 4 // 3 + 64 * 1024
 TRANSCRIBE_TIMEOUT = 110
 FILE_METHOD = "deck.file_read"
 FILE_TIMEOUT = 20
+# deck.attach_staged (large attachments the relay staged on this host's disk; observer.py attach_staged) is a small line
+# whose reply can wait for a copy of up to 4 GB across filesystems (a rename is instant): 300 s, equal to
+# observer.STAGED_TIMEOUT and app/main/bridge.js TIMING.staged.
+STAGED_METHOD = "deck.attach_staged"
+STAGED_TIMEOUT = 300
 LINE_MAX = {ATTACH_METHOD: ATTACH_LINE_MAX, TRANSCRIBE_METHOD: TRANSCRIBE_LINE_MAX}
-DEADLINES = {ATTACH_METHOD: ATTACH_TIMEOUT, TRANSCRIBE_METHOD: TRANSCRIBE_TIMEOUT, FILE_METHOD: FILE_TIMEOUT}
+DEADLINES = {ATTACH_METHOD: ATTACH_TIMEOUT, TRANSCRIBE_METHOD: TRANSCRIBE_TIMEOUT, FILE_METHOD: FILE_TIMEOUT, STAGED_METHOD: STAGED_TIMEOUT}
 # A dictation can take a minute on a CPU-only host: like native.* it gets its own short-lived control connection and
 # its own thread, so it never holds up the ordered queue (prompts, approvals) or the persistent gateway socket.
 # deck.file_read stays on the persistent connection: its per-connection read budget (observer.ReadBudget) only means
@@ -49,10 +55,46 @@ RUNTIME_DIR = "hermes-deck"
 # The product version (root compat.json; relay/test/compat.test.js keeps these equal) and the wire protocol, which
 # changes only on a breaking change. deck.version answers with them here, without asking Hermes: this file is also
 # installed alone as <home>/hermes-deck/stream.py, so it carries its own copy. Apps before 0.3.6 never ask.
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 PROTOCOL = 1
 VERSION_METHOD = "deck.version"
 CONNECTION_ID = "hermes"
+# Large attachments: the spool folder shared with the relay and its same-host id. Kept equal to observer.py
+# upload_dir / machine_id / upload_host_id (this file is also installed alone; test_attach_staged.py checks both).
+UPLOAD_DIR_ENV = "HERMES_DECK_UPLOAD_DIR"
+STAGED_FEATURE = "attach_staged"
+
+
+def upload_dir(environ=None):
+    environ = os.environ if environ is None else environ
+    return Path(environ.get(UPLOAD_DIR_ENV) or Path.home()/".hermes-deck"/"uploads").expanduser()
+
+
+def machine_id(read=None, hostname=None):
+    read = read or (lambda name: Path(name).read_text(encoding="utf-8"))
+    for name in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+        try:
+            value = str(read(name)).strip()
+        except (OSError, ValueError):
+            continue
+        if value:
+            return value
+    return (hostname or socket.gethostname)()
+
+
+def upload_host_id(machine, real_dir):
+    return hashlib.sha256(f"hermes-deck-uploads\0{machine}\0{real_dir}".encode("utf-8")).hexdigest()[:16]
+
+
+def upload_host(directory=None, machine=None):
+    """The spool's same-host id (the folder is created, mode 0700, so the relay and this side hash one real path)."""
+    directory = Path(directory) if directory is not None else upload_dir()
+    try:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        directory.chmod(0o700)
+        return upload_host_id(machine or machine_id(), os.path.realpath(directory))
+    except OSError:
+        return None
 
 
 def _session_key(profile, sid):
@@ -339,7 +381,8 @@ def collect_registered_nodes(home, now=None, alive=None):
     return nodes
 
 
-def endpoint(home, pid=None):
+def control_record(home, pid=None):
+    """(control socket path, process record) of the live observer endpoint() picks, else (None, None)."""
     home = Path(home).resolve()
     preferred = pid
     if preferred is None:
@@ -356,11 +399,33 @@ def endpoint(home, pid=None):
                         or not alive(data.get("pid")) or time.time()-data["updated_at"]>45
                         or path.parent!=base or not path.name.startswith(f"control-{data['pid']}-") or not path.exists()):
                     continue
-                if preferred == data["pid"]: return path
-                candidates.append(path)
+                if preferred == data["pid"]: return path, data
+                candidates.append((path, data))
             except (OSError, ValueError, KeyError, TypeError, RuntimeError):
                 continue
-    return candidates[0] if candidates and pid is None else None
+    return candidates[0] if candidates and pid is None else (None, None)
+
+
+def endpoint(home, pid=None):
+    return control_record(home, pid)[0]
+
+
+def staged_supported(home):
+    """True when the gateway's live observer (the process that answers ordinary requests) serves deck.attach_staged:
+    after a plugin update, a gateway still running the old code must not be offered staged files until it restarts."""
+    _, record = control_record(home)
+    features = record.get("features") if isinstance(record, dict) else None
+    return isinstance(features, list) and STAGED_FEATURE in features
+
+
+def version_reply(home):
+    """deck.version, answered here without asking Hermes: {version, protocol} and, when staged uploads work on this
+    host, uploads {v: 1, host} (the spool's same-host id; the Deck compares it with the relay's)."""
+    result = {"version": VERSION, "protocol": PROTOCOL}
+    host = upload_host() if staged_supported(home) else None
+    if host:
+        result["uploads"] = {"v": 1, "host": host}
+    return result
 
 
 def relay_requests(home, incoming, emit):
@@ -508,7 +573,7 @@ def relay_requests(home, incoming, emit):
             if len(line)>limit: raise ValueError("Request too large")
             if request.get("method") == VERSION_METHOD:
                 if "id" in request:
-                    emit({"jsonrpc":"2.0","id":request["id"],"result":{"version":VERSION,"protocol":PROTOCOL}})
+                    emit({"jsonrpc":"2.0","id":request["id"],"result":version_reply(home)})
                 continue
             if str(request.get("method","")).startswith("native.") or request.get("method") in ONE_SHOT:
                 threading.Thread(target=request_control,args=(request,),daemon=True).start()

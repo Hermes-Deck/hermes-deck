@@ -31,6 +31,7 @@ const { loadIdentity } = require("./browser-bundle");
 
 const { MobileRelay } = require("./mobile");
 const { MobilePushClient } = require("./mobile-push");
+const { UploadSpool, uploadConfig } = require("./uploads"); // large attachments: disk spool shared with the plugin
 
 const compat = require("./compat"); // product version, wire protocol, each profile's plugin version
 const { HermesStore } = require("./history");
@@ -116,6 +117,8 @@ function config(env = process.env, mem = os.totalmem()) {
     safety: { auditEnv: { DECK_AUDIT: env.DECK_AUDIT, DECK_AUDIT_DAYS: env.DECK_AUDIT_DAYS, DECK_SNAPSHOT_KEEP: env.DECK_SNAPSHOT_KEEP }, riskyPatternsFile: env.DECK_RISKY_PATTERNS_FILE || null },
     desktops: desktopsConfig(env, mem),
     hermesConfig: hermesConfigOptions(env),
+    // large attachments (uploads.js): DECK_UPLOAD_DIR, DECK_UPLOAD_MAX_FILE, DECK_UPLOAD_MAX_TOTAL, DECK_UPLOAD_MIN_FREE
+    uploads: uploadConfig(env),
   };
 }
 
@@ -417,7 +420,11 @@ async function start(cfg) {
 
   if (spaces) spaces.endSpace = (profile) => driver?.endSpace(profile);
 
-  const mobile = new MobileRelay({ tokensFile: cfg.mobileDevicesFile || path.join(cfg.dataDir, "mobile-devices.json"), bridgeConfig: cfg.mobileBridge, push: new MobilePushClient(), capabilities: { history: !!history, workspace: !!workspace && !!fallback?.available, desktop: false } });
+  // Large attachments: config() names the spool folder (DECK_UPLOAD_DIR, default ~/.hermes-deck/uploads, shared with the
+  // plugin); a hand-built cfg without one (tests) keeps it under its own dataDir.
+  const uploadCfg = cfg.uploads && cfg.uploads.dir ? cfg.uploads : { ...uploadConfig({}), ...(cfg.uploads || {}), dir: path.join(cfg.dataDir, "uploads") };
+  const uploads = new UploadSpool(uploadCfg).start();
+  const mobile = new MobileRelay({ uploads, tokensFile: cfg.mobileDevicesFile || path.join(cfg.dataDir, "mobile-devices.json"), bridgeConfig: cfg.mobileBridge, push: new MobilePushClient(), capabilities: { history: !!history, workspace: !!workspace && !!fallback?.available, desktop: false } });
   const host = { protocol: compat.PROTOCOL, plugins: compat.pluginCache(cfg.hermesRoot || null), update: () => compat.updateStatus(cfg.dataDir) };
   const { HostUpdate } = require("./host-update");
   const { Restarts } = require("./restarts");
@@ -439,7 +446,7 @@ async function start(cfg) {
   });
   let quitRelay = null; // set by the entry point below: stop, then exit so the service manager starts the relay again
   const hermesConfig = new HermesConfig({ ...(cfg.hermesConfig || hermesConfigOptions({})), root: cfg.hermesRoot || (cfg.hermesConfig || {}).root, quit: () => (quitRelay ? quitRelay() : null) });
-  const srv = createServer({ hermesConfig, hostUpdate, mobile, host, token: cfg.token, queryToken: !!cfg.queryToken, model, fleet, version: VERSION, hooks: deckHooks(presence, gateway, driver, workspace, bundles, spaces, spaceTunnel), history, plans, bundles });
+  const srv = createServer({ hermesConfig, hostUpdate, mobile, host, uploads, token: cfg.token, queryToken: !!cfg.queryToken, model, fleet, version: VERSION, hooks: deckHooks(presence, gateway, driver, workspace, bundles, spaces, spaceTunnel), history, plans, bundles });
   broadcast = srv.broadcast;
   if (workspace) workspace.setBroadcast(srv.broadcast);
 
@@ -536,6 +543,7 @@ async function start(cfg) {
       if (workspace) workspace.stop();
       transfers.stop();
       if (gateway) gateway.stop();
+      uploads.stop(); // running uploads are aborted (their .part files are deleted)
       const closing = [mobile.stop(), driver ? driver.stop() : Promise.resolve()]; // ends driver sessions before their decks go
       if (fallback) closing.push(fallback.stopAll()); // resolves once its browsers have exited
       for (const ws of srv.clients) ws.terminate();
@@ -571,7 +579,7 @@ async function start(cfg) {
     }
   }
   mobile.available.desktop = driverUp;
-  return { setQuit: (fn) => { quitRelay = fn; }, hermesConfig, server: srv.server, port: srv.server.address().port, cdpPort, model, fleet, usage, presence, gateway, workspace, fallback, bundles, transfers, driver: driverUp ? driver : null, desktops, spaceTunnel, stop };
+  return { setQuit: (fn) => { quitRelay = fn; }, hermesConfig, server: srv.server, port: srv.server.address().port, cdpPort, model, fleet, usage, presence, gateway, workspace, fallback, bundles, transfers, driver: driverUp ? driver : null, desktops, spaceTunnel, uploads, mobile, stop };
 }
 
 /**

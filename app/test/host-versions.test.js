@@ -131,9 +131,12 @@ async function versionOf(t, flags) {
 }
 
 test("deck.version over the direct connection: a 0.3.6+ plugin answers, an older one is legacy", async (t) => {
-  assert.deepEqual(await versionOf(t, ["--plugin-version", "0.3.6"]), { version: "0.3.6", protocol: 1 });
-  assert.deepEqual(await versionOf(t, ["--plugin-version", "0.3.6:2"]), { version: "0.3.6", protocol: 2 });
+  assert.deepEqual(await versionOf(t, ["--plugin-version", "0.3.6"]), { version: "0.3.6", protocol: 1, uploads: null });
+  assert.deepEqual(await versionOf(t, ["--plugin-version", "0.3.6:2"]), { version: "0.3.6", protocol: 2, uploads: null });
   assert.deepEqual(await versionOf(t, []), { legacy: true });
+  // a plugin that takes staged uploads names its spool's same-host id; anything but 16 hex is ignored
+  assert.deepEqual(await versionOf(t, ["--plugin-version", "1.3.2", "--upload-host", "0123456789abcdef"]), { version: "1.3.2", protocol: 1, uploads: { v: 1, host: "0123456789abcdef" } });
+  assert.deepEqual(await versionOf(t, ["--plugin-version", "1.3.2", "--upload-host", "../etc"]), { version: "1.3.2", protocol: 1, uploads: null });
 });
 
 test("hostUpdate from the hello and from relay pushes reaches state().update; a lost relay clears it", () => {

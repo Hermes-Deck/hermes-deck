@@ -12,7 +12,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const media = require("./media");
-const { safeName, sniffImage, isRisky, extFor, mb } = media;
+const { safeName, sniffImage, isRisky, extFor, mb, human } = media;
 
 const MAX_UPLOAD = 2000 * 1024 * 1024; // Telegram's per-file limit for an ordinary account (4000 × 512 KB parts)
 const MAX_PHOTO = 10 * 1024 * 1024; // larger photos are refused as photos by Telegram; they go as files
@@ -30,7 +30,7 @@ const MSG = {
   get badPath() { return i18nText("U0008"); },
   get notFile() { return i18nText("U0009"); },
   get empty() { return i18nText("U0010"); },
-  tooBig: (n) => i18nText("U0011", { n: mb(n) }),
+  tooBig: (n, max = MAX_UPLOAD) => i18nText("U0011", { n: mb(n), max: human(max) }),
   pasteBig: (n) => i18nText("U0012", { n: mb(n) }),
   get pasteType() { return i18nText("U0013"); },
   get tooMany() { return i18nText("U0014", { MAX_STAGED: MAX_STAGED }); },
@@ -78,6 +78,9 @@ class AttachStore {
     this.preview = preview;
     this.draftDir = draftDir;
     this.now = now;
+    // The largest file the picker/drop accepts: Telegram's limit, or the relay's per-file limit for direct Hermes
+    // chats when it is larger (main sets it from the relay's hello; the send checks the exact channel limit again).
+    this.maxUpload = MAX_UPLOAD;
     this.draftItems = new Map();
     if (draftDir) this._loadDrafts();
   }
@@ -210,7 +213,8 @@ class AttachStore {
     }
     if (!st.isFile()) throw new Error(MSG.notFile);
     if (st.size <= 0) throw new Error(MSG.empty);
-    if (st.size > MAX_UPLOAD) throw new Error(MSG.tooBig(st.size));
+    const max = Math.max(MAX_UPLOAD, this.maxUpload || 0);
+    if (st.size > max) throw new Error(MSG.tooBig(st.size, max));
     try {
       await fs.promises.access(p, fs.constants.R_OK);
     } catch {
@@ -253,15 +257,7 @@ class AttachStore {
    */
   async hermesFiles(tokens) {
     const L = media.HERMES_ATTACH;
-    if (!Array.isArray(tokens) || !tokens.length) throw new Error(MSG.gone);
-    if (tokens.length > L.files) throw new Error(i18nText("attach.hermesTooMany", { n: L.files }));
-    const items = [...new Set(tokens)].map((t) => this.get(t));
-    let total = 0;
-    for (const it of items) {
-      if (it.size > L.file) throw new Error(i18nText("attach.hermesFileTooBig", { name: it.name, n: mb(L.file) }));
-      total += it.size;
-    }
-    if (total > L.total) throw new Error(i18nText("attach.hermesTotalTooBig", { n: mb(L.total) }));
+    const items = this._hermesChecked(tokens, L).map(([it]) => it);
     const files = [];
     for (const it of items) {
       let buf = it.buffer;
@@ -273,10 +269,44 @@ class AttachStore {
         }
       }
       if (!buf.length) throw new Error(`${it.name}: ${MSG.empty}`);
-      if (buf.length > L.file) throw new Error(i18nText("attach.hermesFileTooBig", { name: it.name, n: mb(L.file) })); // grew since it was staged
+      if (buf.length > L.file) throw new Error(i18nText("attach.hermesFileTooBig", { name: it.name, n: human(L.file) })); // grew since it was staged
       files.push({ filename: it.name, content_base64: buf.toString("base64") });
     }
     return { items, files };
+  }
+
+  /**
+   * The staged items for the relay upload path (large attachments, hermes-uploads.js), checked against the relay's
+   * limits ({files, file, total}) without reading them: a path-backed item is stat'ed again and carries its current
+   * size (the relay checks every byte against it). Throws the same readable messages as hermesFiles.
+   */
+  hermesItems(tokens, limits) {
+    return this._hermesChecked(tokens, limits, (it) => {
+      if (it.buffer) return it.size;
+      let st;
+      try {
+        st = fs.statSync(it.path);
+      } catch {
+        throw new Error(`${it.name}: ${MSG.badPath}`);
+      }
+      if (!st.isFile()) throw new Error(`${it.name}: ${MSG.notFile}`);
+      if (st.size <= 0) throw new Error(`${it.name}: ${MSG.empty}`);
+      return st.size;
+    }).map(([it, size]) => ({ ...it, size }));
+  }
+
+  /** [[item, size]] for the tokens, or a readable error on the first file over `L.file` and on a total over `L.total`. */
+  _hermesChecked(tokens, L, sizeOf = (it) => it.size) {
+    if (!Array.isArray(tokens) || !tokens.length) throw new Error(MSG.gone);
+    if (tokens.length > L.files) throw new Error(i18nText("attach.hermesTooMany", { n: L.files }));
+    const sized = [...new Set(tokens)].map((t) => this.get(t)).map((it) => [it, sizeOf(it)]);
+    let total = 0;
+    for (const [it, size] of sized) {
+      if (size > L.file) throw new Error(i18nText("attach.hermesFileTooBig", { name: it.name, n: human(L.file) }));
+      total += size;
+    }
+    if (total > L.total) throw new Error(i18nText("attach.hermesTotalTooBig", { n: human(L.total) }));
+    return sized;
   }
 
   get(token) {

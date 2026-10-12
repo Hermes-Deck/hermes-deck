@@ -33,6 +33,8 @@ function tokenOk(req, token, queryToken = false) {
  *   POST /fleet/quotas/refresh (Bearer token or mobile token) force a quota refresh through the plugins; >= 30 s apart
  *   GET /snapshot | /fleet | /tokens?range=24h|7d|14d|30d|all (or legacy ?days=N) | /session/<sid>   (Bearer token)
  *   GET|POST /hermes/config[/schema], /hermes/restart   (Bearer token, never a mobile token; hermes-config.js)
+ *   POST /uploads, PUT|DELETE /uploads/<id>   (Bearer header, never a mobile token; uploads.js) large attachments
+ *                              streamed to the disk spool; the hello carries `uploads: {v, host, files, fileBytes, totalBytes}`
  *   POST /host/update | /host/restart (Bearer header + desktop device token + live desktop; host-update.js)
  *   GET /session/<sid>/plan    (Bearer token) {sid, plan, stored}: the latest plan, live or rebuilt from state.db (plan.js)
  *   GET /session/<sid>/messages | /session/<sid>/tools | /session/<sid>/call/<id> | /message/<id>/full   (Bearer token; history.js)
@@ -43,7 +45,7 @@ function tokenOk(req, token, queryToken = false) {
  * onHttp(req, res, url) -> true when it answered an authenticated request (bot screen: /desktop/*, /cu/*; spaces: /spaces*).
  * onUpgrade(req, socket, head, url) -> true when it took a relay-token WebSocket under /spaces/ (the space viewer).
  */
-function createServer({ token, model, fleet, version, hooks = null, history = null, plans = null, queryToken = false, bundles = null, mobile = null, host = null, hermesConfig = null, hostUpdate = null }) {
+function createServer({ token, model, fleet, version, hooks = null, history = null, plans = null, queryToken = false, bundles = null, mobile = null, host = null, hermesConfig = null, hostUpdate = null, uploads = null }) {
   const started = Date.now();
   // Host versions (compat.js): protocol, each profile's plugin version, the updater's last check. `v` stays first
   // and unchanged: apps before 0.3.6 read only `v` (as "the newest app version" signal).
@@ -103,6 +105,13 @@ function createServer({ token, model, fleet, version, hooks = null, history = nu
     if (url.pathname.startsWith("/hermes/")) {
       if (mobileAuth || !tokenOk(req, token, false)) return json(res, 403, { error: "relay bearer required" });
       if (hermesConfig && hermesConfig.onHttp(req, res, url)) return;
+      return json(res, 404, { error: "not found" });
+    }
+    // Large attachments (uploads.js): the desktop app streams a file to the relay's disk spool, then names its id to the
+    // plugin (deck.attach_staged). Relay token in the header only, never a mobile token (phones use /mobile/uploads).
+    if (url.pathname === "/uploads" || url.pathname.startsWith("/uploads/")) {
+      if (mobileAuth || !tokenOk(req, token, false)) return json(res, 403, { error: "relay bearer required" });
+      if (uploads && uploads.onHttp(req, res, url)) return;
       return json(res, 404, { error: "not found" });
     }
     if (["/host/update", "/host/restart"].includes(url.pathname) && !tokenOk(req, token, false)) return json(res, 401, { error: "relay bearer required" });
@@ -219,7 +228,10 @@ function createServer({ token, model, fleet, version, hooks = null, history = nu
         if (msg.t === "ping") ws.send(JSON.stringify({ t: "pong", now: Date.now() / 1000 }));
         if (msg.t === "resync") ws.send(JSON.stringify({ t: "snapshot", ...snapshot() }));
       });
-      ws.send(JSON.stringify({ t: "hello", v: version, ...hostInfo(), now: Date.now() / 1000 }));
+      // uploads: the spool's same-host id and limits (only here, never on the public /health); the desktop app uses the
+      // relay upload path only when the plugin's deck.version reports the same host id.
+      const spool = uploads ? uploads.hello() : null;
+      ws.send(JSON.stringify({ t: "hello", v: version, ...hostInfo(), ...(spool ? { uploads: spool } : {}), now: Date.now() / 1000 }));
       ws.send(JSON.stringify({ t: "snapshot", ...snapshot() }));
       if (hooks) hooks.onConnect(ws); // Workspace tab: sends the current {t:"devices"} state
     });
@@ -241,6 +253,9 @@ function createServer({ token, model, fleet, version, hooks = null, history = nu
     }
   }, 30_000);
   server.on("close", () => clearInterval(heartbeat));
+  // A 2 GB upload can take longer than Node's default 300 s limit for receiving a whole request. Upload bodies have
+  // their own idle timeout (uploads.js IDLE_MS); headers keep Node's headersTimeout, other bodies are size-bounded.
+  server.requestTimeout = 0;
 
   function broadcast(msg) {
     if (!clients.size) return;

@@ -86,9 +86,12 @@ function cachedSize(file) {
 }
 
 const mb = (n) => `${(n / 1024 / 1024).toFixed(n >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
+/** A limit in words: "25 MB", "2 GB", "4 GB" (GB from 1 GiB up, one decimal only when needed). */
+const human = (n) => (n >= 1024 ** 3 ? `${Number((n / 1024 ** 3).toFixed(1))} GB` : mb(n));
 
 // What one direct-Hermes message may carry (deck.attach_submit). hermes-plugin/hermes-deck/observer.py
-// ATTACH_* must stay equal: the plugin enforces the same numbers again.
+// ATTACH_* must stay equal: the plugin enforces the same numbers again. Larger files go through the relay's disk spool
+// instead (deck.attach_staged, hermes-uploads.js) with the limits the relay announces (2 GB per file by default).
 const HERMES_ATTACH = Object.freeze({ files: 10, file: 25 * 1024 * 1024, total: 50 * 1024 * 1024 });
 
-module.exports = { MAX_FULL, INLINE_IMAGE, RISKY_EXT, HERMES_ATTACH, safeName, extFor, sniffImage, isRisky, writeAtomic, cachedSize, mb };
+module.exports = { MAX_FULL, INLINE_IMAGE, RISKY_EXT, HERMES_ATTACH, safeName, extFor, sniffImage, isRisky, writeAtomic, cachedSize, mb, human };

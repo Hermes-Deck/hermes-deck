@@ -187,7 +187,10 @@ the message is queued.
 - **Attachments.** **Attach file**, drag and drop, or paste. Files are staged in a tray above the composer; images
   get a preview. Hermes chats send the whole tray with the message; Telegram uploads files one by one (photos as
   compressed photos unless sent as files). The renderer never sees file paths; the main process holds them.
-  *Limits (Hermes):* 10 files, 25 MB each, 50 MB per message, enforced by both app and plugin.
+  *Limits (Hermes):* 10 files, 2 GB each and 4 GB per message when the relay and the Hermes plugin on that host share
+  the upload spool (files are streamed to the relay with progress and Cancel; see
+  [Large attachments](relay.md#large-attachments)); otherwise 25 MB each and 50 MB per message. App and plugin both
+  enforce them.
 - **Window capture.** **Attach window capture** adds an image and the text of your frontmost window to the tray
   (Windows and macOS; also **Ctrl+Alt+P** / **⌃⌥P**). Deck hides briefly while capturing; nothing is sent
   automatically. Deck's own window and password managers are refused. On macOS this uses the verified cua-driver

@@ -50,7 +50,7 @@ function harness() {
       if (name === "./desktop") return { quit: () => app.quit(), cancelQuit() { cancellations++; }, observe() {}, applySettings() {}, notify: (_kind, payload) => notices.push(payload) };
       if (name === "./cua") return { killAll() {}, cancelQuit() { cuaCancellations++; } };
       if (name === "./history") return { register() {} };
-      if (!name.startsWith("./") || ["./telegram", "./ipc-guard", "./attach", "./media"].includes(name)) return req(name);
+      if (!name.startsWith("./") || ["./telegram", "./ipc-guard", "./attach", "./media", "./hermes-uploads"].includes(name)) return req(name);
       return stub;
     },
     __dirname: path.dirname(main), console: { error() {}, log() {} }, URL, Response, Buffer,

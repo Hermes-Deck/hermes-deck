@@ -30,6 +30,7 @@ import asyncio
 import re
 import base64
 import binascii
+import errno
 import shutil
 import stat as statmod
 import tempfile
@@ -237,6 +238,321 @@ def submit_attachments(request, dispatch, transport):
     finally:
         if not accepted:
             undo()
+
+
+# --- deck.attach_staged: large attachments through the relay's disk spool -----------------------------------------
+# The Deck streamed each file over HTTP to the relay on this host, which wrote it to <spool>/<id>.bin plus <id>.json
+# ({v, id, name, mime, size, created, expires}; relay/src/uploads.js). This request is small: it names only the 48-hex
+# ids. No path ever comes from the client: the spool folder is this host's own (HERMES_DECK_UPLOAD_DIR, default
+# ~/.hermes-deck/uploads, the relay's DECK_UPLOAD_DIR), and each entry must be a regular file of this user whose size
+# equals its metadata. A small image still goes to the model as pixels (image.attach_bytes, exactly as
+# deck.attach_submit); every other file is MOVED (never read into memory) into the session's attachments folder under
+# Hermes' own naming and referenced with the same `@file:` ref Hermes' file.attach builds. stream.py advertises the
+# spool's same-host id in deck.version only when the live gateway's observer lists this feature (FEATURES).
+STAGED_METHOD = "deck.attach_staged"
+STAGED_TIMEOUT = 300     # stream.py DEADLINES: a cross-filesystem copy of up to 4 GB; app/main/bridge.js TIMING.staged
+STAGED_IMAGE_MAX = ATTACH_FILE_MAX       # an image up to Hermes' image.attach_bytes cap goes as pixels
+UPLOAD_DIR_ENV = "HERMES_DECK_UPLOAD_DIR"
+FEATURES = ("attach_staged",)            # in this process's snapshot file; stream.py reads it (staged_supported)
+_UPLOAD_ID = re.compile(r"[a-f0-9]{48}")
+_UPLOAD_META_MAX = 4096
+_COPY_CHUNK = 1024 * 1024
+# Hermes' own attachment helpers (tui_gateway/prompt_attachments.py, published onto tui_gateway.server by its
+# register() -> method_ctx.bind_module) and the session lookup its attach methods use (server._sess_building).
+_STAGED_HELPERS = ("_sess_building", "_session_home_dir", "_attachment_ref_path", "_format_ref_value", "_sanitize_attachment_name")
+
+
+def upload_dir(environ=None):
+    """The spool folder shared with the relay (relay/src/uploads.js uploadConfig)."""
+    environ = os.environ if environ is None else environ
+    return Path(environ.get(UPLOAD_DIR_ENV) or Path.home() / ".hermes-deck" / "uploads").expanduser()
+
+
+def machine_id(read=None, hostname=None):
+    """/etc/machine-id, then /var/lib/dbus/machine-id, then the host name (relay/src/uploads.js machineId)."""
+    read = read or (lambda name: Path(name).read_text(encoding="utf-8"))
+    for name in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+        try:
+            value = str(read(name)).strip()
+        except (OSError, ValueError):
+            continue
+        if value:
+            return value
+    return (hostname or socket.gethostname)()
+
+
+def upload_host_id(machine, real_dir):
+    """Same-host proof shared with the relay (uploads.js hostIdFrom): 16 hex of sha256(tag, machine id, real folder)."""
+    return hashlib.sha256(f"hermes-deck-uploads\0{machine}\0{real_dir}".encode("utf-8")).hexdigest()[:16]
+
+
+def upload_host(directory=None, machine=None):
+    """The spool's same-host id (creates the folder, mode 0700, so both sides hash one real path); None if unusable."""
+    directory = Path(directory) if directory is not None else upload_dir()
+    try:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        directory.chmod(0o700)
+        return upload_host_id(machine or machine_id(), os.path.realpath(directory))
+    except OSError:
+        return None
+
+
+class StagedError(ValueError):
+    """A staged upload that cannot be used; the message names what is wrong (never a path)."""
+
+
+_NOFOLLOW = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+
+
+def _open_staged(spool, upload):
+    """(fd, stat) of <spool>/<upload>.bin: opened without following a link, a regular file of this user, its size equal
+    to the size in <upload>.json. Anything else is refused."""
+    try:
+        mfd = os.open(spool / f"{upload}.json", _NOFOLLOW)
+    except OSError:
+        raise StagedError("Upload missing or expired") from None
+    try:
+        st = os.fstat(mfd)
+        if not statmod.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_size > _UPLOAD_META_MAX:
+            raise StagedError("Invalid upload")
+        meta = json.loads(os.read(mfd, _UPLOAD_META_MAX + 1))
+    except (OSError, ValueError) as exc:
+        raise StagedError(str(exc) if isinstance(exc, StagedError) else "Invalid upload") from None
+    finally:
+        os.close(mfd)
+    if (not isinstance(meta, dict) or meta.get("v") != 1 or meta.get("id") != upload
+            or type(meta.get("size")) is not int or meta["size"] < 1):
+        raise StagedError("Invalid upload")
+    expires = meta.get("expires")
+    if isinstance(expires, (int, float)) and not isinstance(expires, bool) and expires < time.time() * 1000:
+        raise StagedError("Upload expired")
+    try:
+        fd = os.open(spool / f"{upload}.bin", _NOFOLLOW)
+    except OSError:
+        raise StagedError("Upload missing or not a regular file") from None
+    try:
+        st = os.fstat(fd)
+        if not statmod.S_ISREG(st.st_mode) or st.st_uid != os.getuid():
+            raise StagedError("Upload is not a regular file of this user")
+        if st.st_size != meta["size"]:
+            raise StagedError("Upload size does not match its metadata")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd, st
+
+
+def _read_all(fd, size):
+    """A small staged file (an image up to STAGED_IMAGE_MAX) in memory, read from the checked descriptor."""
+    parts, offset = [], 0
+    while offset < size:
+        chunk = os.pread(fd, min(_COPY_CHUNK, size - offset), offset)
+        if not chunk:
+            break
+        parts.append(chunk)
+        offset += len(chunk)
+    if offset != size:
+        raise StagedError("Upload changed while it was read")
+    return b"".join(parts)
+
+
+def _unique_target(root, name):
+    """An exclusive placeholder root/name, then root/<stem>-2<suffix>, ... (Hermes' naming in
+    prompt_attachments._stage_session_file_attachment): (path, fd of the empty placeholder)."""
+    stem, suffix = Path(name).stem or "attachment", Path(name).suffix
+    target, counter = root / name, 2
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    while True:
+        try:
+            return target, os.open(target, flags, 0o600)
+        except FileExistsError:
+            target = root / f"{stem}-{counter}{suffix}"
+            counter += 1
+
+
+def _move_into(fd, st, source, root, name):
+    """Moves the checked spool file into root under a unique name: rename over our own empty placeholder (atomic, no
+    copy); across filesystems (EXDEV) a 1 MiB-chunk copy from the checked descriptor, fsync, then the spool copy goes.
+    Returns the target path."""
+    root.mkdir(parents=True, exist_ok=True)
+    target, out = _unique_target(root, name)
+    try:
+        try:
+            os.rename(source, target)
+            moved = os.stat(target, follow_symlinks=False)
+            if (moved.st_dev, moved.st_ino) != (st.st_dev, st.st_ino):
+                raise StagedError("Upload changed while it was moved")
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise
+            copied = 0
+            while True:
+                chunk = os.pread(fd, _COPY_CHUNK, copied)
+                if not chunk:
+                    break
+                view = memoryview(chunk)
+                while view:
+                    view = view[os.write(out, view):]
+                copied += len(chunk)
+            if copied != st.st_size:
+                raise StagedError("Upload changed while it was copied")
+            os.fsync(out)
+            os.unlink(source)
+    except BaseException:
+        try:
+            os.unlink(target)
+        except OSError:
+            pass
+        raise
+    finally:
+        os.close(out)
+    return target
+
+
+def _drop_spool(spool, upload):
+    """The spool entry is consumed: delete whatever is left of it (the relay's sweep never sees it again)."""
+    for ext in (".bin", ".json"):
+        try:
+            os.unlink(spool / f"{upload}{ext}")
+        except OSError:
+            pass
+
+
+def staged_helpers(server):
+    """Hermes' attachment helpers when this Hermes has them all, else None (older Hermes: native fallback)."""
+    helpers = {name: getattr(server, name, None) for name in _STAGED_HELPERS}
+    return helpers if all(callable(f) for f in helpers.values()) else None
+
+
+def attach_staged(request, dispatch, transport, server=None, spool=None):
+    """One user send with files the relay staged on this host's disk; same prompt, defaults and undo as
+    submit_attachments. A failure detaches the images already queued; files already moved stay in the session's
+    attachments folder (as file.attach leaves them); spool entries not consumed yet are left for the Deck to delete."""
+    rid, p = request.get("id"), request.get("params", {})
+    error = lambda message, code=4000: {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": message}}
+    if (not isinstance(p, dict) or set(p) != {"session_id", "text", "files"}
+            or not isinstance(p["session_id"], str) or not re.fullmatch(r"[\x21-\x7e]{1,512}", p["session_id"])
+            or not isinstance(p["text"], str) or len(p["text"]) > ATTACH_TEXT_MAX
+            or not isinstance(p["files"], list) or not 0 < len(p["files"]) <= ATTACH_MAX_FILES):
+        return error("Invalid attachment request")
+    entries, seen = [], set()
+    for entry in p["files"]:
+        if (not isinstance(entry, dict) or set(entry) != {"upload", "filename"}
+                or not isinstance(entry["upload"], str) or not _UPLOAD_ID.fullmatch(entry["upload"]) or entry["upload"] in seen
+                or not isinstance(entry["filename"], str) or not _ATTACH_NAME.fullmatch(entry["filename"])
+                or not entry["filename"].strip(". ")):
+            return error("Invalid attachment")
+        seen.add(entry["upload"])
+        entries.append((entry["upload"], entry["filename"]))
+    if server is None:
+        from tui_gateway import server
+    spool = Path(spool) if spool is not None else upload_dir()
+    native = lambda method, params: dispatch({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}, transport=transport)
+    sid, opened = p["session_id"], []
+    try:
+        for upload, filename in entries:
+            try:
+                fd, st = _open_staged(spool, upload)
+            except StagedError as exc:
+                return error(f"{exc}: {filename}")
+            opened.append((upload, filename, fd, st))
+        helpers = staged_helpers(server)
+        session = None
+        if helpers:
+            # The same lookup Hermes' own attach methods use: a session whose agent is still being built is resolved
+            # (its attachments folder needs only creation-time fields) and its build is started, never waited for.
+            session, err = helpers["_sess_building"]({"session_id": sid}, rid)
+            if err:
+                return err
+        else:
+            # An older Hermes without the helpers: what its native methods take today (<= 25 MB per file, in memory).
+            big = next((f for _, f, _, st in opened if st.st_size > ATTACH_FILE_MAX), None)
+            if big is not None:
+                return error("This Hermes version takes at most 25 MB per file from Hermes Deck; update Hermes to send "
+                             "larger files: " + big)
+        return _submit_staged(p, sid, opened, spool, helpers, session, native, error)
+    finally:
+        for _, _, fd, _ in opened:
+            os.close(fd)
+
+
+def _submit_staged(p, sid, opened, spool, helpers, session, native, error):
+    queued, refs = [], []
+
+    def undo():
+        for path in queued:
+            try:
+                native("image.detach", {"session_id": sid, "path": path})
+            except Exception:
+                logger.warning("Hermes Deck bridge: could not detach a queued image", exc_info=True)
+
+    try:
+        for upload, filename, fd, st in opened:
+            ext = _image_ext(os.pread(fd, 16, 0))
+            if ext and st.st_size <= STAGED_IMAGE_MAX:
+                b64 = base64.b64encode(_read_all(fd, st.st_size)).decode("ascii")
+                reply = native("image.attach_bytes", {"session_id": sid, "content_base64": b64, "filename": (Path(filename).stem or "image") + ext})
+                result = reply.get("result") if isinstance(reply, dict) else None
+                if not isinstance(reply, dict) or "error" in reply:
+                    undo()
+                    return reply if isinstance(reply, dict) else error("Hermes image attachment is unavailable")
+                if not isinstance(result, dict) or result.get("attached") is not True or not isinstance(result.get("path"), str):
+                    undo()
+                    return error("Hermes did not accept the image")
+                queued.append(result["path"])
+            elif helpers:
+                root = Path(helpers["_session_home_dir"](session, "attachments"))
+                target = _move_into(fd, st, spool / f"{upload}.bin", root, helpers["_sanitize_attachment_name"](filename))
+                refs.append("@file:" + helpers["_format_ref_value"](helpers["_attachment_ref_path"](session, target)))
+            else:
+                b64 = base64.b64encode(_read_all(fd, st.st_size)).decode("ascii")
+                reply = native("file.attach", {"session_id": sid, "name": filename, "data_url": "data:application/octet-stream;base64," + b64})
+                result = reply.get("result") if isinstance(reply, dict) else None
+                if not isinstance(reply, dict) or "error" in reply:
+                    undo()
+                    return reply if isinstance(reply, dict) else error("Hermes file attachment is unavailable")
+                if (not isinstance(result, dict) or result.get("attached") is not True
+                        or not isinstance(result.get("ref_text"), str) or not result["ref_text"].strip()):
+                    undo()
+                    return error("Hermes did not accept the file")
+                refs.append(result["ref_text"].strip())
+            _drop_spool(spool, upload)
+    except StagedError as exc:
+        undo()
+        return error(str(exc))
+    except OSError:
+        undo()
+        logger.warning("Hermes Deck bridge: a staged attachment could not be moved", exc_info=True)
+        return error("The attachment could not be moved into the session", 5000)
+    except BaseException:
+        undo()
+        raise
+    text = p["text"].strip() or ATTACH_DEFAULT_TEXT
+    prompt = "\n\n".join([text, "\n".join(refs)] if refs else [text])
+    accepted = False
+    try:
+        response = native("prompt.submit", {"session_id": sid, "text": prompt})
+        accepted = isinstance(response, dict) and "result" in response and "error" not in response
+        return response if isinstance(response, dict) else error("Hermes submit is unavailable")
+    finally:
+        if not accepted:
+            undo()
+
+
+def staged_reply(request, owner, emit, server=None, spool=None):
+    """deck.attach_staged on its own thread (a copy across filesystems can take minutes; the connection's reader must
+    stay free for approvals and interrupts), with the connection's transport bound like the inline attach methods."""
+    if server is None:
+        from tui_gateway import server
+    from tui_gateway.transport import bind_transport, reset_transport
+    token = bind_transport(owner)
+    try:
+        emit(attach_staged(request, server.dispatch, owner, server=server, spool=spool))
+    except Exception:
+        logger.warning("Hermes Deck bridge: staged attachments unavailable", exc_info=True)
+        emit({"jsonrpc": "2.0", "id": request.get("id"), "error": {"code": 5000, "message": "Hermes Deck staged attachments unavailable"}})
+    finally:
+        reset_transport(token)
 
 
 # --- request size limits per method -------------------------------------------------------------------------
@@ -1776,7 +2092,7 @@ class Observer:
         with self.lock:
             return json.loads(json.dumps(dict(schema=SCHEMA, pid=self.pid,
                 sequence=self.sequence, updated_at=self.clock(), control_socket=self.control_socket,
-                nodes=self.nodes)))
+                features=list(FEATURES), nodes=self.nodes)))
 
     @staticmethod
     def _gateway_running(agent):
@@ -2158,6 +2474,11 @@ class Observer:
                             token = bind_transport(connection_fanout)
                             try: peer.write((submit_appshot if method == "deck.appshot" else submit_attachments)(request, server.dispatch, connection_fanout))
                             finally: reset_transport(token)
+                        elif method == STAGED_METHOD:
+                            # files the relay staged on this host's disk: moved, never read whole; off the reader thread
+                            context = contextvars.copy_context()
+                            threading.Thread(target=context.run, args=(staged_reply, request, connection_fanout, peer.write, server),
+                                             name="hermes-deck-staged", daemon=True).start()
                         elif method in {INDEX_METHOD, UPDATE_METHOD, PLAN_METHOD}:
                             # a store read can take seconds on a big state.db: off the connection's reader thread
                             handler = (session_index if method == INDEX_METHOD else session_update if method == UPDATE_METHOD

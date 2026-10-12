@@ -37,6 +37,7 @@ const { projectMedia } = require("./media-refs");
 const { fetchImage, fetchAudio } = require("./media-fetch");
 // file attachments (A7): staging, validation and upload errors (main/attach.js)
 const { AttachStore, checkCaption, uploadError, progressTracker, MAX_PHOTO, MAX_STAGED } = require("./attach");
+const hermesUploads = require("./hermes-uploads"); // large attachments for direct Hermes chats: through the relay's disk spool
 // Workspace tab: device presence (hosting switches, heartbeat) + agent browsers and their CDP tunnel
 const { DevicePresence } = require("./presence");
 const { initWorkspace } = require("./workspace");
@@ -178,6 +179,8 @@ function setRelay(s) {
 
 function relayMsg(r, m) {
   if (m && m.t === "hostUpdate" && hostVersions) { hostVersions.hostUpdate(m); return; } // update progress, restart rows
+  // large attachments: the picker/drop accepts files up to the relay's per-file limit (the send checks the channel again)
+  if (m && m.t === "hello") attachments.maxUpload = (r.uploads && r.uploads.fileBytes) || 0;
   if (m && m.t === "hello" && hostVersions && !hostVersions.relayHello(m)) {
     // a relay speaking another wire protocol: stop this connection only (the banner says why); version drift never stops it.
     // The hello still goes out: its `v` may announce a newer app that speaks the relay's protocol (desktop.js).
@@ -459,16 +462,46 @@ ipc.handle("bridge:send", (e, sid, text, o) => trackMutation(async () => {
   const typed = bText(text).trim();
   if (!tokenList.length) return needBridge().send(bSid(sid), bText(text), { profile: bProfile(o) });
   for (const t of tokenList) if (uploads.has(t)) throw new Error(i18nText("attach.hermesAlreadySending"));
+  const b = needBridge();
+  // Large attachments (hermes-uploads.js): through the relay's disk spool when the relay and the plugin share it,
+  // with the relay's limits (2 GB per file by default); else the old single-line path (25 MB per file).
+  const route = await hermesUploads.pickRoute(relay, b);
+  if (route) return sendViaRelay(b, route, sid, typed, tokenList, o);
   const { items, files } = await attachments.hermesFiles(tokenList);
   const captures = items.filter((x) => x.appshotText).map((x) => x.appshotText);
   const prompt = [typed, ...captures].filter(Boolean).join("\n\n");
   for (const it of items) uploads.set(it.token, { isCanceled: false });
   try {
-    const result = await needBridge().send(bSid(sid), prompt, { profile: bProfile(o), files });
+    const result = await b.send(bSid(sid), prompt, { profile: bProfile(o), files });
     for (const it of items) attachments.discard(it.token);
     return result;
   } finally { for (const it of items) uploads.delete(it.token); }
 }));
+// Running relay uploads of direct Hermes sends: cancelled from the chip (tg:upload-cancel) or when the app quits.
+const relayUploads = new Set();
+async function sendViaRelay(b, route, sid, typed, tokenList, o) {
+  const items = attachments.hermesItems(tokenList, route.limits); // checked against the relay's limits, nothing read
+  const captures = items.filter((x) => x.appshotText).map((x) => x.appshotText);
+  const prompt = [typed, ...captures].filter(Boolean).join("\n\n");
+  const controller = new AbortController();
+  // the chip's Cancel sets isCanceled (tg:upload-cancel); here that aborts the running upload
+  const cancel = { get isCanceled() { return controller.signal.aborted; }, set isCanceled(v) { if (v) controller.abort(); } };
+  const trackers = new Map(items.map((it) => [it.token, progressTracker((p) => send("tg", { t: "upload", token: it.token, p, hermes: true }))]));
+  for (const it of items) uploads.set(it.token, cancel);
+  relayUploads.add(controller);
+  try {
+    const result = await hermesUploads.sendStaged({ relay: route.relay, bridge: b, items, sid: bSid(sid), text: prompt, profile: bProfile(o),
+      signal: controller.signal, progress: (token, p) => trackers.get(token)(p) });
+    for (const it of items) attachments.discard(it.token);
+    return result;
+  } finally {
+    relayUploads.delete(controller);
+    for (const it of items) {
+      uploads.delete(it.token);
+      send("tg", { t: "upload", token: it.token, p: null, hermes: true, done: true });
+    }
+  }
+}
 ipc.handle("bridge:create", (_e, o) => needBridge().create({ profile: bProfile(o) || "default" })); // a click on "New session"
 ipc.handle("bridge:discard", (_e, sid) => needBridge().discard(bSid(sid))); // untouched New session, no transcript deletion
 function resumeRailUnload() {
@@ -1309,6 +1342,8 @@ function resumeQuit(attempt) {
 app.on("before-quit", (e) => {
   if (e.defaultPrevented) return cancelQuit();
   const attempt = quitAttempt || (quitAttempt = { waiting: false });
+  // a running relay upload (large attachment) is cancelled: nothing was sent to Hermes yet, the relay deletes it
+  for (const controller of relayUploads) controller.abort();
   if (outboundMutations.size) {
     // Observe other listeners cancelling this same attempt, including while our own barrier holds it.
     const prevent = e.preventDefault;

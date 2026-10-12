@@ -473,6 +473,11 @@ function answer(method, p) {
     case "deck.attach_submit":
       if (typeof p.session_id !== "string" || !p.session_id.startsWith("rpc-")) return err(4001, "session not found");
       return ok({ status: flag("busy") ? "queued" : "streaming" });
+    case "deck.attach_staged": // like the plugin: spool ids only, never a path (observer.py attach_staged)
+      if (!value("upload-host", "")) return err(-32601, "Unsupported Hermes Deck control");
+      if (typeof p.session_id !== "string" || !p.session_id.startsWith("rpc-")) return err(4001, "session not found");
+      if (!Array.isArray(p.files) || !p.files.every((f) => f && /^[a-f0-9]{48}$/.test(f.upload))) return err(4000, "Invalid staged attachment");
+      return ok({ status: flag("busy") ? "queued" : "streaming" });
     case "native.steer":
     case "native.redirect":
     case "native.interrupt": {
@@ -552,7 +557,8 @@ function answer(method, p) {
     }
     case "deck.version": // --plugin-version X[:protocol] answers like stream.py 0.3.6+; without it: an older plugin (-32601)
       if (!value("plugin-version", "")) return err(-32601, "Unsupported Hermes Desk control");
-      return ok({ version: value("plugin-version", "").split(":")[0], protocol: Number(value("plugin-version", "").split(":")[1] || 1) });
+      // --upload-host <16 hex>: a plugin that takes staged uploads (deck.attach_staged) from a spool with this host id
+      return ok({ version: value("plugin-version", "").split(":")[0], protocol: Number(value("plugin-version", "").split(":")[1] || 1), ...(value("upload-host", "") ? { uploads: { v: 1, host: value("upload-host", "") } } : {}) });
     case "request.answer":
       if (typeof p.id !== "string" || !p.result || typeof p.result !== "object") return err(4002, "id and an object result required");
       return ok({ status: open.delete(p.id) ? "ok" : "expired" });

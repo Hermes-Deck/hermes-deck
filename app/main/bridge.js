@@ -27,6 +27,12 @@ const ATTACH_PARAMS_LIMIT = Math.ceil((HERMES_ATTACH.total * 4) / 3) + 256 * 102
 // accepts up to 25 MB, observer.py TRANSCRIBE_*). The other bounded-large method besides deck.attach_submit.
 const TRANSCRIBE_METHOD = "deck.transcribe";
 const FILE_METHOD = "deck.file_read";
+// deck.attach_staged: large attachments. The file bytes went to the relay's disk spool over HTTP (relay /uploads); this
+// small request only names their 48-hex ids and the plugin on the same host moves the files into the session
+// (observer.py attach_staged). Its reply can wait for a cross-filesystem copy of up to 4 GB: TIMING.staged.
+const STAGED_METHOD = "deck.attach_staged";
+const UPLOAD_ID_RE = /^[a-f0-9]{48}$/;
+const UPLOAD_HOST_RE = /^[a-f0-9]{16}$/;
 const TRANSCRIBE_AUDIO_MAX = 25 * 1024 * 1024;
 const TRANSCRIBE_PARAMS_LIMIT = Math.ceil((TRANSCRIBE_AUDIO_MAX * 4) / 3) + 64 * 1024;
 const FILE_CHUNK_MAX = 1024 * 1024; // deck.file_read: one chunk (observer.py FILE_CHUNK_MAX)
@@ -47,6 +53,9 @@ const LIVE_ACTIVITY_MAX = 256; // sessions whose latest plan / tool calls this c
 const TIMING = {
   request: 15000, // per request; the error says it may have completed
   attach: 180000, // a request carrying files: tens of MB through the pipe (ssh), then the host stages them
+  // staged files (deck.attach_staged): the plugin renames each file into the session (instant on one filesystem) or, across
+  // filesystems, copies up to 4 GB at ~20+ MB/s; the plugin's own deadline (stream.py DEADLINES) is the same 300 s
+  staged: 300000,
   transcribe: 120000, // dictation: a clip through the pipe, then Hermes' STT (local Whisper may load its model first)
   write: 3000, // a stalled pipe tears the connection down
   attachWrite: 120000, // the same, while such a request is being written
@@ -79,7 +88,7 @@ const READS = ["deck.version", "session.list", "deck.session_index", "session.me
 // composer's "/" suggestions; the Deck asks it for one profile only, never with a session (no resume as a side effect).
 // deck.reasoning_view ("Show thinking") flips the in-memory show_reasoning flag of one runtime session this Deck created
 // or resumed (the plugin checks the session's transport is its own socket); it writes no file and no other session.
-const MUTATIONS = ["session.create", "session.resume", "deck.takeover", "prompt.submit", "deck.attach_submit", "native.steer", "native.redirect", "native.interrupt", "session.interrupt", "config.set", "request.answer", "session.title", "session.delete", "session.close", "deck.session_update", "session.archive", "session.branch_stored", "deck.reasoning_view", "subagent.steer", "subagent.interrupt"];
+const MUTATIONS = ["session.create", "session.resume", "deck.takeover", "prompt.submit", "deck.attach_submit", "deck.attach_staged", "native.steer", "native.redirect", "native.interrupt", "session.interrupt", "config.set", "request.answer", "session.title", "session.delete", "session.close", "deck.session_update", "session.archive", "session.branch_stored", "deck.reasoning_view", "subagent.steer", "subagent.interrupt"];
 const METHODS = new Set([...READS, ...MUTATIONS]);
 // Hermes Desktop's canonical per-bot chat: its identity is this exact title in the profile's state.db
 // (desktop plugin hermes-bots/canonical-chat.ts), never a stored id pointer.
@@ -351,6 +360,24 @@ function validAttach(p) {
   return true;
 }
 
+/**
+ * deck.attach_staged: {session_id, text, files: [{upload, filename}]}. `upload` is a relay spool id (48 hex), never a
+ * path; the plugin opens only <its spool>/<id>.bin and checks owner, type and size again (observer.py attach_staged).
+ */
+function validStaged(p) {
+  if (!onlyKeys(p, ["session_id", "text", "files"]) || Object.keys(p).length !== 3 || typeof p.session_id !== "string" || !SID_RE.test(p.session_id)) return false;
+  if (typeof p.text !== "string" || p.text.length > MAX_TEXT) return false; // may be empty: a message of files only
+  if (!Array.isArray(p.files) || !p.files.length || p.files.length > HERMES_ATTACH.files) return false;
+  const seen = new Set();
+  for (const f of p.files) {
+    if (!isPlainObject(f) || !onlyKeys(f, ["upload", "filename"]) || Object.keys(f).length !== 2) return false;
+    if (typeof f.upload !== "string" || !UPLOAD_ID_RE.test(f.upload) || seen.has(f.upload)) return false;
+    seen.add(f.upload);
+    if (typeof f.filename !== "string" || !/^[^/\\\x00-\x1f]{1,160}$/.test(f.filename) || !f.filename.replace(/^[. ]+|[. ]+$/g, "")) return false;
+  }
+  return true;
+}
+
 const LANGUAGE_RE = /^[a-z]{2,3}$/; // optional dictation language hint (ISO 639-1/2); absent means the host auto-detects
 const AUDIO_MIME_RE = /^(audio|video)\/[A-Za-z0-9.+-]{1,40}(;[ -~]{0,80})?$/;
 
@@ -396,6 +423,7 @@ function checkRequest(method, params) {
   const big = method === ATTACH_METHOD ? ATTACH_PARAMS_LIMIT : method === TRANSCRIBE_METHOD ? TRANSCRIBE_PARAMS_LIMIT : PARAMS_LIMIT;
   if (Buffer.byteLength(JSON.stringify(params)) > big) throw new Error(i18nText(method === ATTACH_METHOD ? "attach.hermesRequestTooLarge" : method === TRANSCRIBE_METHOD ? "voice.tooLarge" : "appshot.requestTooLarge"));
   if (method === ATTACH_METHOD && !validAttach(params)) throw new Error(i18nText("attach.hermesInvalid"));
+  if (method === STAGED_METHOD && !validStaged(params)) throw new Error(i18nText("attach.hermesInvalid"));
   if (method === TRANSCRIBE_METHOD && !validTranscribe(params)) throw new Error(i18nText("voice.invalid"));
   if (method === FILE_METHOD && !validFileRead(params)) throw new Error(i18nText("download.invalid"));
   if (method === "session.messages" && !validHistoryRead(params)) throw new Error(i18nText("U0049"));
@@ -1511,7 +1539,7 @@ class BridgeClient extends EventEmitter {
     const id = `${this.ns}-${this.counter++}`;
     const line = `${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`;
     const big = method === ATTACH_METHOD || method === TRANSCRIBE_METHOD;
-    const deadline = method === ATTACH_METHOD ? this.timing.attach : method === TRANSCRIBE_METHOD ? this.timing.transcribe : this.timing.request;
+    const deadline = method === ATTACH_METHOD ? this.timing.attach : method === STAGED_METHOD ? this.timing.staged : method === TRANSCRIBE_METHOD ? this.timing.transcribe : this.timing.request;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         const p = this.pending.get(id);
@@ -1546,13 +1574,16 @@ class BridgeClient extends EventEmitter {
   // ------------------------------------------------------------ reads
 
   /**
-   * The host plugin's version (host-versions.js): {version, protocol} from deck.version (plugin 0.3.6+),
-   * {legacy: true} when the host does not know the method (an older plugin), null when it cannot be told now.
+   * The host plugin's version (host-versions.js): {version, protocol, uploads} from deck.version (plugin 0.3.6+; `uploads`
+   * {v: 1, host} from the plugin that takes staged uploads, else null), {legacy: true} when the host does not know the
+   * method (an older plugin), null when it cannot be told now.
    */
   async version() {
     try {
       const r = await this.request("deck.version", {});
-      return r && typeof r === "object" ? { version: typeof r.version === "string" ? r.version.slice(0, 32) : null, protocol: Number.isInteger(r.protocol) ? r.protocol : null } : null;
+      if (!r || typeof r !== "object") return null;
+      const up = isPlainObject(r.uploads) && r.uploads.v === 1 && typeof r.uploads.host === "string" && UPLOAD_HOST_RE.test(r.uploads.host) ? { v: 1, host: r.uploads.host } : null;
+      return { version: typeof r.version === "string" ? r.version.slice(0, 32) : null, protocol: Number.isInteger(r.protocol) ? r.protocol : null, uploads: up };
     } catch (e) {
       return e && e.rpcCode === -32601 ? { legacy: true } : null;
     }
@@ -2048,9 +2079,13 @@ class BridgeClient extends EventEmitter {
     return { ...chat, created: true, pending };
   }
 
-  /** Send a new turn: resume (once per connection), then prompt.submit. A busy session queues it. */
-  async send(sessionId, text, { profile, files } = {}) {
-    const withFiles = Array.isArray(files) && files.length > 0;
+  /**
+   * Send a new turn: resume (once per connection), then prompt.submit. A busy session queues it. `files` (base64) go
+   * through deck.attach_submit; `staged` ([{upload, filename}], relay spool ids) through deck.attach_staged.
+   */
+  async send(sessionId, text, { profile, files, staged } = {}) {
+    const withStaged = Array.isArray(staged) && staged.length > 0;
+    const withFiles = withStaged || (Array.isArray(files) && files.length > 0);
     if (withFiles && typeof text !== "string") throw new Error(i18nText("U0103"));
     const t = withFiles ? text.trim() : checkText(text, null); // files only: the text may be empty, the host adds a default one
     // A submit is intent even if its reply is lost; never tear down a turn while _bind awaits.
@@ -2058,7 +2093,9 @@ class BridgeClient extends EventEmitter {
     const made = this.newSessions.get(key) || this.created.get(key);
     if (made) made.submitted = true;
     const rpcId = await this._bind(sessionId, this._profileOf(sessionId, profile));
-    const r = await this._runtimeRequest(withFiles ? ATTACH_METHOD : "prompt.submit", sessionId, this._profileOf(sessionId, profile), withFiles ? { session_id: rpcId, text: t, files } : { session_id: rpcId, text: t });
+    const method = withStaged ? STAGED_METHOD : withFiles ? ATTACH_METHOD : "prompt.submit";
+    const params = withStaged ? { session_id: rpcId, text: t, files: staged } : withFiles ? { session_id: rpcId, text: t, files } : { session_id: rpcId, text: t };
+    const r = await this._runtimeRequest(method, sessionId, this._profileOf(sessionId, profile), params);
     return { status: isPlainObject(r) && typeof r.status === "string" ? r.status.slice(0, 64) : "ok" };
   }
 
@@ -2387,6 +2424,8 @@ module.exports = {
   validReasoningSet,
   REASONING_EFFORTS,
   checkRequest,
+  validStaged,
+  STAGED_METHOD,
   rpcReply,
   isSnapshot,
   normalizeSnapshot,

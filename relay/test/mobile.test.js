@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { Readable } = require('node:stream');
 const { WebSocket } = require('ws');
 const { MobileRelay, createPair } = require('../src/mobile');
 const { createServer } = require('../src/server');
@@ -319,7 +320,7 @@ test('persisted expiry floor prevents replay after server clock rollback and res
 test('standalone relay imports with mobile bridge off and configured missing library fails before sockets start', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'deck-mobile-standalone-')), src = path.join(dir, 'relay', 'src');
   fs.mkdirSync(src, { recursive: true });
-  for (const name of ['mobile.js', 'devtokens.js', 'util.js', 'compat.js']) fs.copyFileSync(path.join(__dirname, '..', 'src', name), path.join(src, name));
+  for (const name of ['mobile.js', 'devtokens.js', 'util.js', 'compat.js', 'uploads.js']) fs.copyFileSync(path.join(__dirname, '..', 'src', name), path.join(src, name));
   fs.copyFileSync(path.join(__dirname, '..', 'package.json'), path.join(dir, 'relay', 'package.json')); // compat.js: the relay version
   fs.symlinkSync(path.resolve(__dirname, '../node_modules'), path.join(dir, 'relay', 'node_modules'), 'dir');
   const { MobileRelay: Standalone } = require(path.join(src, 'mobile.js'));
@@ -675,27 +676,27 @@ test('held upload send keeps the shared byte quota reserved until success, cance
   const mobile = new MobileRelay({ tokensFile: file, bridgeConfig: { mode: 'local' } });
   t.after(() => mobile.stop());
   const paired = mobile.pair({ code: createPair(file), name: 'phone' }), device = mobile.device(paired.deviceId), chunk = 25 * 1024 * 1024;
-  const stage = (name, ready = true) => { const ticket = mobile.createUpload(device, { name, mime: 'application/octet-stream', size: chunk }); if (ready) device.uploads.get(ticket.id).bytes = Buffer.alloc(chunk); return ticket.id; };
+  const stage = async (name, ready = true) => { const ticket = mobile.createUpload(device, { name, mime: 'application/octet-stream', size: chunk }); if (ready) await mobile.uploads.write(device, mobile.upload(device, ticket.id), Readable.from([Buffer.alloc(chunk)])); return ticket.id; };
   let resolveSend, rejectSend, retainedFiles;
   const held = () => new Promise((resolve, reject) => { resolveSend = resolve; rejectSend = reject; });
   device.bridge = { send: (_sid, _text, options) => { retainedFiles = options.files; return held(); }, stop: async () => { rejectSend?.(Error('revoked')); } };
-  const refs = [stage('one.bin'), stage('two.bin')];
+  const refs = [await stage('one.bin'), await stage('two.bin')];
   const sending = mobile.call(device, { id: mutationID(), op: 'send', args: { sid: 'session', profile: 'default', text: 'fixture', uploads: refs } });
   assert.equal(device.uploads.size, 0); assert.equal(device.inflightBytes, 2 * chunk); assert.equal(retainedFiles.length, 2);
   assert.throws(() => mobile.createUpload(device, { name: 'refill.bin', mime: 'application/octet-stream', size: 1 }), error => error.code === 'limit');
   assert.throws(() => mobile.upload(device, refs[0]), error => error.code === 'not_found');
   resolveSend({ status: 'ok' }); await sending; retainedFiles = null;
   assert.equal(device.inflightBytes, 0);
-  const next = stage('next.bin');
+  const next = await stage('next.bin');
   const cancelled = mobile.call(device, { id: mutationID(), op: 'send', args: { sid: 'session', text: 'fixture', uploads: [next] } });
-  const refill = stage('refill.bin', false);
+  const refill = await stage('refill.bin', false);
   assert.equal(device.inflightBytes, chunk);
   assert.throws(() => mobile.createUpload(device, { name: 'over.bin', mime: 'application/octet-stream', size: 1 }), error => error.code === 'limit');
-  device.uploads.delete(refill); // staged cancellation frees only its own reservation, not the send's.
+  mobile.uploads.remove(device, refill); // staged cancellation frees only its own reservation, not the send's.
   assert.equal(device.inflightBytes, chunk);
   rejectSend(Error('cancelled')); await assert.rejects(cancelled, /cancelled/); retainedFiles = null;
   assert.equal(device.inflightBytes, 0);
-  const last = stage('last.bin');
+  const last = await stage('last.bin');
   const revoked = mobile.call(device, { id: mutationID(), op: 'send', args: { sid: 'session', text: 'fixture', uploads: [last] } });
   const failure = assert.rejects(revoked, /revoked/);
   await mobile.revoke(device); await failure; retainedFiles = null;
@@ -886,7 +887,7 @@ test('notify2: dictation language is an optional allowlisted argument, advertise
   const calls = [];
   const { mobile, device } = notifyFixture(t, { bridge: { transcribe: async (bytes, mime, options) => { calls.push({ mime, options }); return { text: 'merhaba' }; } } });
   assert.equal(mobile.capabilities().transcribeLanguage, true);
-  const upload = async () => { const ticket = mobile.createUpload(device, { name: 'd.m4a', mime: 'audio/mp4', size: 3 }); const item = mobile.upload(device, ticket.id); item.bytes = Buffer.from('abc'); return ticket.id; };
+  const upload = async () => { const ticket = mobile.createUpload(device, { name: 'd.m4a', mime: 'audio/mp4', size: 3 }); await mobile.uploads.write(device, mobile.upload(device, ticket.id), Readable.from([Buffer.from('abc')])); return ticket.id; };
   mobile.bridge = () => device.bridge;
   await mobile.call(device, { id: 'm.' + Date.now() + '.' + crypto.randomUUID(), op: 'transcribe', args: { upload: await upload(), mime: 'audio/mp4' } });
   await mobile.call(device, { id: 'm.' + Date.now() + '.' + crypto.randomUUID(), op: 'transcribe', args: { upload: await upload(), mime: 'audio/mp4', language: 'tr-TR' } });

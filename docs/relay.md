@@ -97,11 +97,42 @@ file named by `DECK_RELAY_ENV`); restart it to apply changes.
 | `DECK_HOME`, `DECK_DRIVER_SOCK` | Plugin home (default `~/.hermes-deck`) and driver socket (default `<DECK_HOME>/driver.sock`). Must equal the plugin's |
 | `DECK_EVENTS_DIR`, `DECK_STATE_DIR` | Plugin event and state folders, default `~/.hermes-deck/events` and `~/.hermes-deck/state`. They do not follow `DECK_HOME`: if the plugin uses `DECK_HOME=X`, set `X/events` and `X/state`; if it uses `DECK_EVENTS_DIR=Y`, set `Y` and `Y/state` |
 | `DECK_DATA_DIR`, `DECK_AGENTS`, `DECK_DEVICE_TOKENS` | Relay state (default `relay/data/`), the agents mapping (default `relay/agents.json`) and the device-key hashes (default `devices.json` next to `.env`) |
+| `DECK_UPLOAD_DIR` | Upload spool for large attachments, default `~/.hermes-deck/uploads`; must equal the plugin's `HERMES_DECK_UPLOAD_DIR` ([Large attachments](#large-attachments)) |
+| `DECK_UPLOAD_MAX_FILE`, `DECK_UPLOAD_MAX_TOTAL`, `DECK_UPLOAD_MIN_FREE` | Bytes per file (default 2 GiB), per message (default 4 GiB), and free space kept on the spool's disk (default 10 GiB) |
 
 History is read on demand. Host-wide usage refreshes at startup and every minute, independently of history and of
 which Hermes interfaces loaded the plugin ([host-usage.md](host-usage.md)). Database reads use read-only connections or
 bounded private copies; the relay never writes Hermes session data. Costs may be estimates or unknown; Claude
 subscription costs are API list-price equivalents, not invoices.
+
+## Large attachments
+
+Files for direct Hermes chats (desktop) and for the iOS app go through the relay when the relay and the Hermes plugin
+share one upload spool on this host. The client streams each file over HTTP into the spool (`DECK_UPLOAD_DIR`, mode
+0700; `<id>.part` while writing, then `<id>.bin` and `<id>.json`, 0600); the message then names only the upload ids,
+and the plugin (`deck.attach_staged`) moves the files into the session's attachments folder and adds `@file:` refs to
+the prompt. Small images still reach the model as pixels. No path and no file content travels over the bridge.
+
+- Limits: 10 files, 2 GiB per file and 4 GiB per message by default (`DECK_UPLOAD_MAX_FILE`, `DECK_UPLOAD_MAX_TOTAL`).
+  A new upload is refused with `507 disk_full` while it would leave less than `DECK_UPLOAD_MIN_FREE` (10 GiB) free.
+  At most 10 pending uploads per token.
+- Same host: the relay's WebSocket hello carries `uploads: {v, host, files, fileBytes, totalBytes}`, the plugin's
+  `deck.version` carries `uploads: {v, host}`; `host` is a hash of the machine id and the spool's real path. The app and
+  the relay's iOS bridge use the spool only when both match; otherwise the single-line path stays, with its limits of
+  25 MB per file and 50 MB per message (an older plugin or relay, or two different spool folders).
+- Cleanup: a finished upload that is not sent expires after 60 minutes; an unfinished `.part` without a writer is
+  deleted. The relay sweeps at start and every few minutes and never deletes an upload a send is using.
+- Dictation clips keep their 25 MB limit.
+
+| Route | Purpose |
+|---|---|
+| `POST /uploads` | Desktop relay token only. `{name, mime, size}` → `{id}` |
+| `PUT /uploads/<id>` | Raw body, streamed to disk; a length that differs from `size` deletes the upload (400) → `{id, name, size}` |
+| `DELETE /uploads/<id>` | Cancels (also mid-write) or deletes an upload |
+| `POST /mobile/uploads`, `PUT`/`DELETE /mobile/uploads/<id>` | The iOS app's uploads, same spool and limits |
+
+`GET /mobile/capabilities` reports `limits: {files, fileBytes, totalBytes, dictationBytes}` (the spool's limits when the
+plugin takes staged files, else 25 MB / 50 MB) and `uploads: {v: 1, staged}`.
 
 ## Hermes config and restarts
 

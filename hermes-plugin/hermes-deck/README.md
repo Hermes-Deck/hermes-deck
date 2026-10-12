@@ -43,6 +43,7 @@ The bridge has no network listener. It uses owner-only Unix control sockets (060
 | `DECK_EVENTS_DIR` | `<DECK_HOME>/events` | Events folder; when set, state goes to `<DECK_EVENTS_DIR>/state`. The relay's `DECK_EVENTS_DIR`/`DECK_STATE_DIR` must point at the same folders |
 | `DECK_BOT_SCREEN` | opt-in | `1` enables the desktop fence, `0` disables it; a `HERMES_CUA_DRIVER_CMD` pointing at `deck-cua` also opts in |
 | `DECK_DRIVER_SOCK` | `<DECK_HOME>/driver.sock` | Relay's local desktop-driver socket |
+| `HERMES_DECK_UPLOAD_DIR` | `~/.hermes-deck/uploads` | Upload spool the relay writes large attachments to (`deck.attach_staged`); must be the relay's `DECK_UPLOAD_DIR` |
 
 The stream accepts a constrained set of gateway and Deck-native methods, not arbitrary RPC. Model changes are session-local; profile/asset/cron writes are not exposed. The desktop fence is an opt-in that can block or rewrite `computer_use` calls.
 

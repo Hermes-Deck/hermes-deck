@@ -186,8 +186,9 @@ test("request shapes: allowlisted methods, bounded params, read-only history, se
   for (const m of ["image.attach", "file.upload", "attachment.add", "clipboard.paste"]) assert.throws(() => bridge.checkRequest(m, {}), /Desteklenmeyen/);
   // by name segment: "profiles.list" is not a file method (profiles.get_asset only reads a profile's avatar)
   const fileish = (m) => m.split(/[._]/).some((seg) => /^(attach\w*|upload\w*|files?|images?|clipboard)$/.test(seg));
-  // deck.file_read is the other "file" method: it carries no upload, only a bounded read of a file the agent offered
-  assert.deepEqual([...bridge.METHODS].filter(fileish).sort(), ["deck.attach_submit", "deck.file_read"], "only the bounded attach method uploads files");
+  // deck.file_read is the other "file" method: it carries no upload, only a bounded read of a file the agent offered;
+  // deck.attach_staged carries no bytes either: only relay spool ids (48 hex) of files the relay already holds on disk
+  assert.deepEqual([...bridge.METHODS].filter(fileish).sort(), ["deck.attach_staged", "deck.attach_submit", "deck.file_read"], "only the bounded attach method uploads files");
   assert.ok(bridge.METHODS.has("deck.transcribe") && bridge.METHODS.has("deck.file_read"));
   assert.ok(fileish("image.attach") && fileish("file.upload") && !fileish("profiles.list"));
   assert.throws(() => bridge.checkRequest("session.list", []), /nesne/);

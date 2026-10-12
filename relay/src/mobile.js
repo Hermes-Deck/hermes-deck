@@ -6,7 +6,10 @@ const { WebSocketServer } = require('ws');
 const tokens = require('./devtokens');
 const { atomicWriteJson, readJson } = require('./util');
 const compat = require('./compat');
-const LIMITS = { files: 10, fileBytes: 26214400, totalBytes: 52428800, dictationBytes: 26214400 };
+const { UploadSpool, LEGACY, settleBody } = require('./uploads');
+// The old single-line limits (base64 through the plugin's stdio): what a host without staged uploads can take. With a
+// plugin that answers deck.attach_staged on this host, capabilities() reports the spool's limits instead (uploads.js).
+const LIMITS = LEGACY;
 const TTL = 15 * 60 * 1000;
 const NOTIFICATION_CAPACITY = 10000;
 const PROFILE_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -120,8 +123,13 @@ const OPS = {
   answerApproval: ['id', 'profile', 'choice'], answerQuestion: ['id', 'profile', 'answers'], transcribe: ['upload', 'mime', 'language'],
 };
 class MobileRelay {
-  constructor({ tokensFile, bridgeConfig, bridgeOptions = {}, capabilities = {}, push = null, settleMs = SETTLE_MS }) {
+  constructor({ tokensFile, bridgeConfig, bridgeOptions = {}, capabilities = {}, push = null, settleMs = SETTLE_MS, uploads = null }) {
     Object.assign(this, { tokensFile, bridgeConfig, bridgeOptions, push, settleMs });
+    // Uploads live on disk (uploads.js), shared with the desktop routes; index.js passes the relay's spool.
+    this.uploads = uploads || new UploadSpool({ dir: path.join(path.dirname(path.resolve(tokensFile)), 'uploads') });
+    this.ownSpool = !uploads;
+    // Whether the plugin behind the bridge takes staged uploads on this host (deck.version uploads.host); probed, cached.
+    this.staging = { ok: false, at: 0, busy: null };
     this.names = { at: 0, map: new Map(), busy: null };
     this.enriching = new Map();
     this.BridgeClient = null;
@@ -164,11 +172,46 @@ class MobileRelay {
   }
   capabilities() {
     // relayVersion: iOS Settings › About shows it (SettingsView.swift); protocol: the wire protocol (compat.js)
+    // limits: the spool's (2 GB per file by default) once the plugin proved it takes staged uploads on this host, else
+    // the old single-line limits; uploads.staged says which (informational: clients trust `limits`).
+    const staged = this.stagedReady();
     return { v: 1, relayVersion: compat.VERSION, protocol: compat.PROTOCOL, bridge: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', history: !!this.available.history,
       takeover: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off',
       sessionBrowser: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', reasoning: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off',
       work: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', subagents: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', commands: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off',
-      workspace: !!this.available.workspace, desktop: !!this.available.desktop, push: !!this.push?.configured, transcribeLanguage: true, limits: LIMITS };
+      workspace: !!this.available.workspace, desktop: !!this.available.desktop, push: !!this.push?.configured, transcribeLanguage: true,
+      limits: staged ? this.uploads.limits() : { ...LIMITS }, uploads: { v: 1, staged } };
+  }
+  stagedReady() { return !!this.bridgeConfig && this.bridgeConfig.mode !== 'off' && this.staging.ok === true; }
+  limits() { return this.stagedReady() ? this.uploads.limits() : LIMITS; }
+  /**
+   * Asks the plugin (deck.version, answered by stream.py) whether it takes staged uploads from this relay's spool: its
+   * uploads.host must equal ours (same machine, same real folder). A definite answer is cached for maxAgeMs; a bridge
+   * that is not connected yet is waited for briefly and asked again next time.
+   */
+  async probeStaging(device, maxAgeMs = 60000) {
+    if (!this.bridgeConfig || this.bridgeConfig.mode === 'off') return false;
+    if (this.staging.at && Date.now() - this.staging.at < maxAgeMs) return this.staging.ok;
+    if (!this.staging.busy) {
+      this.staging.busy = (async () => {
+        const bridge = this.bridge(device);
+        if (typeof bridge.version !== 'function') return;
+        if (bridge.status && bridge.status.status !== 'open' && typeof bridge.on === 'function') {
+          let seen;
+          await withTimeout(new Promise(resolve => { seen = s => { if (s?.status === 'open') resolve(); }; bridge.on('status', seen); }), LOOKUP_MS).catch(() => {});
+          bridge.off?.('status', seen);
+        }
+        const answer = await withTimeout(Promise.resolve(bridge.version()), LOOKUP_MS).catch(() => null);
+        if (!answer) return; // cannot tell now: not cached
+        const up = answer.uploads;
+        let host = null;
+        try { host = this.uploads.hostId(); } catch {}
+        this.staging.ok = !!(up && up.v === 1 && host && up.host === host);
+        this.staging.at = Date.now();
+      })().catch(() => {}).finally(() => { this.staging.busy = null; });
+    }
+    await this.staging.busy;
+    return this.staging.ok;
   }
   authenticate(req) {
     const header = req.headers.authorization || '';
@@ -211,6 +254,8 @@ class MobileRelay {
     if (!this.capabilities().bridge) throw fail('unavailable', 'Hermes bridge is not configured', 503);
     if (!device.bridge) {
       const bridge = device.bridge = new this.BridgeClient(this.bridgeConfig, this.bridgeOptions);
+      // A (re)connected plugin may be a newer or older one: ask again whether it takes staged uploads.
+      bridge.on('status', s => { if (s?.status === 'open' && device.bridge === bridge) { this.staging.at = 0; this.probeStaging(device).catch(() => {}); } });
       for (const [event, label] of [['status', 'status'], ['snapshot', 'snapshot'], ['requests', 'requests'], ['event', 'native'], ['sessions', 'sessions']]) {
         bridge.on(event, data => {
           if (this.devices.get(device.id) !== device || !tokens.stillValid(this.tokensFile, device.id, device.hash)) return;
@@ -490,13 +535,24 @@ class MobileRelay {
       case 'send': {
         const refs = args.uploads || [];
         if (!Array.isArray(refs) || refs.length > 10 || new Set(refs).size !== refs.length) throw fail('bad_request', 'Invalid uploads');
-        const items = refs.map(id => this.upload(device, id));
-        if (items.some(item => !item.bytes || item.writing)) throw fail('not_ready', 'Upload incomplete');
-        const reserved = items.reduce((sum, item) => sum + item.size, 0);
-        device.inflightBytes += reserved;
-        for (const item of items) device.uploads.delete(item.id);
-        try { return await bridge.send(args.sid, args.text, { profile: args.profile, files: items.map(item => ({ filename: item.name, content_base64: item.bytes.toString('base64') })) }); }
-        finally { device.inflightBytes -= reserved; }
+        if (!refs.length) return bridge.send(args.sid, args.text, { profile: args.profile, files: [] });
+        // Staged (the plugin on this host takes spool ids): only ids travel, the plugin moves the files itself. Else the
+        // old single-line path: each file read from the spool into base64, within the old limits.
+        const staged = this.stagedReady();
+        const ready = refs.map(id => this.upload(device, id));
+        if (ready.some(item => item.state !== 'ready')) throw fail('not_ready', 'Upload incomplete');
+        if (!staged && (ready.some(item => item.size > LIMITS.fileBytes) || ready.reduce((sum, item) => sum + item.size, 0) > LIMITS.totalBytes)) {
+          throw fail('limit', 'Hermes on this host takes at most 25 MB per file; update the Hermes Deck plugin for larger files', 413);
+        }
+        const { items, release } = this.uploads.take(device, refs);
+        try {
+          if (staged) return await bridge.send(args.sid, args.text, { profile: args.profile, staged: items.map(item => ({ upload: item.id, filename: item.name })) });
+          const files = items.map(item => ({ filename: item.name, content_base64: this.uploads.readBuffer(item, LIMITS.fileBytes).toString('base64') }));
+          return await bridge.send(args.sid, args.text, { profile: args.profile, files });
+        } catch (error) {
+          if (staged && error?.rpcCode === -32601) this.staging = { ok: false, at: Date.now(), busy: null }; // an older plugin came back
+          throw error;
+        } finally { release(); }
       }
       case 'steer': case 'redirect': case 'interrupt': {
         if (typeof args.profile !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(args.profile)) throw fail('bad_request', 'Explicit control profile required');
@@ -513,7 +569,7 @@ class MobileRelay {
       }
       case 'transcribe': {
         const item = this.upload(device, args.upload);
-        if (!item.bytes || item.writing) throw fail('not_ready', 'Upload incomplete');
+        if (item.state !== 'ready') throw fail('not_ready', 'Upload incomplete');
         if (args.mime !== undefined && args.mime !== item.mime) throw fail('bad_request', 'MIME mismatch');
         // Optional language hint from the dictation UI; an invalid tag is a client bug, not something to guess around.
         let language;
@@ -521,30 +577,26 @@ class MobileRelay {
           language = typeof args.language === 'string' ? dictationLanguage(args.language) : null;
           if (!language) throw fail('bad_request', 'Invalid dictation language');
         }
-        device.inflightBytes += item.size;
-        device.uploads.delete(item.id);
-        try { return await bridge.transcribe(item.bytes, item.mime, language ? { language } : undefined); }
-        finally { device.inflightBytes -= item.size; }
+        if (item.size > LIMITS.dictationBytes) throw fail('limit', 'Dictation clip too large', 413);
+        // A clip (<= 25 MB) is read from the spool into memory; the spool entry is deleted when the call settles.
+        const { items: [clip], release } = this.uploads.take(device, [item.id]);
+        try { return await bridge.transcribe(this.uploads.readBuffer(clip, LIMITS.dictationBytes), clip.mime, language ? { language } : undefined); }
+        finally { release(); }
       }
     }
   }
+  /** A new upload ticket {id}: checked against the active limits (staged or old), the device's quota and the disk floor. */
   createUpload(device, args) {
-    if (typeof args.name !== 'string' || !/^[^/\\\x00-\x1f]{1,160}$/.test(args.name) || !args.name.replace(/^[. ]+|[. ]+$/g, '') ||
-      typeof args.mime !== 'string' || !/^[a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+(?:;[a-zA-Z0-9= .+-]+)?$/.test(args.mime) || args.mime.length > 120 ||
-      !Number.isSafeInteger(args.size) || args.size < 1 || args.size > LIMITS.fileBytes) throw fail('bad_request', 'Invalid upload metadata');
-    this.prune(device);
-    if (device.uploads.size >= 10 || device.inflightBytes + [...device.uploads.values()].reduce((sum, item) => sum + (item.writing ? 0 : item.size), 0) + args.size > LIMITS.totalBytes) throw fail('limit', 'Upload limit', 413);
-    const item = { id: opaque(), name: args.name, mime: args.mime, size: args.size, expires: Date.now() + TTL };
-    device.uploads.set(item.id, item);
+    const item = this.uploads.create(device, args, this.limits());
     return { id: item.id };
   }
   upload(device, id) {
-    const item = device.uploads?.get(id);
-    if (!item || item.expires < Date.now()) throw fail('not_found', 'Upload missing or expired', 404);
-    return item;
+    if (!device?.uploads) throw fail('not_found', 'Upload missing or expired', 404);
+    return this.uploads.get(device, id);
   }
   prune(device) {
-    for (const map of [device.uploads, device.files]) for (const [id, item] of map) if (item.expires < Date.now()) map.delete(id);
+    this.uploads.prune(device);
+    for (const [id, item] of device.files) if (item.expires < Date.now()) device.files.delete(id);
     for (const [id, item] of device.notifications) if (item.expires < Date.now() && item.delivery !== 'pending') device.notifications.delete(id);
   }
   flushPush() {
@@ -638,6 +690,7 @@ class MobileRelay {
     try { privateWrite(this.metaFile, this.meta); } catch (error) { persistenceError = error; }
     // Authorization is cut even if persisting the cleanup or contacting the gateway fails.
     tokens.revoke(this.tokensFile, device.id);
+    for (const id of [...device.uploads.keys()]) this.uploads.remove(device, id); // its uploads go too, running ones aborted
     for (const ws of device.sockets) ws.terminate();
     if (!device.registrationBusy) this.devices.delete(device.id);
     await device.bridge?.stop();
@@ -694,7 +747,7 @@ class MobileRelay {
     if (!url.pathname.startsWith('/mobile/')) return false;
     this.handle(req, res, url).catch(error => {
       if (res.headersSent) res.destroy();
-      else json(res, error.status || 500, { error: { code: error.code || 'bridge_error', message: error.message, uncertain: error.uncertain === true || !error.code } });
+      else { settleBody(req, res); json(res, error.status || 500, { error: { code: error.code || 'bridge_error', message: error.message, uncertain: error.uncertain === true || !error.code } }); }
     });
     return true;
   }
@@ -705,23 +758,23 @@ class MobileRelay {
     if (!auth) throw fail('unauthorized', 'Mobile bearer required', 401);
     const device = this.device(auth.id);
     if (route === '/mobile/pair' && req.method === 'DELETE') return json(res, 200, await this.revoke(device));
-    if (route === '/mobile/capabilities' && req.method === 'GET') return json(res, 200, { ...this.capabilities(), notificationAdmission: { capacity: NOTIFICATION_CAPACITY, retained: device.notifications.size, overflow: device.notificationOverflow } });
-    if (route === '/mobile/uploads' && req.method === 'POST') return json(res, 200, this.createUpload(device, await object(req)));
+    if (route === '/mobile/capabilities' && req.method === 'GET') {
+      await this.probeStaging(device).catch(() => false);
+      return json(res, 200, { ...this.capabilities(), notificationAdmission: { capacity: NOTIFICATION_CAPACITY, retained: device.notifications.size, overflow: device.notificationOverflow } });
+    }
+    if (route === '/mobile/uploads' && req.method === 'POST') {
+      const args = await object(req);
+      await this.probeStaging(device).catch(() => false); // which limits apply: staged (spool) or the old ones
+      return json(res, 200, this.createUpload(device, args));
+    }
     let match = /^\/mobile\/uploads\/([a-f0-9]{48})$/.exec(route);
     if (match) {
       const item = this.upload(device, match[1]);
-      if (req.method === 'DELETE') { device.uploads.delete(item.id); return json(res, 200, { ok: true }); }
+      if (req.method === 'DELETE') { req.resume(); this.uploads.remove(device, item.id); return json(res, 200, { ok: true }); }
       if (req.method === 'PUT') {
-        if (item.bytes || item.writing) throw fail('conflict', 'Upload already written', 409);
-        item.writing = true;
-        device.inflightBytes += item.size;
-        try {
-          const bytes = await body(req, item.size);
-          if (bytes.length !== item.size) throw fail('bad_request', 'Upload size mismatch');
-          if (device.uploads.get(item.id) !== item || !tokens.stillValid(this.tokensFile, device.id, device.hash)) throw fail('not_found', 'Upload canceled or revoked', 404);
-          item.bytes = bytes;
-          return json(res, 200, { id: item.id, name: item.name, mime: item.mime, size: item.size });
-        } finally { device.inflightBytes -= item.size; item.writing = false; }
+        // Streamed to the spool on disk (never into memory); a size mismatch, cancel or revoke deletes it.
+        await this.uploads.write(device, item, req, { stillValid: () => tokens.stillValid(this.tokensFile, device.id, device.hash) });
+        return json(res, 200, { id: item.id, name: item.name, mime: item.mime, size: item.size });
       }
     }
     if (route === '/mobile/files/info' && req.method === 'POST') {
@@ -839,6 +892,7 @@ class MobileRelay {
   async stop() {
     clearInterval(this.timer);
     this.pushStopped = true;
+    if (this.ownSpool) this.uploads.stop();
     for (const device of this.devices.values()) { for (const ws of device.sockets) ws.terminate(); await device.bridge?.stop(); }
     await Promise.allSettled([...this.pushTasks.values()]);
     this.wss.close();
