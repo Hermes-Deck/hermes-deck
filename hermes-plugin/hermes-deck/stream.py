@@ -42,8 +42,12 @@ FILE_TIMEOUT = 20
 # observer.STAGED_TIMEOUT and app/main/bridge.js TIMING.staged.
 STAGED_METHOD = "deck.attach_staged"
 STAGED_TIMEOUT = 300
+# deck.file_grant (large downloads through the relay; observer.py FileReader.grant) is a small request answered after
+# the same transcript search as deck.file_read: the same deadline.
+FILE_GRANT_METHOD = "deck.file_grant"
 LINE_MAX = {ATTACH_METHOD: ATTACH_LINE_MAX, TRANSCRIBE_METHOD: TRANSCRIBE_LINE_MAX}
-DEADLINES = {ATTACH_METHOD: ATTACH_TIMEOUT, TRANSCRIBE_METHOD: TRANSCRIBE_TIMEOUT, FILE_METHOD: FILE_TIMEOUT, STAGED_METHOD: STAGED_TIMEOUT}
+DEADLINES = {ATTACH_METHOD: ATTACH_TIMEOUT, TRANSCRIBE_METHOD: TRANSCRIBE_TIMEOUT, FILE_METHOD: FILE_TIMEOUT, STAGED_METHOD: STAGED_TIMEOUT,
+             FILE_GRANT_METHOD: FILE_TIMEOUT}
 # A dictation can take a minute on a CPU-only host: like native.* it gets its own short-lived control connection and
 # its own thread, so it never holds up the ordered queue (prompts, approvals) or the persistent gateway socket.
 # deck.file_read stays on the persistent connection: its per-connection read budget (observer.ReadBudget) only means
@@ -55,7 +59,7 @@ RUNTIME_DIR = "hermes-deck"
 # The product version (root compat.json; relay/test/compat.test.js keeps these equal) and the wire protocol, which
 # changes only on a breaking change. deck.version answers with them here, without asking Hermes: this file is also
 # installed alone as <home>/hermes-deck/stream.py, so it carries its own copy. Apps before 0.3.6 never ask.
-VERSION = "1.3.3"
+VERSION = "1.3.4"
 PROTOCOL = 1
 VERSION_METHOD = "deck.version"
 CONNECTION_ID = "hermes"
@@ -63,6 +67,17 @@ CONNECTION_ID = "hermes"
 # upload_dir / machine_id / upload_host_id (this file is also installed alone; test_attach_staged.py checks both).
 UPLOAD_DIR_ENV = "HERMES_DECK_UPLOAD_DIR"
 STAGED_FEATURE = "attach_staged"
+# Large downloads (observer.py deck.file_grant): tickets go to <spool>/downloads, so the same spool host id proves the
+# relay can stream them. The cap is the live observer's (its snapshot's download_max), else this copy of its default.
+GRANT_FEATURE = "file_grant"
+DOWNLOAD_MAX_ENV = "HERMES_DECK_DOWNLOAD_MAX"
+DOWNLOAD_MAX_DEFAULT = 8 * 1024 * 1024 * 1024
+
+
+def download_max(environ=None):
+    environ = os.environ if environ is None else environ
+    text = str(environ.get(DOWNLOAD_MAX_ENV) or "").strip()
+    return int(text) if text.isdigit() and 0 < int(text) < 2 ** 53 else DOWNLOAD_MAX_DEFAULT
 
 
 def upload_dir(environ=None):
@@ -413,18 +428,29 @@ def endpoint(home, pid=None):
 def staged_supported(home):
     """True when the gateway's live observer (the process that answers ordinary requests) serves deck.attach_staged:
     after a plugin update, a gateway still running the old code must not be offered staged files until it restarts."""
+    return STAGED_FEATURE in live_features(home)[0]
+
+
+def live_features(home):
+    """(features, record) of the gateway's live observer: what its running code serves (empty for an older one)."""
     _, record = control_record(home)
     features = record.get("features") if isinstance(record, dict) else None
-    return isinstance(features, list) and STAGED_FEATURE in features
+    return (features if isinstance(features, list) else []), (record if isinstance(record, dict) else {})
 
 
 def version_reply(home):
-    """deck.version, answered here without asking Hermes: {version, protocol} and, when staged uploads work on this
-    host, uploads {v: 1, host} (the spool's same-host id; the Deck compares it with the relay's)."""
+    """deck.version, answered here without asking Hermes: {version, protocol}; when staged uploads work on this host,
+    uploads {v: 1, host} (the spool's same-host id; the Deck compares it with the relay's); when the live observer
+    grants relay downloads, downloads {v: 1, host, maxBytes} (the same spool id; maxBytes is the observer's cap)."""
     result = {"version": VERSION, "protocol": PROTOCOL}
-    host = upload_host() if staged_supported(home) else None
-    if host:
+    features, record = live_features(home)
+    host = upload_host() if (STAGED_FEATURE in features or GRANT_FEATURE in features) else None
+    if host and STAGED_FEATURE in features:
         result["uploads"] = {"v": 1, "host": host}
+    if host and GRANT_FEATURE in features:
+        cap = record.get("download_max")
+        cap = cap if type(cap) is int and 0 < cap < 2 ** 53 else download_max()
+        result["downloads"] = {"v": 1, "host": host, "maxBytes": cap}
     return result
 
 

@@ -32,6 +32,7 @@ const { loadIdentity } = require("./browser-bundle");
 const { MobileRelay } = require("./mobile");
 const { MobilePushClient } = require("./mobile-push");
 const { UploadSpool, uploadConfig } = require("./uploads"); // large attachments: disk spool shared with the plugin
+const { DownloadTickets, downloadConfig } = require("./downloads"); // large downloads: tickets the plugin grants
 
 const compat = require("./compat"); // product version, wire protocol, each profile's plugin version
 const { HermesStore } = require("./history");
@@ -119,6 +120,8 @@ function config(env = process.env, mem = os.totalmem()) {
     hermesConfig: hermesConfigOptions(env),
     // large attachments (uploads.js): DECK_UPLOAD_DIR, DECK_UPLOAD_MAX_FILE, DECK_UPLOAD_MAX_TOTAL, DECK_UPLOAD_MIN_FREE
     uploads: uploadConfig(env),
+    // large downloads (downloads.js): DECK_DOWNLOAD_MAX
+    downloads: downloadConfig(env),
   };
 }
 
@@ -424,7 +427,10 @@ async function start(cfg) {
   // plugin); a hand-built cfg without one (tests) keeps it under its own dataDir.
   const uploadCfg = cfg.uploads && cfg.uploads.dir ? cfg.uploads : { ...uploadConfig({}), ...(cfg.uploads || {}), dir: path.join(cfg.dataDir, "uploads") };
   const uploads = new UploadSpool(uploadCfg).start();
-  const mobile = new MobileRelay({ uploads, tokensFile: cfg.mobileDevicesFile || path.join(cfg.dataDir, "mobile-devices.json"), bridgeConfig: cfg.mobileBridge, push: new MobilePushClient(), capabilities: { history: !!history, workspace: !!workspace && !!fallback?.available, desktop: false } });
+  // Large downloads (downloads.js): deck.file_grant tickets in <spool>/downloads, streamed by GET /downloads/<id> and
+  // /mobile/files/<id>; DECK_DOWNLOAD_MAX caps one file on this side (default 8 GiB).
+  const downloads = new DownloadTickets({ spool: uploads, ...(cfg.downloads || downloadConfig({})) });
+  const mobile = new MobileRelay({ uploads, downloads, tokensFile: cfg.mobileDevicesFile || path.join(cfg.dataDir, "mobile-devices.json"), bridgeConfig: cfg.mobileBridge, push: new MobilePushClient(), capabilities: { history: !!history, workspace: !!workspace && !!fallback?.available, desktop: false } });
   const host = { protocol: compat.PROTOCOL, plugins: compat.pluginCache(cfg.hermesRoot || null), update: () => compat.updateStatus(cfg.dataDir) };
   const { HostUpdate } = require("./host-update");
   const { Restarts } = require("./restarts");
@@ -446,7 +452,7 @@ async function start(cfg) {
   });
   let quitRelay = null; // set by the entry point below: stop, then exit so the service manager starts the relay again
   const hermesConfig = new HermesConfig({ ...(cfg.hermesConfig || hermesConfigOptions({})), root: cfg.hermesRoot || (cfg.hermesConfig || {}).root, quit: () => (quitRelay ? quitRelay() : null) });
-  const srv = createServer({ hermesConfig, hostUpdate, mobile, host, uploads, token: cfg.token, queryToken: !!cfg.queryToken, model, fleet, version: VERSION, hooks: deckHooks(presence, gateway, driver, workspace, bundles, spaces, spaceTunnel), history, plans, bundles });
+  const srv = createServer({ hermesConfig, hostUpdate, mobile, host, uploads, downloads, token: cfg.token, queryToken: !!cfg.queryToken, model, fleet, version: VERSION, hooks: deckHooks(presence, gateway, driver, workspace, bundles, spaces, spaceTunnel), history, plans, bundles });
   broadcast = srv.broadcast;
   if (workspace) workspace.setBroadcast(srv.broadcast);
 
@@ -579,7 +585,7 @@ async function start(cfg) {
     }
   }
   mobile.available.desktop = driverUp;
-  return { setQuit: (fn) => { quitRelay = fn; }, hermesConfig, server: srv.server, port: srv.server.address().port, cdpPort, model, fleet, usage, presence, gateway, workspace, fallback, bundles, transfers, driver: driverUp ? driver : null, desktops, spaceTunnel, uploads, mobile, stop };
+  return { setQuit: (fn) => { quitRelay = fn; }, hermesConfig, server: srv.server, port: srv.server.address().port, cdpPort, model, fleet, usage, presence, gateway, workspace, fallback, bundles, transfers, driver: driverUp ? driver : null, desktops, spaceTunnel, uploads, downloads, mobile, stop };
 }
 
 /**

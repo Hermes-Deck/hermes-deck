@@ -99,6 +99,7 @@ file named by `DECK_RELAY_ENV`); restart it to apply changes.
 | `DECK_DATA_DIR`, `DECK_AGENTS`, `DECK_DEVICE_TOKENS` | Relay state (default `relay/data/`), the agents mapping (default `relay/agents.json`) and the device-key hashes (default `devices.json` next to `.env`) |
 | `DECK_UPLOAD_DIR` | Upload spool for large attachments, default `~/.hermes-deck/uploads`; must equal the plugin's `HERMES_DECK_UPLOAD_DIR` ([Large attachments](#large-attachments)) |
 | `DECK_UPLOAD_MAX_FILE`, `DECK_UPLOAD_MAX_TOTAL`, `DECK_UPLOAD_MIN_FREE` | Bytes per file (default 2 GiB), per message (default 4 GiB), and free space kept on the spool's disk (default 10 GiB) |
+| `DECK_DOWNLOAD_MAX` | Bytes per file this relay streams for [large downloads](#large-downloads) (default 8 GiB); the smaller of this and the plugin's `HERMES_DECK_DOWNLOAD_MAX` applies |
 
 History is read on demand. Host-wide usage refreshes at startup and every minute, independently of history and of
 which Hermes interfaces loaded the plugin ([host-usage.md](host-usage.md)). Database reads use read-only connections or
@@ -131,8 +132,41 @@ the prompt. Small images still reach the model as pixels. No path and no file co
 | `DELETE /uploads/<id>` | Cancels (also mid-write) or deletes an upload |
 | `POST /mobile/uploads`, `PUT`/`DELETE /mobile/uploads/<id>` | The iOS app's uploads, same spool and limits |
 
-`GET /mobile/capabilities` reports `limits: {files, fileBytes, totalBytes, dictationBytes}` (the spool's limits when the
-plugin takes staged files, else 25 MB / 50 MB) and `uploads: {v: 1, staged}`.
+`GET /mobile/capabilities` reports `limits: {files, fileBytes, totalBytes, dictationBytes, downloadBytes}` (the spool's
+limits when the plugin takes staged files, else 25 MB / 50 MB; `downloadBytes` see below), `uploads: {v: 1, staged}` and
+`downloads: {v: 1, direct}`.
+
+## Large downloads
+
+Files the agent offered in a session (a `MEDIA:` path or a backticked path in an assistant message) download through
+the relay when the relay and the Hermes plugin share the same spool on this host (the same `host` id as for
+[large attachments](#large-attachments)). The plugin decides whether the file may be downloaded at all:
+`deck.file_grant` runs exactly the checks of `deck.file_read` (the path must stand in an assistant message of that
+session; credential and Hermes state locations, symlinks and non-regular files are refused; a path only a user's
+`@file:` / `@image:` line names stays limited to Hermes' attachment folders). It then writes a ticket
+`<spool>/downloads/<id>.json` (0600, folder 0700) with the real path and the file's device, inode, size and mtime, and
+answers `{id, name, size, mtime}`. The relay streams the file from disk for that id.
+
+- The relay re-opens the path without following a final symlink and serves it only while device, inode, size and
+  mtime still equal the ticket (`409` otherwise). A file that changes during the stream is cut short.
+- `Range: bytes=a-` (and `a-b`, `-n`) answers `206` with `Content-Range`, so a dropped download resumes from its last
+  byte; the desktop app retries automatically. A ticket can be reused until it expires (15 minutes); an app resuming
+  later asks the plugin for a new one, which must name the same file.
+- Limits: 8 GiB per file by default; the smaller of the relay's `DECK_DOWNLOAD_MAX` and the plugin's
+  `HERMES_DECK_DOWNLOAD_MAX` applies. At most 64 live tickets; expired tickets are deleted by the plugin on the next
+  grant and by the relay's upload sweep.
+- Same host: the hello carries `downloads: {v, host, maxBytes}`, the plugin's `deck.version` carries
+  `downloads: {v, host, maxBytes}` (only after the gateway restarted with a plugin that serves `deck.file_grant`). When
+  they do not match, downloads use the chunk path through the bridge (`deck.file_read`, 1 MiB per call, 200 MB per
+  file).
+- iOS: `/mobile/files/info` asks the plugin for a ticket when it grants relay downloads and `GET /mobile/files/<id>`
+  streams from disk with `Range`; the response shape is unchanged. `limits.downloadBytes` is the active limit
+  (8 GiB, or 200 MB on the chunk path).
+
+| Route | Purpose |
+|---|---|
+| `GET /downloads/<id>`, `HEAD /downloads/<id>` | Desktop relay token only. The granted file, `200` or `206` with `Range`; `Content-Disposition: attachment`, `Cache-Control: no-store`. `404` missing or expired ticket, `409` file changed, `413` over `DECK_DOWNLOAD_MAX`, `416` range past the end |
+| `POST /mobile/files/info`, `GET /mobile/files/<id>` | The iOS app's downloads: direct from disk when the plugin grants them, else 1 MiB chunks through the bridge |
 
 ## Hermes config and restarts
 

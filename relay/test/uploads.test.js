@@ -273,11 +273,11 @@ test("mobile capabilities: the spool's limits and uploads.staged only when the p
   assert.equal(await same.mobile.probeStaging(same.device), true);
   const caps = same.mobile.capabilities();
   assert.deepEqual(caps.uploads, { v: 1, staged: true });
-  assert.deepEqual(caps.limits, { files: 10, fileBytes: 2147483648, totalBytes: 4294967296, dictationBytes: 26214400 });
+  assert.deepEqual(caps.limits, { files: 10, fileBytes: 2147483648, totalBytes: 4294967296, dictationBytes: 26214400, downloadBytes: 209715200 });
   for (const host of ["0123456789abcdef", undefined]) {
     const other = mobileWith(t, { uploadHost: host });
     assert.equal(await other.mobile.probeStaging(other.device), false, `host ${host}`);
-    assert.deepEqual(other.mobile.capabilities().limits, { files: 10, fileBytes: 26214400, totalBytes: 52428800, dictationBytes: 26214400 });
+    assert.deepEqual(other.mobile.capabilities().limits, { files: 10, fileBytes: 26214400, totalBytes: 52428800, dictationBytes: 26214400, downloadBytes: 209715200 });
     assert.deepEqual(other.mobile.capabilities().uploads, { v: 1, staged: false });
     assert.throws(() => other.mobile.createUpload(other.device, { name: "big.rar", mime: "a/b", size: 26214401 }), /Invalid/);
   }

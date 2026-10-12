@@ -43,9 +43,23 @@ The bridge has no network listener. It uses owner-only Unix control sockets (060
 | `DECK_EVENTS_DIR` | `<DECK_HOME>/events` | Events folder; when set, state goes to `<DECK_EVENTS_DIR>/state`. The relay's `DECK_EVENTS_DIR`/`DECK_STATE_DIR` must point at the same folders |
 | `DECK_BOT_SCREEN` | opt-in | `1` enables the desktop fence, `0` disables it; a `HERMES_CUA_DRIVER_CMD` pointing at `deck-cua` also opts in |
 | `DECK_DRIVER_SOCK` | `<DECK_HOME>/driver.sock` | Relay's local desktop-driver socket |
-| `HERMES_DECK_UPLOAD_DIR` | `~/.hermes-deck/uploads` | Upload spool the relay writes large attachments to (`deck.attach_staged`); must be the relay's `DECK_UPLOAD_DIR` |
+| `HERMES_DECK_UPLOAD_DIR` | `~/.hermes-deck/uploads` | Upload spool the relay writes large attachments to (`deck.attach_staged`); must be the relay's `DECK_UPLOAD_DIR`. Download tickets (`deck.file_grant`) go to its `downloads/` subfolder |
+| `HERMES_DECK_DOWNLOAD_MAX` | `8589934592` (8 GiB) | Bytes per file `deck.file_grant` grants for a relay download; `deck.file_read` keeps its 200 MB |
 
 The stream accepts a constrained set of gateway and Deck-native methods, not arbitrary RPC. Model changes are session-local; profile/asset/cron writes are not exposed. The desktop fence is an opt-in that can block or rewrite `computer_use` calls.
+
+Files the agent offered are read by two Deck-native methods that share one authorization (`observer.py`
+`FileReader.authorize`: the path must stand in an assistant message of that session's stored transcript, never a
+credential or Hermes state location, never a final symlink, a regular file; a path only a user's `@file:` / `@image:`
+line names stays within Hermes' attachment folders):
+
+| Method | Params | Reply |
+|---|---|---|
+| `deck.file_read` | `{session_id, path, offset, length, profile?}` | One chunk of at most 1 MiB as base64; files up to 200 MB |
+| `deck.file_grant` | `{session_id, path, profile?}` | `{id, name, size, mtime}`; writes a ticket `<HERMES_DECK_UPLOAD_DIR>/downloads/<id>.json` (0600, 15 minutes, at most 64 live) that the relay on this host streams from disk ([Large downloads](../../docs/relay.md#large-downloads)) |
+
+`deck.version` reports `downloads: {v, host, maxBytes}` only once the running gateway serves `deck.file_grant` (after a
+restart with this plugin).
 
 Desktop-control setup is in [the relay guide](../../docs/relay.md#desktop-control); grant/fence details are in [the protocol](../../docs/bot-screen-protocol.md).
 

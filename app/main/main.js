@@ -32,13 +32,14 @@ const { spawn: spawnDetached } = require("child_process");
 const { BridgeClient, probe: probeBridge, normalizeConfig: normalizeBridgeConfig } = require("./bridge");
 const media = require("./media");
 // files the agent offers in a Hermes session, and their download (main/hermes-files.js)
-const { FileOffers, Downloads, resolveFolder } = require("./hermes-files");
+const { FileOffers, Downloads, resolveFolder, FILE_MAX } = require("./hermes-files");
 // the images/files the USER sent (stored as @image: / @file: lines) and their inline preview (main/media-refs.js, media-fetch.js)
 const { projectMedia } = require("./media-refs");
 const { fetchImage, fetchAudio } = require("./media-fetch");
 // file attachments (A7): staging, validation and upload errors (main/attach.js)
 const { AttachStore, checkCaption, uploadError, progressTracker, MAX_PHOTO, MAX_STAGED } = require("./attach");
 const hermesUploads = require("./hermes-uploads"); // large attachments for direct Hermes chats: through the relay's disk spool
+const hermesDownloads = require("./hermes-downloads"); // large downloads of offered files: streamed from the relay
 // Workspace tab: device presence (hosting switches, heartbeat) + agent browsers and their CDP tunnel
 const { DevicePresence } = require("./presence");
 const { initWorkspace } = require("./workspace");
@@ -362,26 +363,39 @@ const offeredPath = (sid, ref) => {
   if (!p) throw new Error(i18nText("download.unknown"));
   return p;
 };
-const downloadError = (e) => {
+const downloadError = (e, limit = FILE_MAX) => {
   if (e && e.code === "folder") {
     const why = ["missing", "not a folder", "not writable", "not an absolute path"].includes(e.why) ? e.why : "not writable";
     return new Error(i18nText("download.folderUnusable", { dir: String(e.dir || "").slice(0, 200), why: i18nText(`download.why.${why.replace(/ /g, "_")}`) }));
   }
   if (e && e.code === "busy") return new Error(i18nText("download.busy"));
-  if (e && e.code === "too-big") return new Error(i18nText("download.tooBig"));
-  if (e && (e.code === "changed" || e.code === "incomplete")) return new Error(i18nText("download.changed"));
+  // the active limit: the relay path's (8 GB by default) or the chunk path's 200 MB
+  if (e && (e.code === "too-big" || hermesDownloads.tooBig(e) || (e.relayDownload && e.status === 413))) return new Error(i18nText("download.tooBig", { n: media.human(e.max || limit) }));
+  if (e && (e.code === "changed" || e.code === "incomplete" || (e.relayDownload && e.status === 409))) return new Error(i18nText("download.changed"));
+  if (e && e.relayDownload && e.code !== "canceled") return new Error(i18nText("download.relayFailed", { e: String(e.message || e.code || "").slice(0, 200) }));
   return e;
 };
-// size and name of the file behind a chip (one byte is read; the host checks the offer and refuses secrets)
+// size and name of the file behind a chip (one byte is read; the host checks the offer and refuses secrets). A file over
+// the chunk path's 200 MB asks for a relay download ticket instead when the relay and the plugin share this host.
 ipc.handle("bridge:file-info", async (_e, sid, ref, o) => {
   const s = bSid(sid);
   const p = offeredPath(s, bRef(ref));
+  const profile = bProfile(o);
+  const b = needBridge();
+  const name = require("path").posix.basename(p);
+  let route = null;
   try {
-    const c = await needBridge().fileChunk(s, p, { offset: 0, length: 1, profile: bProfile(o) });
-    const name = require("path").posix.basename(p);
+    const c = await b.fileChunk(s, p, { offset: 0, length: 1, profile });
     return { size: c.size, mtime: c.mtime, name, risky: media.isRisky(name) };
   } catch (e) {
-    throw downloadError(e);
+    route = hermesDownloads.tooBig(e) ? await hermesDownloads.pickRoute(relay, b) : null;
+    if (!route) throw downloadError(e);
+  }
+  try {
+    const g = await b.fileGrant(s, p, { profile });
+    return { size: g.size, mtime: g.mtime, name, risky: media.isRisky(name) };
+  } catch (e) {
+    throw downloadError(e, hermesDownloads.activeLimit(route));
   }
 });
 // inline preview of an image the user sent: the whole picture (bounded) as a data: URL, or {ok: false, reason}
@@ -411,8 +425,14 @@ ipc.handle("bridge:file-download", async (_e, sid, ref, o) => {
   const emit = (m) => {
     if (win && !win.isDestroyed()) win.webContents.send("files", { ticket, ...m });
   };
+  const b = needBridge();
+  let route = null;
   try {
-    const first = await needBridge().fileChunk(s, p, { offset: 0, length: 1, profile });
+    // Large downloads (hermes-downloads.js): granted by the plugin and streamed from the relay when both share this
+    // host's spool (8 GB by default, resumed after a cut); else 1 MiB chunks through the bridge (200 MB).
+    route = await hermesDownloads.pickRoute(relay, b);
+    const grant = route ? await b.fileGrant(s, p, { profile }) : null;
+    const size = grant ? grant.size : (await b.fileChunk(s, p, { offset: 0, length: 1, profile })).size;
     const name = require("path").posix.basename(p);
     let target;
     if (settings.data.downloads.ask) {
@@ -423,16 +443,12 @@ ipc.handle("bridge:file-download", async (_e, sid, ref, o) => {
       if (pick.canceled || !pick.filePath) return { status: "cancelled" };
       target = pick.filePath;
     }
-    const r = await downloads.run(ticket, {
-      name,
-      target,
-      size: first.size,
-      read: (offset, length) => needBridge().fileChunk(s, p, { offset, length, profile }),
-      onProgress: (pr) => emit({ t: "progress", ...pr }),
-    });
-    return r;
+    const job = { name, target, size, max: hermesDownloads.activeLimit(route), onProgress: (pr) => emit({ t: "progress", ...pr }) };
+    if (grant) job.open = hermesDownloads.opener({ relay: route.relay, bridge: b, sid: s, path: p, profile, grant });
+    else job.read = (offset, length) => needBridge().fileChunk(s, p, { offset, length, profile });
+    return await downloads.run(ticket, job);
   } catch (e) {
-    throw downloadError(e);
+    throw downloadError(e, hermesDownloads.activeLimit(route));
   }
 });
 ipc.handle("bridge:file-cancel", (_e, ticket) => downloads.cancel(String(ticket ?? "")));
@@ -1373,6 +1389,8 @@ app.on("before-quit", (e) => {
   const attempt = quitAttempt || (quitAttempt = { waiting: false });
   // a running relay upload (large attachment) is cancelled: nothing was sent to Hermes yet, the relay deletes it
   for (const controller of relayUploads) controller.abort();
+  // a running download stops too (its .part file is removed; nothing on the host changes)
+  downloads.cancelAll();
   if (outboundMutations.size) {
     // Observe other listeners cancelling this same attempt, including while our own barrier holds it.
     const prevent = e.preventDefault;

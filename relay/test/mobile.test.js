@@ -320,7 +320,7 @@ test('persisted expiry floor prevents replay after server clock rollback and res
 test('standalone relay imports with mobile bridge off and configured missing library fails before sockets start', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'deck-mobile-standalone-')), src = path.join(dir, 'relay', 'src');
   fs.mkdirSync(src, { recursive: true });
-  for (const name of ['mobile.js', 'devtokens.js', 'util.js', 'compat.js', 'uploads.js']) fs.copyFileSync(path.join(__dirname, '..', 'src', name), path.join(src, name));
+  for (const name of ['mobile.js', 'devtokens.js', 'util.js', 'compat.js', 'uploads.js', 'downloads.js']) fs.copyFileSync(path.join(__dirname, '..', 'src', name), path.join(src, name));
   fs.copyFileSync(path.join(__dirname, '..', 'package.json'), path.join(dir, 'relay', 'package.json')); // compat.js: the relay version
   fs.symlinkSync(path.resolve(__dirname, '../node_modules'), path.join(dir, 'relay', 'node_modules'), 'dir');
   const { MobileRelay: Standalone } = require(path.join(src, 'mobile.js'));

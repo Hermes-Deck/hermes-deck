@@ -555,10 +555,19 @@ function answer(method, p) {
       }
       return err(p.path === "/home/user/.ssh/id_ed25519" ? 4080 : 4081, p.path === "/home/user/.ssh/id_ed25519" ? "Hermes Deck cannot download this file" : "This file was not offered in this session");
     }
+    case "deck.file_grant": {
+      // --download-host: a plugin that grants relay downloads; the ticket id is fixed (no spool here)
+      if (!value("download-host", "")) return err(-32601, "Unsupported Hermes Deck control");
+      if (Object.keys(p).some((k) => !["session_id", "path", "profile"].includes(k))) return err(4000, "Invalid file request");
+      if (p.path === FILE_PATH) return ok({ id: "d".repeat(48), name: "report.txt", size: FILE_BODY.length, mtime: 1700000000 });
+      return err(4081, "This file was not offered in this session");
+    }
     case "deck.version": // --plugin-version X[:protocol] answers like stream.py 0.3.6+; without it: an older plugin (-32601)
       if (!value("plugin-version", "")) return err(-32601, "Unsupported Hermes Desk control");
-      // --upload-host <16 hex>: a plugin that takes staged uploads (deck.attach_staged) from a spool with this host id
-      return ok({ version: value("plugin-version", "").split(":")[0], protocol: Number(value("plugin-version", "").split(":")[1] || 1), ...(value("upload-host", "") ? { uploads: { v: 1, host: value("upload-host", "") } } : {}) });
+      // --upload-host <16 hex>: a plugin that takes staged uploads (deck.attach_staged) from a spool with this host id;
+      // --download-host <16 hex> [--download-max n]: a plugin that grants relay downloads (deck.file_grant)
+      return ok({ version: value("plugin-version", "").split(":")[0], protocol: Number(value("plugin-version", "").split(":")[1] || 1), ...(value("upload-host", "") ? { uploads: { v: 1, host: value("upload-host", "") } } : {}),
+        ...(value("download-host", "") ? { downloads: { v: 1, host: value("download-host", ""), maxBytes: Number(value("download-max", "8589934592")) } } : {}) });
     case "request.answer":
       if (typeof p.id !== "string" || !p.result || typeof p.result !== "object") return err(4002, "id and an object result required");
       return ok({ status: open.delete(p.id) ? "ok" : "expired" });

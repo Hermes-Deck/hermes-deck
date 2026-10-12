@@ -7,8 +7,9 @@
 //     receives and sends back paths main has seen, see FileOffers);
 //   - FileOffers: which paths main has parsed out of which session, bounded. A download of anything else is refused
 //     here, before the host's own check (the host again requires the path to stand in that session's transcript);
-//   - Downloads: sequential chunk reads assembled into a folder, never overwriting, with progress, cancel and a
-//     size check, so a half-written file is never left under the final name.
+//   - Downloads: sequential chunk reads (or one relay HTTP stream, resumed with Range after a cut) assembled into a
+//     folder, never overwriting, with progress, cancel and a size check, so a half-written file is never left under
+//     the final name.
 // Core Node only, no Electron: the tests drive it with a fake chunk reader.
 const crypto = require("crypto");
 const fs = require("fs");
@@ -17,8 +18,9 @@ const { RISKY_EXT } = require("./media");
 
 const MAX_REFS = 8; // chips per message
 const MAX_PATH = 1024; // longer paths are text, not files
-const FILE_MAX = 200 * 1024 * 1024; // the host's cap (observer.py FILE_SIZE_MAX); checked here too
+const FILE_MAX = 200 * 1024 * 1024; // the host's cap for chunk reads (observer.py FILE_SIZE_MAX); checked here too
 const CHUNK = 1024 * 1024; // the host's per-call cap (FILE_CHUNK_MAX)
+const STREAM_RETRIES = 3; // a relay download cut this many times in a row without a new byte fails
 const MAX_ACTIVE = 2; // downloads running at once
 const OFFER_SESSIONS = 64; // sessions whose offers are remembered
 const OFFER_PATHS = 512; // paths remembered per session
@@ -191,6 +193,31 @@ function reserveName(dir, name) {
 
 const folderError = (dir, why) => Object.assign(new Error(`download folder unusable: ${why}`), { code: "folder", dir, why });
 
+/** Writes all of `buf` at `position` of fd without blocking the main process. */
+async function writeAll(fd, buf, position) {
+  let done = 0;
+  while (done < buf.length) {
+    const { bytesWritten } = await new Promise((resolve, reject) =>
+      fs.write(fd, buf, done, buf.length - done, position + done, (err, bytesWritten) => (err ? reject(err) : resolve({ bytesWritten })))
+    );
+    if (!bytesWritten) throw new Error("write failed");
+    done += bytesWritten;
+  }
+}
+
+/**
+ * Whether a broken relay stream is worth reopening from its last byte: a network cut, an idle timeout, a short body or
+ * a relay that is briefly unavailable (5xx). A refusal (4xx: unknown ticket, changed file, too big), a cancel or a
+ * local write error is final.
+ */
+function retriable(e) {
+  if (!e) return false;
+  if (e.code === "changed" || e.code === "canceled" || e.code === "too-big") return false;
+  if (e.relayDownload && Number.isInteger(e.status)) return e.status >= 500;
+  if (e.relayDownload) return e.code === "network" || e.code === "timeout";
+  return e.code === "network" || e.code === "ECONNRESET" || e.code === "ERR_STREAM_PREMATURE_CLOSE" || e.code === "EPIPE" || e.code === "ETIMEDOUT" || e.message === "aborted";
+}
+
 /** A configurable setting value is usable as a folder path: absolute, no control characters, sane length. */
 function validFolderSetting(dir) {
   return typeof dir === "string" && dir.length > 0 && dir.length <= 1024 && !/[\u0000-\u001f\u007f]/.test(dir) && (path.isAbsolute(dir) || /^[A-Za-z]:[\\/]/.test(dir));
@@ -229,17 +256,22 @@ function resolveFolder({ custom, fallback }) {
 }
 
 /**
- * Downloads, one object per app. `read(offset, length)` returns {length, size, eof, bytes: Buffer} for the file being
- * fetched (the caller binds session, profile and path). `dir` is a folder or a () => folder that may throw
- * {code: "folder"} (see resolveFolder); a job with `target` (a path the owner picked in a Save As dialog, which
- * already asked about overwriting) goes exactly there instead.
+ * Downloads, one object per app. A job either reads chunks through the bridge (`read(offset, length)` returns
+ * {length, size, eof, bytes: Buffer} for the file being fetched; the caller binds session, profile and path) or
+ * streams it over HTTP from the relay (`open(start, signal)` resolves a readable of the file's bytes from `start`:
+ * a cut stream is reopened from the last byte written, `retries` times in a row without progress). `dir` is a folder
+ * or a () => folder that may throw {code: "folder"} (see resolveFolder); a job with `target` (a path the owner picked
+ * in a Save As dialog, which already asked about overwriting) goes exactly there instead. `max` caps one file (a job
+ * may bring its own: the active limit of its path).
  */
 class Downloads {
-  constructor({ dir, maxActive = MAX_ACTIVE, chunk = CHUNK, max = FILE_MAX } = {}) {
+  constructor({ dir, maxActive = MAX_ACTIVE, chunk = CHUNK, max = FILE_MAX, retries = STREAM_RETRIES, retryMs = 1000 } = {}) {
     this.dir = dir; // () => folder or a string
     this.maxActive = maxActive;
     this.chunk = chunk;
     this.max = max;
+    this.retries = retries;
+    this.retryMs = retryMs;
     this.active = new Map(); // ticket -> {cancel}
     this.saved = new Map(); // id -> final path (bounded; Open/Show in folder name an id, never a path)
     this.seq = 0;
@@ -273,9 +305,10 @@ class Downloads {
     if (this.active.has(ticket)) throw new Error("download already running");
     if (this.active.size >= this.maxActive) throw Object.assign(new Error("too many downloads"), { code: "busy" });
     const size = job.size;
+    const max = Number.isSafeInteger(job.max) && job.max > 0 ? job.max : this.max;
     if (!Number.isSafeInteger(size) || size < 0) throw new Error("bad file size");
-    if (size > this.max) throw Object.assign(new Error("file too big"), { code: "too-big" });
-    const state = { cancelled: false };
+    if (size > max) throw Object.assign(new Error("file too big"), { code: "too-big", max });
+    const state = { cancelled: false, abort: null };
     this.active.set(ticket, state);
     const name = safeFileName(job.name);
     let final = null;
@@ -286,25 +319,8 @@ class Downloads {
       ({ final, owned } = this._reserve(name, job.target));
       part = `${final}.${process.pid}.part`;
       fd = fs.openSync(part, "w", 0o600);
-      let offset = 0;
-      let last = 0;
-      while (offset < size || (size === 0 && offset === 0)) {
-        if (state.cancelled) return this._abandon({ fd, part, final: owned ? final : null });
-        const want = Math.min(this.chunk, Math.max(1, size - offset));
-        const r = await job.read(offset, want);
-        if (state.cancelled) return this._abandon({ fd, part, final: owned ? final : null });
-        if (!r || !Buffer.isBuffer(r.bytes) || r.bytes.length !== r.length || r.length > want) throw new Error("bad chunk");
-        if (r.size !== size) throw Object.assign(new Error("file changed"), { code: "changed" });
-        if (r.length === 0 && !r.eof) throw new Error("empty chunk");
-        fs.writeSync(fd, r.bytes, 0, r.bytes.length);
-        offset += r.length;
-        const now = Date.now();
-        if (job.onProgress && (now - last > 120 || offset >= size)) {
-          last = now;
-          job.onProgress({ received: offset, size });
-        }
-        if (r.eof) break;
-      }
+      const offset = job.open ? await this._stream(state, fd, job, size) : await this._chunks(state, fd, job, size);
+      if (offset === null) return this._abandon({ fd, part, final: owned ? final : null });
       fs.closeSync(fd);
       fd = null;
       if (offset !== size || fs.statSync(part).size !== size) throw Object.assign(new Error("incomplete download"), { code: "incomplete" });
@@ -314,11 +330,81 @@ class Downloads {
       while (this.saved.size > 64) this.saved.delete(this.saved.keys().next().value);
       return { status: "done", id, name: path.basename(final), size, risky: RISKY_EXT.has(path.extname(final).slice(1).toLowerCase()) };
     } catch (e) {
+      if (state.cancelled) return this._abandon({ fd, part, final: owned ? final : null });
       this._abandon({ fd, part, final: owned ? final : null });
       throw e;
     } finally {
       this.active.delete(ticket);
     }
+  }
+
+  /** Sequential chunk reads through the bridge into fd; the bytes written, or null when cancelled. */
+  async _chunks(state, fd, job, size) {
+    let offset = 0;
+    let last = 0;
+    while (offset < size || (size === 0 && offset === 0)) {
+      if (state.cancelled) return null;
+      const want = Math.min(this.chunk, Math.max(1, size - offset));
+      const r = await job.read(offset, want);
+      if (state.cancelled) return null;
+      if (!r || !Buffer.isBuffer(r.bytes) || r.bytes.length !== r.length || r.length > want) throw new Error("bad chunk");
+      if (r.size !== size) throw Object.assign(new Error("file changed"), { code: "changed" });
+      if (r.length === 0 && !r.eof) throw new Error("empty chunk");
+      fs.writeSync(fd, r.bytes, 0, r.bytes.length);
+      offset += r.length;
+      const now = Date.now();
+      if (job.onProgress && (now - last > 120 || offset >= size)) {
+        last = now;
+        job.onProgress({ received: offset, size });
+      }
+      if (r.eof) break;
+    }
+    return offset;
+  }
+
+  /**
+   * One HTTP stream from the relay into fd (written as it arrives: the reader waits for each write, so nothing piles
+   * up in memory). A stream that breaks off is reopened from the last byte written (Range); `retries` breaks in a row
+   * without a new byte fail the download. Errors that a retry cannot fix (the relay refused the request, the file
+   * changed, a cancel) end it at once. Returns the bytes written, or null when cancelled.
+   */
+  async _stream(state, fd, job, size) {
+    let offset = 0;
+    let last = 0;
+    let failures = 0;
+    while (offset < size) {
+      if (state.cancelled) return null;
+      const controller = new AbortController();
+      state.abort = () => controller.abort();
+      const before = offset;
+      try {
+        const body = await job.open(offset, controller.signal);
+        for await (const chunk of body) {
+          if (state.cancelled) {
+            if (typeof body.destroy === "function") body.destroy();
+            return null;
+          }
+          if (offset + chunk.length > size) throw Object.assign(new Error("file changed"), { code: "changed" });
+          await writeAll(fd, chunk, offset);
+          offset += chunk.length;
+          const now = Date.now();
+          if (job.onProgress && (now - last > 120 || offset >= size)) {
+            last = now;
+            job.onProgress({ received: offset, size });
+          }
+        }
+        if (offset < size) throw Object.assign(new Error("stream ended early"), { code: "network" });
+      } catch (e) {
+        if (state.cancelled) return null;
+        if (!retriable(e)) throw e;
+        failures = offset > before ? 1 : failures + 1;
+        if (failures > this.retries) throw e;
+        await new Promise((resolve) => setTimeout(resolve, offset > before ? 0 : this.retryMs * failures));
+      } finally {
+        state.abort = null;
+      }
+    }
+    return offset;
   }
 
   _abandon({ fd, part, final }) {
@@ -344,11 +430,15 @@ class Downloads {
     const s = this.active.get(ticket);
     if (!s) return false;
     s.cancelled = true;
+    if (s.abort) s.abort(); // a relay stream stops now, not at its next chunk
     return true;
   }
 
   cancelAll() {
-    for (const s of this.active.values()) s.cancelled = true;
+    for (const s of this.active.values()) {
+      s.cancelled = true;
+      if (s.abort) s.abort();
+    }
   }
 
   /** The path of a finished download (main only; never sent to the page). */
@@ -357,4 +447,4 @@ class Downloads {
   }
 }
 
-module.exports = { extractFileRefs, FileOffers, Downloads, safeFileName, reserveName, resolveFolder, validFolderSetting, plausiblePath, MAX_REFS, FILE_MAX, CHUNK };
+module.exports = { extractFileRefs, FileOffers, Downloads, safeFileName, reserveName, resolveFolder, validFolderSetting, plausiblePath, retriable, MAX_REFS, FILE_MAX, CHUNK, STREAM_RETRIES };

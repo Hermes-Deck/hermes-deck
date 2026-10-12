@@ -31,6 +31,12 @@ const FILE_METHOD = "deck.file_read";
 // small request only names their 48-hex ids and the plugin on the same host moves the files into the session
 // (observer.py attach_staged). Its reply can wait for a cross-filesystem copy of up to 4 GB: TIMING.staged.
 const STAGED_METHOD = "deck.attach_staged";
+// deck.file_grant: large downloads. Exactly deck.file_read's authorization on the host (observer.py
+// FileReader.authorize); instead of bytes it answers {id, name, size, mtime} and writes a short-lived ticket into the
+// relay's spool, and the file then streams over HTTP from the relay on that host (relay GET /downloads/<id>).
+const GRANT_METHOD = "deck.file_grant";
+const DOWNLOAD_ID_RE = /^[a-f0-9]{48}$/;
+const DOWNLOAD_BYTES_MAX = Number.MAX_SAFE_INTEGER;
 const UPLOAD_ID_RE = /^[a-f0-9]{48}$/;
 const UPLOAD_HOST_RE = /^[a-f0-9]{16}$/;
 const TRANSCRIBE_AUDIO_MAX = 25 * 1024 * 1024;
@@ -74,6 +80,8 @@ const TIMING = {
 // Deck falls back to a roster built from the snapshot (no metadata, generated avatars).
 // deck.transcribe (dictation: one audio clip in, text out; nothing is stored or sent anywhere but Hermes' own STT)
 // and deck.file_read (one chunk of a file the agent offered in a session) change nothing on the host: reads.
+// deck.file_grant runs the same check as deck.file_read and only writes a short-lived download ticket into the Deck's
+// own spool (never Hermes data): a read as well.
 // The session browser (renderer/sessions-browser.js) adds one read, deck.session_index (a page of a profile's stored
 // sessions, which session.list cannot page or date), and four narrow writes: deck.session_update (rename / pin one stored
 // row; session.title needs a live runtime), session.archive and session.branch_stored ("Continue here").
@@ -83,7 +91,7 @@ const TIMING = {
 // live transcript tail) and deck.plan (a stored session's latest plan, rebuilt read-only from state.db by the plugin);
 // and two click-driven writes on one child: subagent.steer and subagent.interrupt. Hermes checks that the child belongs
 // to the session this connection addresses; the plugin checks the shapes again (observer.py subagent_params_ok).
-const READS = ["deck.version", "session.list", "deck.session_index", "session.messages", "session.usage", "model.options", "profiles.list", "profiles.get_asset", "deck.transcribe", "deck.file_read", "subagent.list", "subagent.tail", "deck.plan", "commands.catalog"];
+const READS = ["deck.version", "session.list", "deck.session_index", "session.messages", "session.usage", "model.options", "profiles.list", "profiles.get_asset", "deck.transcribe", "deck.file_read", "deck.file_grant", "subagent.list", "subagent.tail", "deck.plan", "commands.catalog"];
 // commands.catalog (Hermes' own slash-command palette: registry, quick commands, plugin commands, skills) feeds the
 // composer's "/" suggestions; the Deck asks it for one profile only, never with a session (no resume as a side effect).
 // deck.reasoning_view ("Show thinking") flips the in-memory show_reasoning flag of one runtime session this Deck created
@@ -400,6 +408,13 @@ function validFileRead(p) {
   return !("profile" in p) || validProfileParam(p.profile);
 }
 
+/** deck.file_grant: exactly {session_id, path, profile?}; the host runs deck.file_read's checks again. */
+function validFileGrant(p) {
+  if (!onlyKeys(p, ["session_id", "path", "profile"]) || typeof p.session_id !== "string" || !SID_RE.test(p.session_id)) return false;
+  if (typeof p.path !== "string" || p.path.length < 2 || p.path.length > 4095 || p.path[0] !== "/" || /[\u0000-\u001f\u007f]/.test(p.path)) return false;
+  return !("profile" in p) || validProfileParam(p.profile);
+}
+
 const SUBAGENT_ID_RE = /^[\x21-\x7e]{1,128}$/; // Hermes' ids look like "sa-0-1a2b3c4d"; never spaces or controls
 /**
  * subagent.*: exactly {session_id} (list) or {session_id, subagent_id} (tail, interrupt) or {session_id, subagent_id,
@@ -426,6 +441,7 @@ function checkRequest(method, params) {
   if (method === STAGED_METHOD && !validStaged(params)) throw new Error(i18nText("attach.hermesInvalid"));
   if (method === TRANSCRIBE_METHOD && !validTranscribe(params)) throw new Error(i18nText("voice.invalid"));
   if (method === FILE_METHOD && !validFileRead(params)) throw new Error(i18nText("download.invalid"));
+  if (method === GRANT_METHOD && !validFileGrant(params)) throw new Error(i18nText("download.invalid"));
   if (method === "session.messages" && !validHistoryRead(params)) throw new Error(i18nText("U0049"));
   if (method === "config.set" && !validModelSet(params) && !validReasoningSet(params)) throw new Error(i18nText("U0050"));
   if (method === "session.list" && !validSessionList(params)) throw new Error(i18nText("U0051"));
@@ -1574,8 +1590,9 @@ class BridgeClient extends EventEmitter {
   // ------------------------------------------------------------ reads
 
   /**
-   * The host plugin's version (host-versions.js): {version, protocol, uploads} from deck.version (plugin 0.3.6+; `uploads`
-   * {v: 1, host} from the plugin that takes staged uploads, else null), {legacy: true} when the host does not know the
+   * The host plugin's version (host-versions.js): {version, protocol, uploads, downloads} from deck.version (plugin
+   * 0.3.6+; `uploads` {v: 1, host} from the plugin that takes staged uploads, `downloads` {v: 1, host, maxBytes} from
+   * the plugin that grants relay downloads, else null), {legacy: true} when the host does not know the
    * method (an older plugin), null when it cannot be told now.
    */
   async version() {
@@ -1583,7 +1600,10 @@ class BridgeClient extends EventEmitter {
       const r = await this.request("deck.version", {});
       if (!r || typeof r !== "object") return null;
       const up = isPlainObject(r.uploads) && r.uploads.v === 1 && typeof r.uploads.host === "string" && UPLOAD_HOST_RE.test(r.uploads.host) ? { v: 1, host: r.uploads.host } : null;
-      return { version: typeof r.version === "string" ? r.version.slice(0, 32) : null, protocol: Number.isInteger(r.protocol) ? r.protocol : null, uploads: up };
+      const d = r.downloads;
+      const down = isPlainObject(d) && d.v === 1 && typeof d.host === "string" && UPLOAD_HOST_RE.test(d.host) && Number.isSafeInteger(d.maxBytes) && d.maxBytes > 0
+        ? { v: 1, host: d.host, maxBytes: d.maxBytes } : null;
+      return { version: typeof r.version === "string" ? r.version.slice(0, 32) : null, protocol: Number.isInteger(r.protocol) ? r.protocol : null, uploads: up, downloads: down };
     } catch (e) {
       return e && e.rpcCode === -32601 ? { legacy: true } : null;
     }
@@ -1788,6 +1808,23 @@ class BridgeClient extends EventEmitter {
     const bytes = Buffer.from(r.data, "base64");
     if (bytes.length !== r.length) throw new Error(i18nText("download.badReply"));
     return { size: r.size, mtime: num(r.mtime), offset: r.offset, length: r.length, eof: r.eof === true, bytes };
+  }
+
+  /**
+   * A download ticket for a file the agent offered in `sessionId` (deck.file_grant: the host runs deck.file_read's own
+   * checks): {id, name, size, mtime}. The relay on the same host streams the file for that id (GET /downloads/<id>);
+   * the host path never comes back.
+   */
+  async fileGrant(sessionId, filePath, { profile } = {}) {
+    checkSid(sessionId);
+    const params = { session_id: sessionId, path: filePath };
+    const p = this._profileOf(sessionId, profile);
+    if (p && p !== "default") params.profile = p;
+    const r = await this.request(GRANT_METHOD, params);
+    if (!isPlainObject(r) || typeof r.id !== "string" || !DOWNLOAD_ID_RE.test(r.id) || !Number.isSafeInteger(r.size) || r.size < 0 || r.size > DOWNLOAD_BYTES_MAX) {
+      throw new Error(i18nText("download.badReply"));
+    }
+    return { id: r.id, name: typeof r.name === "string" ? r.name.slice(0, 255) : "", size: r.size, mtime: num(r.mtime) };
   }
 
   // ------------------------------------------------------------ mutations (only ever on a user's click)

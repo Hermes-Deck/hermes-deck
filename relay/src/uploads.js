@@ -111,6 +111,7 @@ class UploadSpool {
     this.desktop = newOwner(); // the relay token (desktop apps)
     this.timer = null;
     this.host = null;
+    this.sweepers = []; // more sweeps that run with this one (downloads.js: expired download tickets)
   }
 
   limits() {
@@ -339,6 +340,13 @@ class UploadSpool {
    */
   sweep() {
     this.prune(this.desktop);
+    for (const more of this.sweepers) {
+      try {
+        more();
+      } catch {
+        /* one sweep failing never stops the other */
+      }
+    }
     let names;
     try {
       names = fs.readdirSync(this.dir);

@@ -39,6 +39,7 @@ allowlist = [
     ('app/test/bridge.test.js', re.compile(r'/srv/(?:hermes/|stream\.py)')),
     ('app/test/fake-stream.js', re.compile(r'/srv/example/')),
     ('app/test/hermes-uploads.test.js', re.compile(r'/srv/example/')),
+    ('app/test/hermes-downloads.test.js', re.compile(r'/srv/example/')),
     ('app/test/subagents.test.js', re.compile(r'/srv/example/')),
     ('app/test/work-pane.test.js', re.compile(r'/srv/example/')),
     ('app/test/voice-files.test.js', re.compile(r'/srv/(?:out(?:/|\b)|example/|hermes/|other/|ok\b|\.\./)')),

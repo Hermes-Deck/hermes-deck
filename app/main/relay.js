@@ -21,6 +21,19 @@ function helloUploads(u) {
 /** An upload failure the caller can tell apart from a Hermes error: {relayUpload: true, status, code}. */
 const uploadError = (message, extra = {}) => Object.assign(new Error(message), { relayUpload: true, ...extra });
 
+const DOWNLOAD_ID_RE = /^[a-f0-9]{48}$/;
+const DOWNLOAD_IDLE_MS = 120000; // a download that receives no byte for this long is cut (and resumed from its last byte)
+
+/** The hello's `downloads` ({v: 1, host, maxBytes}: deck.file_grant tickets streamed by relay/src/downloads.js), or null. */
+function helloDownloads(d) {
+  return d && typeof d === "object" && d.v === 1 && typeof d.host === "string" && /^[a-f0-9]{16}$/.test(d.host) && Number.isSafeInteger(d.maxBytes) && d.maxBytes > 0
+    ? { v: 1, host: d.host, maxBytes: d.maxBytes }
+    : null;
+}
+
+/** A download failure from the relay (never a Hermes error): {relayDownload: true, status, code}. */
+const downloadError = (message, extra = {}) => Object.assign(new Error(message), { relayDownload: true, ...extra });
+
 /**
  * WebSocket client for deck-relay. Reconnects with backoff; every relay push
  * ({t: hello|snapshot|evs|fleet|agents}) is re-emitted as "msg". Status changes are emitted as "status".
@@ -38,6 +51,7 @@ class RelayClient extends EventEmitter {
     this.stopped = false;
     this.lastError = null;
     this.uploads = null; // the current connection's hello `uploads` (large attachments), else null
+    this.downloads = null; // the current connection's hello `downloads` (large downloads), else null
   }
 
   /** True while the WebSocket is open. */
@@ -89,7 +103,10 @@ class RelayClient extends EventEmitter {
       } catch {
         return;
       }
-      if (m && m.t === "hello") this.uploads = helloUploads(m.uploads);
+      if (m && m.t === "hello") {
+        this.uploads = helloUploads(m.uploads);
+        this.downloads = helloDownloads(m.downloads);
+      }
       this.emit("msg", m);
     });
     ws.on("unexpected-response", (_req, res) => {
@@ -99,7 +116,10 @@ class RelayClient extends EventEmitter {
       this.lastError = e.code || e.message;
     });
     ws.on("close", () => {
-      if (this.ws === ws) this.uploads = null;
+      if (this.ws === ws) {
+        this.uploads = null;
+        this.downloads = null;
+      }
       if (this.stopped) return;
       const wait = this.backoff;
       this.emit("status", { status: "closed", error: this.lastError, retryInMs: wait });
@@ -227,6 +247,59 @@ class RelayClient extends EventEmitter {
       body.pipe(req); // backpressure: the file is read only as fast as the socket takes it
     });
   }
+
+  /**
+   * Large downloads: GET /downloads/<id> from byte `start` (a Range request when start > 0, so a cut download resumes).
+   * Resolves the response stream (IncomingMessage) once the relay answered 200 (start 0) or 206 from exactly `start`;
+   * rejects {relayDownload, status, code} for any other answer, a network error or `signal`. The stream itself is cut
+   * after DOWNLOAD_IDLE_MS without a byte. The token stays here, in main.
+   */
+  download(id, { start = 0, signal = null, idleMs = DOWNLOAD_IDLE_MS } = {}) {
+    if (typeof id !== "string" || !DOWNLOAD_ID_RE.test(id)) return Promise.reject(downloadError("bad download id", { code: "bad_request" }));
+    if (!Number.isSafeInteger(start) || start < 0) return Promise.reject(downloadError("bad download offset", { code: "bad_request" }));
+    if (signal && signal.aborted) return Promise.reject(downloadError("canceled", { code: "canceled" }));
+    const url = new URL(`${this.httpBase}/downloads/${id}`);
+    const mod = url.protocol === "https:" ? https : http;
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const headers = { authorization: `Bearer ${this.token}`, ...(start > 0 ? { range: `bytes=${start}-` } : {}) };
+      const req = mod.request(url, { method: "GET", headers });
+      const onAbort = () => req.destroy(downloadError("canceled", { code: "canceled" }));
+      const finish = (err, value) => {
+        if (settled) return;
+        settled = true;
+        if (err) {
+          if (signal) signal.removeEventListener("abort", onAbort);
+          return reject(err);
+        }
+        resolve(value);
+      };
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
+      req.setTimeout(idleMs, () => req.destroy(downloadError("timeout", { code: "timeout" })));
+      req.on("error", (e) => finish(e && e.relayDownload ? e : downloadError((e && e.message) || "network", { code: signal && signal.aborted ? "canceled" : "network" })));
+      req.on("response", (res) => {
+        const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(String(res.headers["content-range"] || ""));
+        const ok = start === 0 ? res.statusCode === 200 : res.statusCode === 206 && range && Number(range[1]) === start;
+        if (ok) {
+          const size = start === 0 ? Number(res.headers["content-length"]) : Number(range[3]);
+          // the response ends the abort listener's life; errors on the stream reach the reader
+          res.on("close", () => signal && signal.removeEventListener("abort", onAbort));
+          return finish(null, { res, size: Number.isSafeInteger(size) ? size : null });
+        }
+        const parts = [];
+        res.on("data", (d) => parts.length < 64 && parts.push(d));
+        res.on("end", () => {
+          let answer = {};
+          try { answer = JSON.parse(Buffer.concat(parts).toString() || "{}"); } catch { answer = {}; }
+          const e = answer && answer.error && typeof answer.error === "object" ? answer.error : {};
+          const code = res.statusCode === 200 || res.statusCode === 206 ? "range" : e.code || "download_error";
+          finish(downloadError(typeof e.message === "string" ? e.message.slice(0, 200) : `HTTP ${res.statusCode}`, { status: res.statusCode, code }));
+        });
+        res.on("error", (e) => finish(downloadError(e.message, { code: "network" })));
+      });
+      req.end();
+    });
+  }
 }
 
-module.exports = { RelayClient, helloUploads };
+module.exports = { RelayClient, helloUploads, helloDownloads };

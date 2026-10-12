@@ -253,7 +253,8 @@ STAGED_METHOD = "deck.attach_staged"
 STAGED_TIMEOUT = 300     # stream.py DEADLINES: a cross-filesystem copy of up to 4 GB; app/main/bridge.js TIMING.staged
 STAGED_IMAGE_MAX = ATTACH_FILE_MAX       # an image up to Hermes' image.attach_bytes cap goes as pixels
 UPLOAD_DIR_ENV = "HERMES_DECK_UPLOAD_DIR"
-FEATURES = ("attach_staged",)            # in this process's snapshot file; stream.py reads it (staged_supported)
+# in this process's snapshot file; stream.py reads it (staged_supported, grant_supported)
+FEATURES = ("attach_staged", "file_grant")
 _UPLOAD_ID = re.compile(r"[a-f0-9]{48}")
 _UPLOAD_META_MAX = 4096
 _COPY_CHUNK = 1024 * 1024
@@ -806,6 +807,19 @@ FILE_SIZE_MAX = 200 * 1024 * 1024
 FILE_SCAN_PAGE, FILE_SCAN_PAGES = 100, 50          # newest 5,000 messages of the session are searched
 FILE_GRANT_TTL, FILE_GRANTS_MAX = 600.0, 128
 FILE_RATE_WINDOW, FILE_RATE_CALLS, FILE_RATE_BYTES = 60.0, 600, 512 * 1024 * 1024
+# deck.file_grant {session_id, path, profile?} -> {id, name, size, mtime}: the same authorization as deck.file_read
+# (FileReader.authorize, shared), then a short-lived download ticket <spool>/downloads/<id>.json for the relay on this
+# host, which streams the pinned file straight from disk (relay/src/downloads.js GET /downloads/<id>, with Range).
+# The ticket holds the real path and the pin (device, inode, size, mtime_ns); the relay re-opens the path with
+# O_NOFOLLOW and refuses a file whose pin differs. dev, ino and mtime_ns are decimal strings (JSON numbers lose
+# precision past 2**53); created/expires are epoch milliseconds (the relay's Date.now()).
+FILE_GRANT_METHOD = "deck.file_grant"
+FILE_GRANT_FEATURE = "file_grant"
+DOWNLOAD_MAX_ENV = "HERMES_DECK_DOWNLOAD_MAX"
+FILE_STREAM_MAX = 8 * 1024 * 1024 * 1024               # default per-file cap of a relay download (8 GiB)
+DOWNLOAD_TTL = 15 * 60                                 # seconds a ticket stays usable (Range resumes reuse it)
+DOWNLOAD_TICKETS_MAX = 64                              # live tickets; the oldest are pruned first
+_DOWNLOAD_ENTRY = re.compile(r"([a-f0-9]{48})\.json(\.tmp)?")
 _FILE_PATH = re.compile(r"/[^\x00-\x1f\x7f]{0,4094}")
 _PATH_BEFORE = set(" \t\r\n`'\"([<{*_:>|,;=")
 _PATH_AFTER = set(" \t\r\n`'\")]>}*_,;:!?|")
@@ -978,6 +992,126 @@ def file_refusal(real, roots=None):
     return None
 
 
+def _size_text(n):
+    """200 MB, 8 GB, 1.5 GB: the limit as the refusal names it."""
+    gib, mib = 1024 ** 3, 1024 ** 2
+    if n >= gib:
+        return f"{n // gib} GB" if n % gib == 0 else f"{n / gib:.1f} GB"
+    return f"{max(1, n // mib)} MB"
+
+
+def download_max(environ=None):
+    """The per-file cap of a relay download: HERMES_DECK_DOWNLOAD_MAX (bytes, a positive integer), else 8 GiB."""
+    environ = os.environ if environ is None else environ
+    text = str(environ.get(DOWNLOAD_MAX_ENV) or "").strip()
+    return int(text) if text.isdigit() and 0 < int(text) < 2 ** 53 else FILE_STREAM_MAX
+
+
+_TICKET_LOCK = threading.Lock()
+_TICKET_FILE_MAX = 65536             # a ticket names one path of at most 4 KiB (escaped); the relay reads at most this
+_TICKET_TMP_AGE = 60.0               # a leftover <id>.json.tmp older than this is a crashed write
+
+
+def download_folder(spool):
+    """<spool>/downloads (mode 0700, a real directory of this user), created on first use."""
+    try:
+        spool = Path(spool)
+        spool.mkdir(parents=True, exist_ok=True, mode=0o700)
+        folder = spool / "downloads"
+        try:
+            folder.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        st = os.lstat(folder)
+        if not statmod.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+            raise OSError(errno.EPERM, "not a private folder")
+        os.chmod(folder, 0o700)
+        return folder
+    except OSError:
+        raise FileError(5001, "The Hermes Deck download folder is unavailable") from None
+
+
+def _ticket_times(path):
+    """(created, expires) of one ticket file, or None when it is unreadable or not a small regular file."""
+    try:
+        fd = os.open(path, _NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not statmod.S_ISREG(st.st_mode) or st.st_size > _TICKET_FILE_MAX:
+            return None
+        data = json.loads(os.read(fd, _TICKET_FILE_MAX + 1))
+        created, expires = data.get("created"), data.get("expires")
+        if type(created) is not int or type(expires) is not int:
+            return None
+        return created, expires
+    except (OSError, ValueError, AttributeError):
+        return None
+    finally:
+        os.close(fd)
+
+
+def prune_download_tickets(folder, now_ms, keep=DOWNLOAD_TICKETS_MAX):
+    """Deletes expired or unreadable tickets and stale temp files, then the oldest live ones beyond `keep`."""
+    live = []
+    for entry in os.scandir(folder):
+        match = _DOWNLOAD_ENTRY.fullmatch(entry.name)
+        if not match:
+            continue
+        path = os.path.join(folder, entry.name)
+        if match.group(2):
+            try:
+                if time.time() - os.lstat(path).st_mtime > _TICKET_TMP_AGE:
+                    os.unlink(path)
+            except OSError:
+                pass
+            continue
+        times = _ticket_times(path)
+        if times is None or times[1] <= now_ms:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            continue
+        live.append((times[0], entry.name))
+    live.sort()
+    while len(live) > max(0, keep):
+        try:
+            os.unlink(os.path.join(folder, live.pop(0)[1]))
+        except OSError:
+            pass
+    return len(live)
+
+
+def write_download_ticket(spool, real, info, now_ms, ttl=DOWNLOAD_TTL, keep=DOWNLOAD_TICKETS_MAX):
+    """Writes <spool>/downloads/<id>.json (0600, atomic) for the file `real` pinned by `info` (its fstat) and returns
+    the ticket. At most `keep` tickets live at once: the oldest are pruned first."""
+    folder = download_folder(spool)
+    ticket_id = os.urandom(24).hex()
+    ticket = {"v": 1, "id": ticket_id, "path": real, "name": os.path.basename(real)[:255], "size": info.st_size,
+              "mtime_ns": str(info.st_mtime_ns), "dev": str(info.st_dev), "ino": str(info.st_ino),
+              "created": int(now_ms), "expires": int(now_ms + ttl * 1000)}
+    data = json.dumps(ticket, ensure_ascii=True).encode("ascii")
+    if len(data) > _TICKET_FILE_MAX:
+        raise FileError(4080, "Hermes Deck cannot download this file")
+    with _TICKET_LOCK:
+        try:
+            prune_download_tickets(folder, now_ms, keep - 1)
+            tmp = folder / f"{ticket_id}.json.tmp"
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0), 0o600)
+            try:
+                view = memoryview(data)
+                while view:
+                    view = view[os.write(fd, view):]
+            finally:
+                os.close(fd)
+            os.replace(tmp, folder / f"{ticket_id}.json")
+        except OSError:
+            raise FileError(5001, "The Hermes Deck download folder is unavailable") from None
+    return ticket
+
+
 def _db_messages(profile, sid, limit, offset):
     """One page of a stored session's messages, newest first (read-only); None when the session does not exist."""
     if profile != "default":
@@ -997,7 +1131,8 @@ def _db_messages(profile, sid, limit, offset):
 
 
 class ReadBudget:
-    """Calls and bytes one control connection may spend on deck.file_read in a rolling window."""
+    """Calls and bytes one control connection may spend on deck.file_read in a rolling window (deck.file_grant
+    spends calls only: its bytes go through the relay, not this connection)."""
 
     def __init__(self, clock=time.monotonic, window=FILE_RATE_WINDOW, calls=FILE_RATE_CALLS, size=FILE_RATE_BYTES):
         self.clock, self.window, self.calls, self.size = clock, window, calls, size
@@ -1013,11 +1148,15 @@ class ReadBudget:
 
 
 class FileReader:
-    """deck.file_read: authorization against the session transcript, the path checks and one chunk read."""
+    """deck.file_read and deck.file_grant: authorization against the session transcript and the path checks (one
+    shared authorize()), then one chunk read (read) or one download ticket for the relay (grant)."""
 
-    def __init__(self, load_messages=None, roots=None, clock=time.monotonic):
+    def __init__(self, load_messages=None, roots=None, clock=time.monotonic, spool=None, stream_max=None, wall_ms=None):
         self.load, self.roots, self.clock = load_messages or _db_messages, roots, clock
         self.grants, self.lock = OrderedDict(), threading.Lock()
+        # deck.file_grant: the spool (default upload_dir() at call time), the cap (default download_max() at call time)
+        self.spool, self.stream_max = (Path(spool) if spool is not None else None), stream_max
+        self.wall_ms = wall_ms or (lambda: int(time.time() * 1000))
 
     @staticmethod
     def check(params):
@@ -1051,8 +1190,11 @@ class FileReader:
                 break
         return user
 
-    def read(self, params):
-        sid, path, profile = self.check(params)
+    def authorize(self, sid, path, profile, limit, offset=0):
+        """The one authorization of deck.file_read and deck.file_grant: (fd, stat, real path) of a file this session
+        offered, opened without following a final link, a regular file of at most `limit` bytes, not a credential or
+        state location, and (named only by a user's directive line) inside the narrow user grant. The caller closes
+        fd. `offset` > 0 marks a continuation chunk: refused when the file changed since it was pinned."""
         key = (profile, sid, path)
         denied = FileError(4080, "Hermes Deck cannot download this file")
         if not path.startswith("/"):
@@ -1072,8 +1214,8 @@ class FileReader:
             info = os.fstat(fd)
             if not statmod.S_ISREG(info.st_mode):
                 raise FileError(4082, "Not a regular file")
-            if info.st_size > FILE_SIZE_MAX:
-                raise FileError(4083, "The file is too large to download (200 MB at most)")
+            if info.st_size > limit:
+                raise FileError(4083, f"The file is too large to download ({_size_text(limit)} at most)")
             pin = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
             now = self.clock()
             with self.lock:
@@ -1085,7 +1227,7 @@ class FileReader:
                 via = grant[2]
                 # A continuation chunk of a changed file is refused; a new download (offset 0, also the Deck's
                 # one-byte size probe) simply pins the file as it is now: the offer in the transcript still stands.
-                if grant[0] != pin and params["offset"] > 0:
+                if grant[0] != pin and offset > 0:
                     with self.lock:
                         self.grants.pop(key, None)
                     raise FileError(4084, "The file changed while it was being downloaded")
@@ -1102,12 +1244,44 @@ class FileReader:
                 self.grants.move_to_end(key)
                 while len(self.grants) > FILE_GRANTS_MAX:
                     self.grants.popitem(last=False)
+            return fd, info, real
+        except BaseException:
+            os.close(fd)
+            raise
+
+    def read(self, params):
+        sid, path, profile = self.check(params)
+        fd, info, real = self.authorize(sid, path, profile, FILE_SIZE_MAX, params["offset"])
+        try:
             offset = min(params["offset"], info.st_size)
             data = os.pread(fd, min(params["length"], info.st_size - offset), offset)
         finally:
             os.close(fd)
         return {"name": os.path.basename(real)[:255], "size": info.st_size, "mtime": info.st_mtime, "offset": offset,
                 "length": len(data), "eof": offset + len(data) >= info.st_size, "data": base64.b64encode(data).decode("ascii")}
+
+    @staticmethod
+    def check_grant(params):
+        keys = {"session_id", "path"}
+        if (not isinstance(params, dict) or not keys <= set(params) or set(params) - keys - {"profile"}
+                or not isinstance(params["session_id"], str) or not re.fullmatch(r"[\x21-\x7e]{1,512}", params["session_id"])
+                or not isinstance(params["path"], str) or not _FILE_PATH.fullmatch(params["path"])
+                or ("profile" in params and (not isinstance(params["profile"], str)
+                                             or not PROFILE_NAME.fullmatch(params["profile"])))):
+            raise FileError(4000, "Invalid file request")
+        return params["session_id"], params["path"], params.get("profile", "default")
+
+    def grant(self, params):
+        """deck.file_grant: authorize exactly like read(), then write a download ticket for the relay on this host."""
+        sid, path, profile = self.check_grant(params)
+        limit = download_max() if self.stream_max is None else self.stream_max
+        fd, info, real = self.authorize(sid, path, profile, limit)
+        try:
+            ticket = write_download_ticket(self.spool if self.spool is not None else upload_dir(), real, info,
+                                           now_ms=self.wall_ms())
+        finally:
+            os.close(fd)
+        return {"id": ticket["id"], "name": ticket["name"], "size": info.st_size, "mtime": info.st_mtime}
 
 
 def stat_is_link(path):
@@ -1130,6 +1304,21 @@ def file_reply(request, reader, budget):
     except Exception:
         logger.warning("Hermes Deck bridge: file read unavailable", exc_info=True)
         return {"jsonrpc": "2.0", "id": rid, "error": {"code": 5000, "message": "Hermes file read unavailable"}}
+
+
+def file_grant_reply(request, reader, budget):
+    """deck.file_grant on the control socket: one call of the connection's budget (refused or not), then the grant."""
+    rid = request.get("id")
+    try:
+        if not budget.allow():
+            raise FileError(4085, "Too many file requests; try again in a minute")
+        budget.spend(0)
+        return {"jsonrpc": "2.0", "id": rid, "result": reader.grant(request.get("params", {}))}
+    except FileError as exc:
+        return {"jsonrpc": "2.0", "id": rid, "error": {"code": exc.code, "message": exc.message}}
+    except Exception:
+        logger.warning("Hermes Deck bridge: file grant unavailable", exc_info=True)
+        return {"jsonrpc": "2.0", "id": rid, "error": {"code": 5000, "message": "Hermes file grant unavailable"}}
 
 
 # The canonical per-bot chat of Hermes Desktop's Bot Mode: the session titled exactly this in a profile's
@@ -2092,7 +2281,7 @@ class Observer:
         with self.lock:
             return json.loads(json.dumps(dict(schema=SCHEMA, pid=self.pid,
                 sequence=self.sequence, updated_at=self.clock(), control_socket=self.control_socket,
-                features=list(FEATURES), nodes=self.nodes)))
+                features=list(FEATURES), download_max=download_max(), nodes=self.nodes)))
 
     @staticmethod
     def _gateway_running(agent):
@@ -2470,6 +2659,9 @@ class Observer:
                             start_transcription(request, peer.write)
                         elif method == FILE_METHOD:
                             peer.write(file_reply(request, files, budget))
+                        elif method == FILE_GRANT_METHOD:
+                            # the same authorization as deck.file_read; writes one ticket the relay streams from
+                            peer.write(file_grant_reply(request, files, budget))
                         elif method in {"deck.appshot", ATTACH_METHOD}:
                             token = bind_transport(connection_fanout)
                             try: peer.write((submit_appshot if method == "deck.appshot" else submit_attachments)(request, server.dispatch, connection_fanout))

@@ -35,6 +35,8 @@ function tokenOk(req, token, queryToken = false) {
  *   GET|POST /hermes/config[/schema], /hermes/restart   (Bearer token, never a mobile token; hermes-config.js)
  *   POST /uploads, PUT|DELETE /uploads/<id>   (Bearer header, never a mobile token; uploads.js) large attachments
  *                              streamed to the disk spool; the hello carries `uploads: {v, host, files, fileBytes, totalBytes}`
+ *   GET|HEAD /downloads/<id>   (Bearer header, never a mobile token; downloads.js) a file the plugin granted
+ *                              (deck.file_grant), streamed from disk with Range; the hello carries `downloads: {v, host, maxBytes}`
  *   POST /host/update | /host/restart (Bearer header + desktop device token + live desktop; host-update.js)
  *   GET /session/<sid>/plan    (Bearer token) {sid, plan, stored}: the latest plan, live or rebuilt from state.db (plan.js)
  *   GET /session/<sid>/messages | /session/<sid>/tools | /session/<sid>/call/<id> | /message/<id>/full   (Bearer token; history.js)
@@ -45,7 +47,7 @@ function tokenOk(req, token, queryToken = false) {
  * onHttp(req, res, url) -> true when it answered an authenticated request (bot screen: /desktop/*, /cu/*; spaces: /spaces*).
  * onUpgrade(req, socket, head, url) -> true when it took a relay-token WebSocket under /spaces/ (the space viewer).
  */
-function createServer({ token, model, fleet, version, hooks = null, history = null, plans = null, queryToken = false, bundles = null, mobile = null, host = null, hermesConfig = null, hostUpdate = null, uploads = null }) {
+function createServer({ token, model, fleet, version, hooks = null, history = null, plans = null, queryToken = false, bundles = null, mobile = null, host = null, hermesConfig = null, hostUpdate = null, uploads = null, downloads = null }) {
   const started = Date.now();
   // Host versions (compat.js): protocol, each profile's plugin version, the updater's last check. `v` stays first
   // and unchanged: apps before 0.3.6 read only `v` (as "the newest app version" signal).
@@ -112,6 +114,13 @@ function createServer({ token, model, fleet, version, hooks = null, history = nu
     if (url.pathname === "/uploads" || url.pathname.startsWith("/uploads/")) {
       if (mobileAuth || !tokenOk(req, token, false)) return json(res, 403, { error: "relay bearer required" });
       if (uploads && uploads.onHttp(req, res, url)) return;
+      return json(res, 404, { error: "not found" });
+    }
+    // Large downloads (downloads.js): a file the plugin granted (deck.file_grant ticket in the shared spool), streamed
+    // from disk with Range. Relay token in the header only, never a mobile token (phones use /mobile/files/<id>).
+    if (url.pathname === "/downloads" || url.pathname.startsWith("/downloads/")) {
+      if (mobileAuth || !tokenOk(req, token, false)) return json(res, 403, { error: "relay bearer required" });
+      if (downloads && downloads.onHttp(req, res, url)) return;
       return json(res, 404, { error: "not found" });
     }
     if (["/host/update", "/host/restart"].includes(url.pathname) && !tokenOk(req, token, false)) return json(res, 401, { error: "relay bearer required" });
@@ -231,7 +240,10 @@ function createServer({ token, model, fleet, version, hooks = null, history = nu
       // uploads: the spool's same-host id and limits (only here, never on the public /health); the desktop app uses the
       // relay upload path only when the plugin's deck.version reports the same host id.
       const spool = uploads ? uploads.hello() : null;
-      ws.send(JSON.stringify({ t: "hello", v: version, ...hostInfo(), ...(spool ? { uploads: spool } : {}), now: Date.now() / 1000 }));
+      // downloads: the same host id and the relay's per-file cap; the app streams GET /downloads/<id> only when the
+      // plugin's deck.version reports the same host id for its deck.file_grant tickets.
+      const dl = downloads ? downloads.hello() : null;
+      ws.send(JSON.stringify({ t: "hello", v: version, ...hostInfo(), ...(spool ? { uploads: spool } : {}), ...(dl ? { downloads: dl } : {}), now: Date.now() / 1000 }));
       ws.send(JSON.stringify({ t: "snapshot", ...snapshot() }));
       if (hooks) hooks.onConnect(ws); // Workspace tab: sends the current {t:"devices"} state
     });

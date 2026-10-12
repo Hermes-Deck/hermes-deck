@@ -7,6 +7,7 @@ const tokens = require('./devtokens');
 const { atomicWriteJson, readJson } = require('./util');
 const compat = require('./compat');
 const { UploadSpool, LEGACY, settleBody } = require('./uploads');
+const { DownloadTickets, LEGACY_MAX: LEGACY_DOWNLOAD } = require('./downloads');
 // The old single-line limits (base64 through the plugin's stdio): what a host without staged uploads can take. With a
 // plugin that answers deck.attach_staged on this host, capabilities() reports the spool's limits instead (uploads.js).
 const LIMITS = LEGACY;
@@ -123,13 +124,16 @@ const OPS = {
   answerApproval: ['id', 'profile', 'choice'], answerQuestion: ['id', 'profile', 'answers'], transcribe: ['upload', 'mime', 'language'],
 };
 class MobileRelay {
-  constructor({ tokensFile, bridgeConfig, bridgeOptions = {}, capabilities = {}, push = null, settleMs = SETTLE_MS, uploads = null }) {
+  constructor({ tokensFile, bridgeConfig, bridgeOptions = {}, capabilities = {}, push = null, settleMs = SETTLE_MS, uploads = null, downloads = null }) {
     Object.assign(this, { tokensFile, bridgeConfig, bridgeOptions, push, settleMs });
     // Uploads live on disk (uploads.js), shared with the desktop routes; index.js passes the relay's spool.
     this.uploads = uploads || new UploadSpool({ dir: path.join(path.dirname(path.resolve(tokensFile)), 'uploads') });
     this.ownSpool = !uploads;
-    // Whether the plugin behind the bridge takes staged uploads on this host (deck.version uploads.host); probed, cached.
-    this.staging = { ok: false, at: 0, busy: null };
+    // Large downloads (downloads.js): deck.file_grant tickets in the same spool, streamed from disk.
+    this.downloads = downloads || new DownloadTickets({ spool: this.uploads });
+    // Whether the plugin behind the bridge takes staged uploads on this host (deck.version uploads.host) and grants
+    // relay downloads (deck.version downloads.host; `direct` is the active per-file cap, 0 when not); probed, cached.
+    this.staging = { ok: false, direct: 0, at: 0, busy: null };
     this.names = { at: 0, map: new Map(), busy: null };
     this.enriching = new Map();
     this.BridgeClient = null;
@@ -174,20 +178,25 @@ class MobileRelay {
     // relayVersion: iOS Settings › About shows it (SettingsView.swift); protocol: the wire protocol (compat.js)
     // limits: the spool's (2 GB per file by default) once the plugin proved it takes staged uploads on this host, else
     // the old single-line limits; uploads.staged says which (informational: clients trust `limits`).
+    // limits.downloadBytes: the largest file /mobile/files can deliver (8 GB by default when the plugin grants relay
+    // downloads on this host, `downloads.direct`; else the 200 MB of the chunk path).
     const staged = this.stagedReady();
+    const direct = this.directReady();
     return { v: 1, relayVersion: compat.VERSION, protocol: compat.PROTOCOL, bridge: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', history: !!this.available.history,
       takeover: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off',
       sessionBrowser: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', reasoning: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off',
       work: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', subagents: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', commands: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off',
       workspace: !!this.available.workspace, desktop: !!this.available.desktop, push: !!this.push?.configured, transcribeLanguage: true,
-      limits: staged ? this.uploads.limits() : { ...LIMITS }, uploads: { v: 1, staged } };
+      limits: { ...(staged ? this.uploads.limits() : LIMITS), downloadBytes: direct ? this.staging.direct : LEGACY_DOWNLOAD }, uploads: { v: 1, staged }, downloads: { v: 1, direct } };
   }
   stagedReady() { return !!this.bridgeConfig && this.bridgeConfig.mode !== 'off' && this.staging.ok === true; }
+  directReady() { return !!this.bridgeConfig && this.bridgeConfig.mode !== 'off' && this.staging.direct > 0; }
   limits() { return this.stagedReady() ? this.uploads.limits() : LIMITS; }
   /**
    * Asks the plugin (deck.version, answered by stream.py) whether it takes staged uploads from this relay's spool: its
-   * uploads.host must equal ours (same machine, same real folder). A definite answer is cached for maxAgeMs; a bridge
-   * that is not connected yet is waited for briefly and asked again next time.
+   * uploads.host must equal ours (same machine, same real folder); and whether it grants relay downloads into it
+   * (downloads.host equal to ours; the smaller of its maxBytes and ours applies). A definite answer is cached for
+   * maxAgeMs; a bridge that is not connected yet is waited for briefly and asked again next time.
    */
   async probeStaging(device, maxAgeMs = 60000) {
     if (!this.bridgeConfig || this.bridgeConfig.mode === 'off') return false;
@@ -207,6 +216,9 @@ class MobileRelay {
         let host = null;
         try { host = this.uploads.hostId(); } catch {}
         this.staging.ok = !!(up && up.v === 1 && host && up.host === host);
+        const down = answer.downloads;
+        this.staging.direct = down && down.v === 1 && host && down.host === host && Number.isSafeInteger(down.maxBytes) && down.maxBytes > 0
+          ? Math.min(down.maxBytes, this.downloads.maxBytes) : 0;
         this.staging.at = Date.now();
       })().catch(() => {}).finally(() => { this.staging.busy = null; });
     }
@@ -784,8 +796,23 @@ class MobileRelay {
       if (!PROFILE_NAME.test(args.profile || '')) throw fail('bad_request', 'Explicit profile required');
       const filePath = this.offers(device).pathOf(JSON.stringify([args.profile, args.sid]), args.ref);
       if (!filePath) throw fail('not_found', 'File reference unavailable; refresh history', 404);
-      const first = await this.bridge(device).fileChunk(args.sid, filePath, { profile: args.profile, offset: 0, length: 1 });
-      const item = { id: opaque(), sid: args.sid, profile: args.profile, ref: filePath, size: first.size, mtime: first.mtime, name: path.basename(filePath), mime: 'application/octet-stream', expires: Date.now() + TTL };
+      const bridge = this.bridge(device);
+      await this.probeStaging(device).catch(() => false); // direct (deck.file_grant, streamed from disk) or chunk path
+      let item = null;
+      if (this.directReady() && typeof bridge.fileGrant === 'function') {
+        try {
+          const grant = await bridge.fileGrant(args.sid, filePath, { profile: args.profile });
+          item = { size: grant.size, mtime: grant.mtime, grant: grant.id };
+        } catch (error) {
+          if (error?.rpcCode !== -32601) throw error; // a plugin without deck.file_grant after all: the chunk path
+          this.staging.direct = 0;
+        }
+      }
+      if (!item) {
+        const first = await bridge.fileChunk(args.sid, filePath, { profile: args.profile, offset: 0, length: 1 });
+        item = { size: first.size, mtime: first.mtime };
+      }
+      item = { id: opaque(), sid: args.sid, profile: args.profile, ref: filePath, ...item, name: path.basename(filePath), mime: 'application/octet-stream', expires: Date.now() + TTL };
       device.files.set(item.id, item);
       return json(res, 200, { id: item.id, name: item.name, mime: item.mime, size: item.size });
     }
@@ -794,6 +821,22 @@ class MobileRelay {
       const item = device.files.get(match[1]);
       if (!item || item.expires < Date.now()) throw fail('not_found', 'File ticket expired', 404);
       const bridge = this.bridge(device);
+      if (item.grant) {
+        // Streamed from disk by the relay (downloads.js), Range included; an expired plugin ticket is granted again
+        // once, and must still name the same file (size and mtime).
+        const stillValid = () => tokens.stillValid(this.tokensFile, device.id, device.hash);
+        if (!stillValid()) throw fail('unauthorized', 'Device revoked', 401);
+        const options = { name: item.name, mime: item.mime, stillValid };
+        try {
+          return await this.downloads.serve(req, res, item.grant, options);
+        } catch (error) {
+          if (res.headersSent || error.code !== 'not_found') throw error;
+        }
+        const grant = await bridge.fileGrant(item.sid, item.ref, { profile: item.profile });
+        if (grant.size !== item.size || grant.mtime !== item.mtime) throw fail('changed', 'File changed', 409);
+        item.grant = grant.id;
+        return await this.downloads.serve(req, res, item.grant, options);
+      }
       res.writeHead(200, { 'content-type': item.mime, 'content-length': item.size, 'cache-control': 'no-store' });
       let offset = 0;
       while (offset < item.size) {

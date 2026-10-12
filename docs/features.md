@@ -197,7 +197,9 @@ the message is queued.
   (see [Desktop control](#desktop-control-screen-tab)).
 - **Files from the agent.** When an agent offers a file in a Hermes chat, it appears as a chip with **Download**;
   after download, **Open** and **Show in folder**. Files go to **Settings → General → Downloads → Download folder**
-  (default `Downloads/Hermes Deck`), or ask each time with **Ask where to save each time**. Limit 200 MB per file.
+  (default `Downloads/Hermes Deck`), or ask each time with **Ask where to save each time**. Limit 8 GB per file when
+  the relay and the Hermes plugin on that host share the spool (the file streams from the relay and a dropped download
+  resumes where it stopped; see [Large downloads](relay.md#large-downloads)); otherwise 200 MB per file.
   Images you or the agent sent show as thumbnails with a lightbox.
 - **Voice notes.** Audio attachments (Hermes files and Telegram voice notes) play inline with a waveform scrubber and
   1x/1.5x/2x speed.
