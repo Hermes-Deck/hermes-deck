@@ -117,9 +117,14 @@ contextBridge.exposeInMainWorld("deck", {
     preset: (mode, id) => ipcRenderer.invoke("wallpaper:preset", mode, id),
     clear: (mode) => ipcRenderer.invoke("wallpaper:clear", mode),
   },
+  sounds: { // notification sounds, per event; preview plays in the page (renderer/chime.js)
+    pick: (event) => ipcRenderer.invoke("sounds:pick", event), // the user's own audio file
+    set: (event, value) => ipcRenderer.invoke("sounds:set", event, value), // "preset:<id>" or "" (none)
+  },
   openExternal: (url) => ipcRenderer.invoke("open-external", url),
   // desktop shell (A9–A11): the fleet summary goes out to the pet and tray; notification clicks
-  // ({t: "select", key}), chimes ({t: "chime", kind}) and tray-made settings changes come back
+  // ({t: "select", key}), sounds ({t: "chime", kind: reply|done|approval|question|subagent}) and tray-made
+  // settings changes come back
   desktop: {
     petState: (summary) => ipcRenderer.send("desktop:pet-state", summary),
     testNotification: () => ipcRenderer.invoke("desktop:test"),

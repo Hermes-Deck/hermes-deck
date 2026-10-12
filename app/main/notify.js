@@ -5,11 +5,17 @@ const { t: i18nText, getLocale: i18nLocale } = require("../renderer/i18n");
 //     the message is shown with its newest text, and a burst becomes one toast with a count;
 //   - a top-level agent session that finishes (skipped when its reply already produced a toast);
 //   - notify(kind, payload) for other features: the bridge uses kind "approval" / "question" for things that
-//     wait for the user's answer (second chime, toast stays until dismissed).
-// Toasts are always silent; the chime is synthesized in the renderer (renderer/chime.js) when sound is on.
+//     wait for the user's answer (their own sound, toast stays until dismissed);
+//   - subagent(): a sub-agent finished. Sound only, no toast, at most one per SUB_GAP_MS (a fan-out of
+//     sub-agents finishing together is one sound).
+// Toasts are always silent; the renderer plays each event's sound (renderer/chime.js: built-in or the user's
+// own file, Settings > Desktop > Notifications) when sound is on.
 const { Notification } = require("electron");
 
 const ASK = new Set(["approval", "question", "ask"]); // kinds that wait for the user's answer
+// toast kind -> sound event (main/sounds.js EVENTS); kinds not listed play the reply sound
+const SOUND_OF = { reply: "reply", test: "reply", done: "done", approval: "approval", question: "question", ask: "question" };
+const SUB_GAP_MS = 4000;
 const MEDIA_TR = { get photo() { return i18nText("U0274"); }, get voice() { return i18nText("A0155"); }, video: "video", get audio() { return i18nText("common.audio"); }, get sticker() { return i18nText("U0275"); }, get file() { return i18nText("common.file"); }, get other() { return i18nText("common.attachment"); } };
 const SETTLE_MS = 1500; // after a chat's first new message: streamed edits and bursts settle into one toast
 const DONE_DELAY_MS = 3500; // a turn's final reply lands just before or just after the turn ends...
@@ -36,7 +42,7 @@ class Notifier {
    * @param {() => boolean} o.active      true while the deck window is in front (then nothing is shown)
    * @param {(key: string) => {title?: string, icon?: Electron.NativeImage}} o.describe  chat name and avatar
    * @param {(key: string|null) => void} o.onClick   bring the deck forward and open that chat
-   * @param {(kind: "reply"|"ask") => void} o.chime  play the chime in the renderer
+   * @param {(event: "reply"|"done"|"approval"|"question"|"subagent") => void} o.chime  play that event's sound in the renderer
    * @param {Electron.NativeImage|string} [o.icon]   fallback toast icon (the app coin)
    */
   constructor({ enabled, sound, active, describe, onClick, chime, icon }) {
@@ -45,6 +51,17 @@ class Notifier {
     this.byKey = new Map(); // chat key -> {n, count}: the chat's toast on screen, with its running count
     this.lastIn = new Map(); // chat key -> ms of the latest incoming message
     this.live = new Set(); // shown toasts, oldest first
+    this.lastSub = 0; // ms of the last sub-agent sound
+  }
+
+  /** A sub-agent finished: its sound while the deck is in the background (no toast). True when it played. */
+  subagent() {
+    if (!this.enabled() || !this.sound() || this.active()) return false;
+    const now = Date.now();
+    if (now - this.lastSub < SUB_GAP_MS) return false;
+    this.lastSub = now;
+    this.chime("subagent");
+    return true;
   }
 
   /** Telegram "msg": a message in one of the chats the deck shows. */
@@ -132,7 +149,7 @@ class Notifier {
     this.live.add(n);
     if (this.live.size > KEEP) this.live.delete(this.live.values().next().value);
     n.show();
-    if (this.sound() && !payload.quiet) this.chime(ask ? "ask" : "reply");
+    if (this.sound() && !payload.quiet) this.chime(SOUND_OF[kind] || "reply");
     return n;
   }
 
@@ -145,4 +162,4 @@ class Notifier {
   }
 }
 
-module.exports = { Notifier, clip, textOf };
+module.exports = { Notifier, clip, textOf, SOUND_OF, SUB_GAP_MS };

@@ -11,6 +11,7 @@ const { loadEnvFile } = require("./envfile");
 const { normalizeConfig: normalizeBridge } = require("./bridge");
 const { validFolderSetting } = require("./hermes-files");
 const wallpaper = require("./wallpaper");
+const notifySounds = require("./sounds"); // Settings > Desktop > Notifications: the sound of each event
 
 const DEFAULTS = {
   relay: { url: "", token: "" }, // url: ws://<private-ip>:9330
@@ -23,6 +24,9 @@ const DEFAULTS = {
   // item: desktop.js re-reads the real state on every start (main/autostart.js). petSkin: the pet's look
   // (character = Character, orb = Orb, agent = Agent); petMotion: its animations (off = stills).
   desktop: { notifications: true, sound: true, pet: true, closeToTray: true, autostart: false, petPos: null, petSkin: "character", petMotion: true, petSize: 1, taskbarBadge: true },
+  // notification sounds (main/sounds.js), heard while desktop.sound is on: volume 0..100 and, per event, a built-in
+  // sound ("preset:<id>"), "" for none, or a stored file of the user's own
+  sounds: JSON.parse(JSON.stringify(notifySounds.DEFAULTS)),
   // direct connection to a Hermes host's stream.py (no secrets: SSH keys stay in the user's ~/.ssh)
   bridge: { mode: "off", target: "", python: "", stream: "~/.hermes/hermes-deck/stream.py", distribution: "" },
   // downloads of files a Hermes agent offered (main/hermes-files.js): dir = a folder the owner picked ("" = the OS
@@ -191,6 +195,7 @@ class Settings {
     if (!["en", "tr"].includes(d.language)) d.language = DEFAULTS.language;
     if (!THEMES.includes(d.theme)) d.theme = DEFAULTS.theme;
     d.wallpaper = wallpaper.normalize(d.wallpaper);
+    d.sounds = notifySounds.normalize(raw.sounds);
     if (!PET_SIZES.includes(d.desktop.petSize)) d.desktop.petSize = DEFAULTS.desktop.petSize;
     if (!d.composer || !BUSY_SEND.includes(d.composer.busySend)) d.composer = clone(DEFAULTS.composer);
     d.reading = normalizeReading(raw.reading);
@@ -249,6 +254,7 @@ class Settings {
       theme: THEMES.includes(d.theme) ? d.theme : "basalt",
       updates: { auto: d.updates.auto !== false, host: d.updates.host === true, repo: d.updates.repo || "", branch: d.updates.branch || "main", hasToken: !!d.updates.token, fromSource: d.updates.fromSource === true },
       wallpaper: wallpaper.normalize(d.wallpaper),
+      sounds: notifySounds.normalize(d.sounds),
       composer: { busySend: BUSY_SEND.includes(d.composer && d.composer.busySend) ? d.composer.busySend : "queue" },
       reading: normalizeReading(d.reading),
       spaces: { defaultLevel: SPACE_LEVELS.includes(d.spaces && d.spaces.defaultLevel) ? d.spaces.defaultLevel : "watch" },
@@ -259,6 +265,15 @@ class Settings {
   }
 
   /** A chat mode's wallpaper (a stored name, "preset:<id>", or "" = none); only the wallpaper:* IPC handlers call this. */
+  /** One event's sound: "preset:<id>", "" (none) or a stored file's name (sounds:pick / sounds:set in main.js). */
+  setSoundEvent(event, value) {
+    if (!notifySounds.EVENTS.includes(event) || !notifySounds.valid(value)) throw new Error(i18nText("sound.invalid"));
+    const s = notifySounds.normalize(this.data.sounds);
+    s.events[event] = value;
+    this.data.sounds = s;
+    this.save();
+  }
+
   setWallpaperFile(mode, name) {
     if (!wallpaper.MODES.includes(mode)) throw new Error(i18nText("wall.badDim"));
     const w = wallpaper.normalize(this.data.wallpaper);
@@ -338,6 +353,8 @@ class Settings {
         Number.isInteger(v.dim) && v.dim >= wallpaper.DIM.min && v.dim <= wallpaper.DIM.max);
       if (!ok) throw new Error(i18nText("wall.badDim"));
     }
+    // the generic save moves the volume and built-in sounds; an own file comes only through sounds:pick
+    if (patch.sounds !== undefined && !notifySounds.patchOk(patch.sounds)) throw new Error(i18nText("sound.invalid"));
     if (patch.desktop && patch.desktop.petSize !== undefined && !PET_SIZES.includes(patch.desktop.petSize)) throw new Error(i18nText("settings.invalidPetSize"));
     if (patch.composer !== undefined && (!patch.composer || typeof patch.composer !== "object" || Array.isArray(patch.composer) ||
         (patch.composer.busySend !== undefined && !BUSY_SEND.includes(patch.composer.busySend)))) throw new Error(i18nText("set.busySendInvalid"));
@@ -424,6 +441,10 @@ class Settings {
       const w = wallpaper.normalize(d.wallpaper);
       for (const [m, v] of Object.entries(patch.wallpaper)) w[m] = { ...w[m], dim: v.dim };
       d.wallpaper = w;
+    }
+    if (patch.sounds !== undefined) {
+      const cur = notifySounds.normalize(d.sounds);
+      d.sounds = notifySounds.normalize({ volume: patch.sounds.volume ?? cur.volume, events: { ...cur.events, ...(patch.sounds.events || {}) } });
     }
     if (patch.composer && patch.composer.busySend !== undefined) d.composer = { ...d.composer, busySend: patch.composer.busySend };
     if (patch.reading) d.reading = normalizeReading({ ...d.reading, ...patch.reading });

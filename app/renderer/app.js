@@ -2082,7 +2082,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       if (!e) return;
       if (e.t === "select" && /^(u|t)\d+$/.test(String(e.key))) select(e.key);
       else if (e.t === "select" && String(e.key).startsWith("hs:")) hermesSelect(String(e.key).slice(3));
-      else if (e.t === "chime" && typeof window.deckChime === "function") window.deckChime(e.kind === "ask" ? "ask" : "reply");
+      else if (e.t === "chime" && typeof window.deckChime === "function") window.deckChime(String(e.kind || "reply"), S.settings); // that event's sound (Settings > Desktop > Notifications)
       else if (e.t === "settings-open") openSettings(typeof e.section === "string" ? e.section : undefined); // an update toast
       else if (e.t === "settings" && e.settings) {
         S.settings = e.settings;

@@ -176,6 +176,8 @@ function fromRelay(m) {
     // a top-level session that stopped running. Not: a sub-agent, a cron job (its result arrives as a
     // message), a context-compression hand-over to a new session id, or a session that only went quiet.
     if (was && !now && !s.parent && !s.cron && !s.splitInto && !s.stale) sessionDone(s);
+    // a sub-agent that finished: its own sound (Settings > Desktop > Notifications), no toast
+    else if (was && !now && s.parent && !s.cron && !s.splitInto && !s.stale) notifier.subagent();
     // the pet's Agent skin shows the agent that started working last
     if (!was && now && !s.parent && s.agent && pet) pet.setAgent({ name: s.agent, avatar: petWho(sessionKey(s)).avatar });
   }

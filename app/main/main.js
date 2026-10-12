@@ -21,6 +21,7 @@ const secret = require("./secret");
 const desktop = require("./desktop"); // desktop shell (A9–A11): notifications, status pet, tray
 const theme = require("./theme"); // Settings > Appearance: which colour theme every window uses
 const wallpaper = require("./wallpaper"); // Settings > Appearance: the chat background picture
+const notifySounds = require("./sounds"); // Settings > Desktop > Notifications: each event's sound
 const { initUpdates } = require("./update-service"); // Settings > General > Updates
 const { HostVersions } = require("./host-versions"); // relay / plugin older than this app, protocol mismatch
 const { createHostUpdater } = require("./host-update"); // Settings › Update the host (relay /host/update)
@@ -903,6 +904,32 @@ ipc.handle("wallpaper:clear", (e, mode) => {
   wallpaper.clean(app.getPath("userData"), wallpaper.used(settings.data.wallpaper));
   return settings.publicView();
 });
+// Notification sounds: a native picker for the user's own file (the page never sees a path), copied into the
+// profile (main/sounds.js); sounds:set picks a built-in sound or none. A file no event uses any more goes.
+ipc.handle("sounds:pick", async (e, event) => {
+  fromApp(e);
+  if (!notifySounds.EVENTS.includes(event)) throw new Error(i18nText("sound.invalid"));
+  if (SHOT) throw new Error(i18nText("U0259"));
+  const r = await dialog.showOpenDialog(win, { title: i18nText("sound.pick"), properties: ["openFile"],
+    filters: [{ name: i18nText("sound.files"), extensions: notifySounds.EXTS }] });
+  if (r.canceled || !r.filePaths.length) return settings.publicView();
+  let name;
+  try {
+    name = notifySounds.importSound(app.getPath("userData"), r.filePaths[0]);
+  } catch (err) {
+    throw new Error(i18nText(/^sound\./.test(err.message) ? err.message : "sound.badType"));
+  }
+  settings.setSoundEvent(event, name);
+  notifySounds.clean(app.getPath("userData"), notifySounds.used(settings.data.sounds));
+  return settings.publicView();
+});
+ipc.handle("sounds:set", (e, event, value) => {
+  fromApp(e);
+  if (!notifySounds.EVENTS.includes(event) || !notifySounds.isPresetOrNone(value)) throw new Error(i18nText("sound.invalid"));
+  settings.setSoundEvent(event, value);
+  notifySounds.clean(app.getPath("userData"), notifySounds.used(settings.data.sounds));
+  return settings.publicView();
+});
 ipc.handle("tg:attach-pick", async (e) => {
   fromApp(e);
   if (SHOT) throw new Error(i18nText("U0259")); // no native dialog during a headless run
@@ -1226,6 +1253,8 @@ app.whenReady().then(() => {
     const u = new URL(req.url);
     const wall = wallpaper.fileFor(app.getPath("userData"), u.pathname); // the chat wallpaper, from the profile
     if (wall) return net.fetch(pathToFileURL(wall).toString());
+    const sound = notifySounds.fileFor(app.getPath("userData"), u.pathname); // a notification sound, from the profile
+    if (sound) return net.fetch(pathToFileURL(sound).toString());
     const p = path.normalize(path.join(RENDERER, decodeURIComponent(u.pathname)));
     if (!p.startsWith(RENDERER + path.sep)) return new Response("forbidden", { status: 403 });
     return net.fetch(pathToFileURL(p).toString());

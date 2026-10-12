@@ -251,15 +251,23 @@ Claude subscription are shown as **API list-price equivalent**, not as an invoic
 
 **What it is.** OS notifications while the Deck window is in the background: new chat messages (one toast per chat,
 grouped), finished top-level agent sessions, approvals and questions that wait for you (these stay until dismissed),
-and update notices. A synthesized chime plays when **Sound** is on. The taskbar (Windows) or dock icon shows how many
-chats wait for you.
+and update notices. When **Sound** is on, each event plays its own sound: **New reply**, **Task finished**, **Approval
+needed**, **Agent asks a question** and **Sub-agent finished** (a sub-agent plays only its sound, no toast, and
+sub-agents that finish together play it once). The taskbar (Windows) or dock icon shows how many chats wait for you.
 
 **Settings.** **Settings → Desktop**: **Notifications** (with **Test notification**), **Sound**, **Badge on the
 taskbar icon**. On Windows, notifications need the Start menu shortcut that the installer adds (source runs: `npm run
 shortcuts` in `app/`).
 
-**Needs.** Telegram messages need Telegram mode; finished sessions need the relay; approvals and questions need the
-direct connection.
+**Notification sounds** (also under **Settings → Desktop**): a **Volume** slider and, for each event, **None**, one of
+the built-in sounds (Bell, Rise, Chord, Pop, Marimba, Glass, Knock, Tick, Alert; synthesized by the app, no audio files)
+or **Choose sound file…** for your own MP3, WAV, OGG, Opus, M4A, AAC, FLAC or WebM file of up to 5 MB. A new choice
+plays once; the **▶** button plays it again. Your file is copied into the Deck's profile (`sounds/` in the app's data
+folder), so the original can be moved or deleted; only its first 10 seconds play. A file no event uses any more is
+removed.
+
+**Needs.** Telegram messages need Telegram mode; finished sessions and sub-agents need the relay; approvals and
+questions need the direct connection.
 
 ## Status pet, themes, wallpapers and languages
 

@@ -10,6 +10,20 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
   // ---------------------------------------------------------------- pure helpers
   const SECTIONS = ["general", "hermes", "hermescfg", "relay", "telegram", "desktop", "device"];
   const BUSY_SEND = ["queue", "steer"];
+  // notification sounds: main/sounds.js PRESETS / DEFAULTS and renderer/chime.js TUNES (test/sounds.test.js keeps them equal)
+  const SOUND_PRESETS = ["bell", "rise", "chord", "pop", "marimba", "glass", "knock", "tick", "alert"];
+  const SOUND_DEFAULTS = { volume: 80, events: { reply: "preset:bell", done: "preset:chord", approval: "preset:rise", question: "preset:rise", subagent: "preset:tick" } };
+  const SOUND_OWN_RE = /^[a-f0-9]{16}\.(mp3|wav|ogg|oga|opus|m4a|aac|flac|webm)$/;
+  /** The sounds setting from a settings snapshot: {volume: 0..100, events: {<event>: "preset:<id>" | "" | stored name}}. */
+  function soundsOf(settings) {
+    const s = settings && settings.sounds && typeof settings.sounds === "object" ? settings.sounds : {};
+    const ev = s.events && typeof s.events === "object" ? s.events : {};
+    const ok = (v) => v === "" || SOUND_OWN_RE.test(v) || (typeof v === "string" && v.startsWith("preset:") && SOUND_PRESETS.includes(v.slice(7)));
+    return {
+      volume: Number.isInteger(s.volume) && s.volume >= 0 && s.volume <= 100 ? s.volume : SOUND_DEFAULTS.volume,
+      events: Object.fromEntries(Object.entries(SOUND_DEFAULTS.events).map(([k, d]) => [k, typeof ev[k] === "string" && ok(ev[k]) ? ev[k] : d])),
+    };
+  }
 
   /** Keep the stored spelling, matching Telegram usernames without case or a leading @. */
   function hiddenBotsWith(list, username) {
@@ -555,6 +569,7 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
         flag("sound", node("A0253"), { off: !d.notifications }),
         flag("taskbarBadge", node("set.badge"), { title: T("set.badgeHelp") }),
         h("div", { class: "sv-row sv-end" }, test)));
+      kids.push(soundsGroup(d));
       kids.push(group(node("A0183"),
         flag("pet", node("A0183")),
         row(node("U0333"), skin, { id: "s-desk-petSkin", cls: d.pet ? "" : "off" }),
@@ -564,6 +579,47 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
         flag("closeToTray", node("U0553"), { title: T("U0554") }),
         flag("autostart", node("U0558"), { off: auto !== "ok", title: auto === "ok" ? null : auto === "mac-dev" ? T("U0556") : T("U0557") })));
     };
+
+    // Notification sounds (main/sounds.js, renderer/chime.js): the volume, and per event a built-in sound, none, or
+    // the user's own file (picked natively, copied into the profile). Each choice plays once when it is made; the
+    // play button previews it again. Heard only while Sound is on.
+    const SOUND_EVENTS = [["reply", "sound.ev.reply"], ["done", "sound.ev.done"], ["approval", "sound.ev.approval"], ["question", "sound.ev.question"], ["subagent", "sound.ev.subagent"]];
+    function soundsGroup(d) {
+      const DS = window.DeckSounds;
+      const s = soundsOf(st());
+      const off = !d.notifications || !d.sound;
+      const preview = (value) => DS && DS.play(value, soundsOf(st()).volume);
+      const volume = h("input", { id: "s-sound-volume", class: "s-sound-volume", type: "range", min: "0", max: "100", step: "5", value: String(s.volume), disabled: off ? true : null,
+        "aria-label": T("sound.volume"), dataset: { fk: "sound:volume" },
+        onchange: (e) => {
+          const v = Number(e.target.value);
+          Promise.resolve(ctx.save({ sounds: { volume: v } }, T("sound.volumeSaved"))).then(() => DS && DS.play(soundsOf(st()).events.reply, v));
+        } });
+      const eventRow = ([ev, label]) => {
+        const value = s.events[ev];
+        const own = !!value && !value.startsWith("preset:");
+        const choice = h("select", { class: "s-sound-choice", id: `s-sound-${ev}`, disabled: off ? true : null, "aria-label": T(label), dataset: { fk: `sound:choice:${ev}` },
+          onchange: (e) => {
+            const v = e.target.value;
+            const call = v === "own" ? () => ctx.deck.sounds.pick(ev) : () => ctx.deck.sounds.set(ev, v);
+            Promise.resolve(ctx.saveCall(call, T("sound.saved"))).then(() => {
+              const now = soundsOf(st()).events[ev];
+              if (v !== "own" || now !== value) preview(now); // hear the new choice once (not after a cancelled pick)
+            });
+          } },
+          [["", T("sound.none")], ...SOUND_PRESETS.map((id) => [`preset:${id}`, T(`sound.preset.${id}`)]), ["own", own ? T("sound.own") : T("sound.pick")]]
+            .map(([v, l]) => h("option", { value: v, selected: (v === "own" ? own : v === value) ? true : null }, l)));
+        const change = own ? h("button", { class: "btn mini", type: "button", disabled: off ? true : null, dataset: { fk: `sound:pick:${ev}` },
+          onclick: () => ctx.saveCall(() => ctx.deck.sounds.pick(ev), T("sound.saved")) }, node("sound.change")) : null;
+        const play = h("button", { class: "btn mini s-sound-play", type: "button", disabled: value ? null : true, title: T("sound.preview"), "aria-label": `${T(label)}: ${T("sound.preview")}`, dataset: { fk: `sound:play:${ev}` },
+          onclick: () => preview(soundsOf(st()).events[ev]) }, "▶");
+        return row(h("span", null, T(label)), h("span", { class: "sv-inline" }, choice, change, play), { id: `s-sound-${ev}`, cls: off ? "off" : "" });
+      };
+      return group(node("sound.title"),
+        row(node("sound.volume"), volume, { id: "s-sound-volume", cls: off ? "off" : "" }),
+        ...SOUND_EVENTS.map(eventRow),
+        h("p", { class: "sv-row sv-block s-sound-help" }, T("sound.help")));
+    }
 
     // This device: what this computer hosts for agents (workspace.js, botscreen.js own their rows)
     function safetyGroup() {
@@ -982,7 +1038,7 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
     return { open, close, toggle: (s) => (V.open ? close() : open(s)), isOpen: () => V.open, refresh, notify, section: () => V.section, icon, updateHiddenBots, _builders: BUILDERS };
   }
 
-  const api = { create, SECTIONS, BUSY_SEND, screenTabVisible, tabFor, busySendOf, sectionOf, hostLines, hostBanners, sizeText, DOCKER_URL };
+  const api = { create, SECTIONS, BUSY_SEND, SOUND_PRESETS, SOUND_DEFAULTS, soundsOf, screenTabVisible, tabFor, busySendOf, sectionOf, hostLines, hostBanners, sizeText, DOCKER_URL };
   if (typeof window !== "undefined") window.DeckSettingsView = Object.freeze(api);
   if (typeof module === "object" && module.exports) module.exports = api; // Node unit tests
 })();

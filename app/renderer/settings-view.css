@@ -152,6 +152,12 @@
 .upd-adv summary { cursor: pointer; padding: 6px 0; color: var(--vein-text); font-size: 12.5px; }
 .upd-adv .sv-row { padding-left: 0; padding-right: 0; }
 .sv-ctl .sv-inline select.s-wall-choice { width: 160px; }
+/* notification sounds (Settings > Desktop): the volume slider, each event's sound and its play button */
+.sv-ctl input.s-sound-volume[type="range"] { width: 160px; flex: none; padding: 0; border: 0; background: none; accent-color: var(--patina); }
+.sv-ctl .sv-inline select.s-sound-choice { width: 170px; }
+.sv-ctl .sv-inline:has(.s-sound-choice) { flex-wrap: nowrap; }
+.sv-block.s-sound-help { padding: 10px 14px; font-size: 12.5px; line-height: 1.5; color: var(--marble-dim); }
+.sv-ctl .s-sound-play { min-width: 30px; padding-left: 0; padding-right: 0; font-size: 10px; line-height: 1; }
 
 /* ---------- agent desktops (Settings > This device) and its consent sheet ---------- */
 .sv-dk-status:empty { display: none; }
