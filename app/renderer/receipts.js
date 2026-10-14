@@ -189,7 +189,8 @@
         const unfold = active && selected.source !== "live";
         const item = h("details", { class: `receipt-call${failed(call) ? " failed" : ""}${active ? " selected" : ""}`, open: unfold || call.open ? true : null,
           dataset: { call: call.call }, ontoggle: () => { call.open = item.open; } },
-          h("summary", { onclick: () => select(sid, call.call, false) },
+          // only unfolding picks the call (and lands on it in Run); folding it back leaves Run alone
+          h("summary", { onclick: () => { if (!item.open) select(sid, call.call, false); } },
             h("span", { class: call.status === "running" ? "receipt-spinner" : "receipt-dot", "aria-hidden": "true" }),
             h("span", { class: "receipt-tool" }, call.tool), h("code", { class: "receipt-args" }, call.args),
             h("span", { class: "receipt-duration" }, call.ms == null ? "…" : `${(call.ms / 1000).toFixed(1)}s`)),

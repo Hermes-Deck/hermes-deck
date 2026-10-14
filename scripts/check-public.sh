@@ -42,6 +42,7 @@ allowlist = [
     ('app/test/hermes-downloads.test.js', re.compile(r'/srv/example/')),
     ('app/test/subagents.test.js', re.compile(r'/srv/example/')),
     ('app/test/work-pane.test.js', re.compile(r'/srv/example/')),
+    ('app/test/diff-view.test.js', re.compile(r'/srv/example/')),
     ('app/test/voice-files.test.js', re.compile(r'/srv/(?:out(?:/|\b)|example/|hermes/|other/|ok\b|\.\./)')),
     ('hermes-plugin/hermes-deck/test_appshot.py', re.compile(r'/srv/example/')),
     ('hermes-plugin/hermes-deck/test_attach.py', re.compile(r'/srv/example(?:/|["\'])')),

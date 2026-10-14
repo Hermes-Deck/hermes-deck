@@ -160,7 +160,7 @@ Telegram. Known executable and script types are saved but never opened directly.
 - Agent prose is set in a reading serif; reasoning folds say how long the agent thought. A turn's work reads in
   order: each thought is followed by the tool calls it made (tool name and main argument). After the work, a folded
   receipt sums the turn up (**Worked Ns · N tools**) and lists each call's output; clicking a call in the transcript
-  opens it there, and a receipt opens the call in Work › **Run**. A scrubber on the chat's left edge jumps between
+  opens it there and in Work › **Run**, expanded on its row. A scrubber on the chat's left edge jumps between
   turns.
 - Approvals and questions from the agent appear in the composer tray and are answered there (or in the
   [inbox](#inbox-and-fleet)).
@@ -294,22 +294,31 @@ All of these are local to the app; nothing is sent anywhere.
 - **Session** (first tab; **Ctrl/Cmd+Alt+I**): the chat's channel, agent, profile, model and session id, its figures
   when the relay has them (context with a meter, cache hit, tok/s, fresh / cached / output tokens, tools, turns), and
   **Steer**, **Stop** and **Model**; then what runs in other agents.
-- **Run**: the session's recent tool calls with status, timing bars and the selected call's output.
+- **Run**: the session's tool calls with status and timing bars. Clicking a row opens it in place: its arguments
+  (as a field list, **Raw** for the original text) and its output, both visible, with **Copy** for each; a second
+  click closes it, and ↗ shows the call in the chat. `patch` and `write_file` calls show a red/green diff per file
+  instead of raw arguments (real line numbers when the result carries a diff, a `write` is shown as added lines), and
+  their output reads **Applied**, **Wrote 2.0 KB** or **Not applied**. Clicking a tool call in the chat (a receipt
+  row, **Inspect**, or a tool chip in the transcript) opens Run on that row, expanded and scrolled into view.
 - **Plan**: the agent's own task list, live as it changes, with done/active/pending states, phases and blocked
   reasons. "This agent did not publish a plan" when there is none.
-- **Diff**: the files the agent wrote or patched, with the +/- counts the tool calls show. It is not a full diff.
+- **Diff**: the files the agent wrote or patched, with +/- counts. Opening a file lists its edits from every `patch`
+  and `write_file` call, oldest first (the latest 12), each with its time and **Open in Run**.
 - **Sub-agents**: the session's live sub-agents (goal, model, effort, state, elapsed time, context) and recently failed
   delegations. A sub-agent opens with its figures (elapsed, tokens, context, cache hit, tok/s, fresh / cached / output
-  tokens, tool calls, cost; only the ones that exist), its live output and recent tool calls. Times read like
-  **2m 05s** or **6h 38m**, token counts like **12.4k** or **2.9M** (hover for the exact number). **Steer** sends a
-  message to one sub-agent and **Stop** ends it.
+  tokens, tool calls, cost; only the ones that exist), its live output and recent tool calls, each opening into the
+  same arguments and output detail as Run. Times read like **2m 05s** or **6h 38m**, token counts like **12.4k** or
+  **2.9M** (hover for the exact number). **Steer** sends a message to one sub-agent and **Stop** ends it.
 - **Browser** and **Screen**: the [agent browser](#agent-browsers-browser-tab) and
   [desktop control](#desktop-control-screen-tab) views.
 
 **How it works.** Plans come from Hermes' `todo_list` tool (or OMH's `omh_todo`): the plugin emits a `plan` event
 after each successful call, the relay keeps the latest plan per session, and the direct connection streams it as
 `deck.plan`. A stored session's plan is rebuilt read-only from the newest task-list result in `state.db`. Tool calls
-come from `deck.tools` (direct) or the relay's session detail. Sub-agents are read with `subagent.list` / `subagent.tail`
+come from `deck.tools` (direct) or the relay's session detail. Live previews are clipped (300 characters; 1,200 in
+the relay's history); opening a clipped call, or a Diff file, reads the full stored call once through the relay
+(`GET /session/<sid>/call/<id>`, at most 256 KB per field). Without the relay the detail shows the preview with
+"Preview only". Sub-agents are read with `subagent.list` / `subagent.tail`
 while the tab is open; Steer and Stop follow a click and are never replayed.
 
 **Needs.** Plugin. Agents, Steer and Stop need the direct connection; a stored plan without the direct connection

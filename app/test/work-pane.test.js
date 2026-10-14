@@ -6,12 +6,13 @@ const I18N = require("../renderer/i18n");
 I18N.extend(require("../renderer/i18n-d"));
 
 function harness(bridge = {}, relay = {}, options = {}) {
-  const tabs = new Map(), listeners = new Map(), live = new Map(), timers = new Map();
+  const tabs = new Map(), listeners = new Map(), live = new Map(), timers = new Map(), delays = new Map(), scrolls = [];
   const docListeners = new Map();
   const doc = { activeElement: null, addEventListener: (n, f) => docListeners.set(n, f), removeEventListener: n => docListeners.delete(n),
     dispatchEvent: e => docListeners.get(e.type)?.(e) };
   const h = (tag, attrs, ...kids) => ({ tag, attrs: attrs || {}, children: kids.flat(Infinity).filter(x => x != null), value: "", isConnected: true,
-    replaceChildren(...cs) { this.children = cs; }, querySelector() { return null; }, focus() { doc.activeElement = this; } });
+    replaceChildren(...cs) { this.children = cs; }, querySelector() { return null; }, focus() { doc.activeElement = this; },
+    scrollIntoView(o) { scrolls.push({ item: this.attrs["data-item"], block: o?.block }); } });
   let session = { sid: "session-a", profile: "default" }, right = { kind: "work", tab: "plan" };
   const panes = new Map();
   const shell = { registerWorkTab: (id, def) => tabs.set(id, def), service: n => n === "h" ? h : null,
@@ -24,13 +25,27 @@ function harness(bridge = {}, relay = {}, options = {}) {
   let event, relayEvent;
   const deck = { bridge: { ...bridge, onEvent: f => { event = f; return () => {}; } }, ...relay,
     onRelay: f => { relayEvent = f; return () => {}; } };
-  const app = W.create({ shell, deck, doc, h, t: I18N.t, setTimer: f => { const id = Symbol(); timers.set(id, f); return id; }, clearTimer: id => timers.delete(id),
+  const app = W.create({ shell, deck, doc, h, t: I18N.t, setTimer: (f, ms) => { const id = Symbol(); timers.set(id, f); delays.set(id, ms); return id; }, clearTimer: id => timers.delete(id),
     emit: detail => doc.dispatchEvent({ type: "deck-tool-select", detail }), ...options });
-  return { app, shell, tabs, live, panes, timers, doc, event: m => event(m), relay: m => relayEvent(m),
+  return { app, shell, tabs, live, panes, timers, scrolls, doc, event: m => event(m), relay: m => relayEvent(m),
+    /** Run the pending timers set with this delay (0: the one-shot scroll, 1200: the "Copied" reset). */
+    flush(ms) { for (const [id, f] of [...timers]) if (delays.get(id) === ms) { timers.delete(id); f(); } },
     session(s) { session = s; listeners.get("session")(s); },
     async settle() { for (let n = 0; n < 12; n++) await Promise.resolve(); shell.refresh(); },
     nodes(el = panes.get(shell.right().tab)) { const out = []; const walk = x => { if (x && typeof x === "object") { out.push(x); x.children?.forEach(walk); } }; walk(el); return out; },
     text(el = panes.get(shell.right().tab)) { const walk = x => typeof x === "object" ? (x.children || []).map(walk).join(" ") : String(x); return walk(el); } };
+}
+/** Click a Run row (the row button carrying `data-call`), as a user would to open or close its inline detail. */
+function expandRow(b, call) {
+  const row = b.nodes().find(n => n.tag === "button" && n.attrs["data-call"] === call);
+  assert.ok(row, `row ${call}`);
+  row.attrs.onclick();
+}
+/** Open a sub-agent's call (its <details> summary click; the native toggle is the browser's part). */
+function openAgentCall(b, call) {
+  const details = b.nodes().find(n => n.tag === "details" && n.attrs["data-call"] === call);
+  assert.ok(details, `agent call ${call}`);
+  details.children.find(n => n.tag === "summary").attrs.onclick({ currentTarget: { parentNode: { open: !!details.attrs.open } } });
 }
 
 test("Plan tab renders native and OMH states safely, stays live and distinguishes cleared", async () => {
@@ -99,14 +114,16 @@ test("Run statistics count failures honestly and timing bars normalize seconds a
 test("Run replaces tool pushes, follows running calls and synchronizes explicit selection", async () => {
   const b = harness({ toolCalls: async () => [{ call: "old", tool: "terminal", status: "ok", ms: 10, result: "Earlier output" }] });
   b.shell.openRight("work", "run"); await b.settle();
-  assert.match(b.text(), /Earlier output/);
+  assert.doesNotMatch(b.text(), /Earlier output/, "output stays folded until its row is opened");
+  expandRow(b, "old"); assert.match(b.text(), /Earlier output/);
   b.event({ type: "deck.tools", sid: "session-a", payload: { tools: [
     { call: "a", tool: "terminal", status: "ok", ms: 20, result: "<img onerror=bad>" },
     { call: "b", tool: "patch", status: "running", ms: null }
   ] } });
-  await b.settle(); assert.equal(b.live.get("run"), true); assert.doesNotMatch(b.text(), /Earlier output/);
-  b.app.selectTool({ sid: "session-a", call: "a" }); await b.settle();
-  assert.match(b.text(), /<img onerror=bad>/);
+  await b.settle(); assert.equal(b.live.get("run"), true);
+  assert.match(b.text(), /not in the recent list.*Earlier output/, "a pinned call that left the list keeps its detail at the top");
+  expandRow(b, "a"); await b.settle();
+  assert.match(b.text(), /<img onerror=bad>/); assert.doesNotMatch(b.text(), /Earlier output/);
   assert.ok(b.nodes().find(n => n.attrs["aria-pressed"] === "true" && n.children.some(c => c?.children?.includes("terminal"))));
   b.event({ type: "deck.tools", sid: "session-a", payload: { tools: [] } });
   await b.settle(); assert.equal(b.live.get("run"), false); assert.match(b.text(), /No tool calls/);
@@ -115,11 +132,11 @@ test("Run replaces tool pushes, follows running calls and synchronizes explicit 
 
 test("Run relay reads and incremental tool events preserve output and cost", async () => {
   const b = harness({}, { session: async () => ({ cost: 0.12, cost_estimated: true, recent: [{ call: "a", tool: "terminal", ts: 100, status: "ok", ms: 25, result: "Relay output" }] }) });
-  b.shell.openRight("work", "run"); await b.settle(); assert.match(b.text(), /Relay output/); assert.match(b.text(), /≈\$0.1200/);
+  b.shell.openRight("work", "run"); await b.settle(); expandRow(b, "a"); assert.match(b.text(), /Relay output/); assert.match(b.text(), /≈\$0.1200/);
   b.relay({ t: "evs", evs: [{ ev: "tool_start", sid: "session-a", call: "b", tool: "patch", ts: 101, args: "{}" }] });
   await b.settle(); assert.equal(b.live.get("run"), true);
   b.relay({ t: "evs", evs: [{ ev: "tool_end", sid: "session-a", call: "b", tool: "patch", status: "failed", ms: 15, err: "Write refused" }] });
-  await b.settle(); assert.equal(b.live.get("run"), false); assert.match(b.text(), /Write refused/); b.app.dispose();
+  await b.settle(); assert.equal(b.live.get("run"), false); expandRow(b, "b"); assert.match(b.text(), /Write refused/); b.app.dispose();
 });
 
 test("Diff extracts successful writes without inventing paths, counts or diffs", () => {
@@ -138,18 +155,19 @@ test("Diff extracts successful writes without inventing paths, counts or diffs",
 test("Diff retains observed files across replacement windows and labels missing real diffs", async () => {
   const b = harness(); b.shell.openRight("work", "diff"); await b.settle(); assert.match(b.text(), /No changed files/);
   b.event({ type: "deck.tools", sid: "session-a", payload: { tools: [{ call: "write-1", tool: "patch", status: "ok", args: '{"path":"example.js"}', result: JSON.stringify({ diff: "--- a/example.js\n+++ b/example.js\n@@ -1,2 +1,3 @@\n-one\n-two\n+first\n+second\n+third" }) }] } });
-  await b.settle(); assert.match(b.text(), /example.js.*\+3.*−2/); assert.match(b.text(), /No complete diff/);
+  await b.settle(); assert.match(b.text(), /example.js.*\+3.*−2/); assert.doesNotMatch(b.text(), /No complete diff|Observed write calls only/, "a complete diff needs no preview note");
   b.event({ type: "deck.tools", sid: "session-a", payload: { tools: [] } }); await b.settle(); assert.match(b.text(), /example.js/);
   b.session({ sid: "session-b" }); await b.settle(); assert.doesNotMatch(b.text(), /example.js/); b.app.dispose();
 });
 
-test("Diff renders basenames for clipped write arguments and never shows invented line counts", async () => {
+test("Diff renders short paths for clipped write arguments and never shows invented line counts", async () => {
   const b = harness(); b.shell.openRight("work", "diff"); await b.settle();
   const args = JSON.stringify({ path: "src/large-output.js", content: "x".repeat(600) }).slice(0, 300) + "…";
   b.event({ type: "deck.tools", sid: "session-a", payload: { tools: [{ call: "large-write", tool: "write_file", status: "ok", args, result: "Written" }] } });
   await b.settle();
-  assert.match(b.text(), /large-output\.js/);
-  assert.doesNotMatch(b.text(), /src\/|No changed files|\+\d|−\d/);
+  assert.match(b.text(), /src\/large-output\.js/);
+  assert.match(b.text(), /Observed write calls only/, "clipped data keeps the preview note");
+  assert.doesNotMatch(b.text(), /No changed files|\+\d|−\d/);
   b.app.dispose();
 });
 
@@ -172,7 +190,8 @@ test("Agents detail reads tail, renders tool disclosure and steers once through 
   b.shell.openRight("work", "agents"); await b.settle();
   b.nodes().find(n => n.tag === "button" && n.attrs["data-agent"] === child.id).attrs.onclick(); await b.settle();
   assert.match(b.text(), /<script>task<\/script>/); assert.match(b.text(), /model-b.*high/); assert.match(b.text(), /Notes so far/);
-  assert.ok(b.nodes().find(n => n.tag === "details")); assert.match(b.text(), /Child output/);
+  assert.ok(b.nodes().find(n => n.tag === "details")); assert.doesNotMatch(b.text(), /Child output/, "a closed call builds no detail");
+  openAgentCall(b, "tool-a"); assert.match(b.text(), /Child output/);
   assert.doesNotMatch(b.text(), /12:34:|raw tool log|-> read_file/);
   const field = b.nodes().find(n => n.tag === "textarea"); field.value = "Check edge cases";
   field.attrs.oninput({ target: field });
@@ -191,7 +210,7 @@ test("Agents omit Notes entirely for tool-only tails, while keeping their tool d
   b.shell.openRight("work", "agents"); await b.settle(); b.app.openAgent(child.id); await b.settle();
   assert.doesNotMatch(b.text(), /Notes so far|No live output|Only the latest output|raw tool log|result continuation/);
   assert.equal(b.nodes().filter(n => n.attrs.class === "wk-notes").length, 0);
-  assert.match(b.text(), /Tool output/);
+  openAgentCall(b, "t"); assert.match(b.text(), /Tool output/);
   b.app.dispose();
 });
 
@@ -277,19 +296,42 @@ test("expanded surfaces use the one-pixel gutter, preserve work tabs and respect
   }
 });
 
-test("receipt selection events highlight Run without opening it or creating event loops", async () => {
-  const b = harness({ toolCalls: async () => [{ call: "a", tool: "terminal", status: "ok", result: "Receipt selected" }, { call: "b", tool: "patch", status: "ok", result: "Other output" }] });
+test("a call picked in the chat opens Run on its expanded row, scrolls to it once and creates no event loop", async () => {
+  const emitted = [];
+  const b = harness({ toolCalls: async () => [{ call: "a", tool: "terminal", status: "ok", result: "Receipt selected" }, { call: "b", tool: "patch", status: "ok", result: "Other output" }] },
+    {}, { emit: detail => emitted.push(detail) });
   await b.settle();
   b.doc.dispatchEvent({ type: "deck-tool-select", detail: { sid: "session-a", call: "a", source: "receipt" } });
+  await b.settle();
+  assert.equal(b.shell.right().tab, "run"); assert.match(b.text(), /Receipt selected/); assert.doesNotMatch(b.text(), /Other output/);
+  const row = () => b.nodes().find(n => n.tag === "button" && n.attrs["data-call"] === "a");
+  assert.equal(row().attrs["aria-expanded"], "true"); assert.equal(row().attrs["aria-pressed"], "true");
+  assert.deepEqual(emitted, [], "a chat selection is not echoed back");
+  b.flush(0); assert.deepEqual(b.scrolls, [{ item: "a", block: "nearest" }]);
+  await b.app.poll(); await b.settle(); b.flush(0); assert.equal(b.scrolls.length, 1, "redraws never scroll again");
+  row().attrs.onclick(); await b.settle();
+  assert.doesNotMatch(b.text(), /Receipt selected/, "a second click collapses"); assert.equal(row().attrs["aria-expanded"], "false");
+  assert.deepEqual(emitted.at(-1), { sid: "session-a", call: "a", source: "run" });
+  b.app.dispose();
+  const c = harness({ toolCalls: async () => [{ call: "a", tool: "terminal", status: "running" }] });
+  await c.settle();
+  c.doc.dispatchEvent({ type: "deck-tool-select", detail: { sid: "session-a", call: "a", source: "live" } });
+  assert.equal(c.shell.right().tab, "plan", "following a live turn never opens Run"); c.app.dispose();
+});
+
+test("history tool chips in the chat open Run on the expanded call; Run's own reveal is ignored", async () => {
+  const b = harness({ toolCalls: async () => [{ call: "a", tool: "terminal", status: "ok", args: '{"command":"ls"}', result: "Listing" }] });
+  await b.settle();
+  b.doc.dispatchEvent({ type: "deck-tool-reveal", detail: { sid: "session-a", call: "a", origin: "run" } });
   assert.equal(b.shell.right().tab, "plan");
-  b.shell.openRight("work", "run"); await b.settle(); assert.match(b.text(), /Receipt selected/);
-  const row = b.nodes().find(n => n.tag === "button" && n.attrs["aria-pressed"] === "true"); row.attrs.onclick();
-  await b.settle(); assert.match(b.text(), /Receipt selected/); b.app.dispose();
+  b.doc.dispatchEvent({ type: "deck-tool-reveal", detail: { sid: "session-a", call: "a", ts: 100 } }); await b.settle();
+  assert.equal(b.shell.right().tab, "run"); assert.match(b.text(), /command.*ls.*Listing/);
+  b.app.dispose();
 });
 
 test("failed bridge tool reads fall back to relay recent calls", async () => {
   const b = harness({ toolCalls: async () => { throw Error("Direct offline"); } }, { session: async () => ({ recent: [{ call: "a", tool: "terminal", status: "ok", result: "Fallback output" }] }) });
-  b.shell.openRight("work", "run"); await b.settle(); assert.match(b.text(), /Fallback output/); b.app.dispose();
+  b.shell.openRight("work", "run"); await b.settle(); expandRow(b, "a"); assert.match(b.text(), /Fallback output/); b.app.dispose();
 });
 
 test("Agents controls update inline while a focused hold prevents a pane rebuild", async () => {
@@ -313,22 +355,24 @@ test("plan summary distinguishes absent, cleared and truncated plans", () => {
     { done: 1, total: 80, shown: 3, active: true });
 });
 
-test("every Run row and the selected output header reveal their call through the document contract", async () => {
+test("every Run row reveals its call in the chat through ↗; a row click opens it inline instead", async () => {
   const revealed = [];
-  const b = harness({ toolCalls: async () => [{ call: "a", tool: "terminal", status: "ok" }, { call: "b", tool: "patch", status: "ok" }] }, {},
+  const b = harness({ toolCalls: async () => [{ call: "a", tool: "terminal", status: "ok", result: "Terminal out" }, { call: "b", tool: "patch", status: "ok" }] }, {},
     { emitReveal: detail => revealed.push(detail) });
   b.shell.openRight("work", "run"); await b.settle();
-  const actions = b.nodes().filter(n => n.tag === "button" && n.attrs["aria-label"] === "Show in chat");
-  assert.equal(actions.length, 3, "two row actions plus the output header action");
-  actions[0].attrs.onclick(); await b.settle();
-  assert.deepEqual(revealed, [{ sid: "session-a", call: "a" }]);
-  b.nodes().find(n => n.attrs?.class?.startsWith("wk-run-row") && n.children.some(c => c?.attrs?.class === "wk-name" && c.children.includes("patch"))).attrs.onclick(); await b.settle();
-  assert.deepEqual(revealed.at(-1), { sid: "session-a", call: "b" }, "a row click also reveals");
-  b.nodes().find(n => n.attrs?.class?.startsWith("wk-run-row") && n.children.some(c => c?.attrs?.class === "wk-name" && c.children.includes("terminal"))).attrs.onclick(); await b.settle();
+  const actions = () => b.nodes().filter(n => n.tag === "button" && n.attrs["aria-label"] === "Show in chat");
+  assert.equal(actions().length, 2, "one action per row, no bottom output block");
+  actions()[0].attrs.onclick(); await b.settle();
+  assert.deepEqual(revealed, [{ sid: "session-a", call: "a", origin: "run" }]);
+  expandRow(b, "b"); await b.settle();
+  assert.equal(revealed.length, 1, "a row click does not scroll the chat");
+  assert.ok(b.nodes().some(n => n.attrs?.["data-detail"] === "b"), "the detail sits under its row");
+  const item = b.nodes().find(n => n.attrs?.["data-item"] === "b");
+  assert.ok(item.children.some(n => n.attrs?.["data-detail"] === "b"), "inside the clicked row's item");
+  assert.equal(actions().length, 2);
   assert.ok(b.nodes().some(n => n.attrs?.class === "wk-name" && n.attrs.title === "patch"), "full tool name in a title");
-  b.nodes().find(n => n.tag === "header").children.find(n => n.tag === "button").attrs.onclick();
-  assert.deepEqual(revealed.at(-1), { sid: "session-a", call: "a" });
   assert.ok(b.nodes().filter(n => n.tag === "button").every(n => !n.children.some(c => c?.tag === "button")), "no nested buttons");
+  assert.ok(!b.nodes().some(n => n.attrs?.class?.startsWith?.("wk-output")), "the old bottom-of-pane output block is gone");
   b.app.dispose();
 });
 
@@ -579,4 +623,109 @@ test("Run tab: session-scoped stats, newest turn open, older page loads on deman
   assert.deepEqual(after.map(n => n.attrs["data-turn"]), ["8", "2"]);
   assert.equal(after[1].attrs.open, null);
   assert.match(b.text(), /Earlier request/);
+});
+
+test("expanding a clipped call reads the full call once; complete previews are never fetched", async () => {
+  const reads = [], path = "/srv/example/app.js";
+  const full = { call: "p1", name: "patch", args: JSON.stringify({ path, old_string: "a\nb\n", new_string: "a\nB\n" }),
+    result: JSON.stringify({ success: true, diff: `--- a/${path}\n+++ b/${path}\n@@ -1,2 +1,2 @@\n a\n-b\n+B\n`, files_modified: [path] }) };
+  const b = harness({ toolCalls: async () => [
+    { call: "t1", tool: "terminal", status: "ok", args: '{"command":"ls"}', result: "short" },
+    { call: "p1", tool: "patch", status: "ok", args: full.args.slice(0, 20) + "…", result: full.result.slice(0, 20) + "…" }] },
+  { toolCall: async (sid, call) => { reads.push([sid, call]); return full; } });
+  b.shell.openRight("work", "run"); await b.settle();
+  assert.deepEqual(reads, [], "nothing is read before a row opens");
+  expandRow(b, "t1"); await b.settle(); assert.deepEqual(reads, [], "a complete preview needs no read");
+  expandRow(b, "p1"); assert.match(b.text(), /Loading the full call/); await b.settle();
+  assert.deepEqual(reads, [["session-a", "p1"]]);
+  const lines = b.nodes().filter(n => /^dv-line /.test(n.attrs?.class || ""));
+  assert.deepEqual(lines.map(n => n.attrs.class), ["dv-line ctx", "dv-line del", "dv-line add"]);
+  assert.deepEqual(lines.map(n => n.children.filter(x => x.attrs?.class === "dv-ln").map(x => x.children[0])), [["1", "1"], ["2", ""], ["", "2"]], "real line numbers from the result diff");
+  assert.match(b.text(), /edit .*app\.js.*\+1.*−1/); assert.match(b.text(), /Output .*Applied/); assert.doesNotMatch(b.text(), /old_string/, "the diff replaces raw arguments");
+  for (let i = 0; i < 3; i++) { await b.app.poll(); await b.settle(); }
+  expandRow(b, "p1"); expandRow(b, "p1"); await b.settle();
+  assert.equal(reads.length, 1, "one read per call");
+  b.nodes().find(n => n.attrs?.class === "td-toggle").attrs.onclick(); await b.settle();
+  assert.match(b.text(), /old_string/, "Raw shows the arguments");
+  b.app.dispose();
+});
+
+test("a failed full read keeps the preview with a note; the next expansion retries, and a store-clipped call says so", async () => {
+  let fail = true, reads = 0;
+  const b = harness({ toolCalls: async () => [{ call: "c1", tool: "terminal", status: "ok", args: '{"command":"cat big"}', result: "x".repeat(300) + "…" }] },
+    { toolCall: async () => { reads++; if (fail) throw Error("relay offline"); return { call: "c1", args: '{"command":"cat big"}', result: "full text", truncated: true }; } });
+  b.shell.openRight("work", "run"); await b.settle();
+  expandRow(b, "c1"); await b.settle();
+  assert.match(b.text(), /Preview only/); assert.match(b.text(), /xxxx/);
+  fail = false; expandRow(b, "c1"); expandRow(b, "c1"); await b.settle();
+  assert.equal(reads, 2); assert.match(b.text(), /full text/); assert.match(b.text(), /first 256 KB/); assert.doesNotMatch(b.text(), /xxxx/);
+  b.app.dispose();
+});
+
+test("arguments read as a field list with a Raw switch, and Copy confirms briefly", async () => {
+  const copied = [];
+  const b = harness({ toolCalls: async () => [{ call: "c1", tool: "terminal", status: "ok", args: JSON.stringify({ command: "ls -la\npwd", timeout: 30 }), result: "out" }] }, {},
+    { copy: text => { copied.push(text); } });
+  b.shell.openRight("work", "run"); await b.settle(); expandRow(b, "c1"); await b.settle();
+  const dl = b.nodes().find(n => n.tag === "dl");
+  assert.deepEqual(dl.children.filter(n => n.tag === "dt").map(n => n.children[0]), ["command", "timeout"]);
+  assert.ok(b.nodes().some(n => n.tag === "pre" && n.children[0] === "ls -la\npwd"), "multi-line strings keep their lines");
+  b.nodes().find(n => n.attrs?.class === "td-toggle").attrs.onclick(); await b.settle();
+  assert.ok(!b.nodes().some(n => n.tag === "dl")); assert.match(b.text(), /\{"command"/);
+  b.nodes().find(n => n.attrs?.["aria-label"] === "Copy output").attrs.onclick(); await b.settle();
+  assert.deepEqual(copied, ["out"]); assert.match(b.text(), /Copied/);
+  b.flush(1200); await b.settle(); assert.doesNotMatch(b.text(), /Copied/);
+  b.app.dispose(); assert.equal([...b.timers.keys()].length, 0);
+});
+
+test("an unchanged Run view survives the 1 s redraw untouched; a data change rebuilds it", async () => {
+  const b = harness({ toolCalls: async () => [{ call: "c1", tool: "terminal", status: "ok", result: "out" }] });
+  b.shell.openRight("work", "run"); await b.settle(); expandRow(b, "c1"); await b.settle();
+  const first = b.panes.get("run").children[0];
+  await b.app.poll(); await b.settle(); await b.app.poll();
+  assert.equal(b.panes.get("run").children[0], first, "no rebuild, so text selection, focus and inner scroll stay");
+  b.event({ type: "deck.tools", sid: "session-a", payload: { tools: [{ call: "c1", tool: "terminal", status: "ok", result: "changed output" }] } }); await b.settle();
+  assert.notEqual(b.panes.get("run").children[0], first); assert.match(b.text(), /changed output/);
+  b.app.dispose();
+});
+
+test("Diff files expand into their edits oldest first, read clipped calls in full and open them in Run", async () => {
+  const reads = [], path = "/srv/example/src/app.js", write = { path, content: "one\ntwo\n" };
+  const fulls = { w1: { call: "w1", args: JSON.stringify(write), result: JSON.stringify({ bytes_written: 8, resolved_path: path }) } };
+  const b = harness({ toolCalls: async () => [
+    { call: "p2", tool: "patch", status: "ok", ts: 200, args: JSON.stringify({ path, old_string: "two", new_string: "three" }),
+      result: JSON.stringify({ success: true, diff: `--- a/${path}\n+++ b/${path}\n@@ -2 +2 @@\n-two\n+three\n` }) },
+    { call: "w1", tool: "write_file", status: "ok", ts: 100, args: JSON.stringify(write).slice(0, 30) + "…", result: JSON.stringify({ bytes_written: 8, resolved_path: path }) }] },
+  { toolCall: async (sid, call) => { reads.push(call); return fulls[call]; } });
+  b.shell.openRight("work", "diff"); await b.settle();
+  assert.match(b.text(), /…\/example\/src\/app\.js/); assert.match(b.text(), /Observed write calls only/);
+  assert.equal(b.nodes().filter(n => n.attrs?.["data-path"] === path).length, 1, "one entry per file");
+  assert.deepEqual(reads, [], "collapsed files read nothing");
+  b.nodes().find(n => n.attrs?.["data-path"] === path).children.find(n => n.tag === "summary").attrs.onclick({ currentTarget: { parentNode: { open: false } } });
+  await b.settle();
+  assert.deepEqual(reads, ["w1"], "only the clipped call is read");
+  assert.deepEqual(b.nodes().filter(n => n.attrs?.class === "wk-edit").map(n => n.attrs["data-call"]), ["w1", "p2"], "oldest first");
+  assert.match(b.text(), /app\.js\s+\+3\s+−1/); assert.doesNotMatch(b.text(), /Observed write calls only/);
+  assert.match(b.text(), /write .*\+2.*one.*two.*edit .*−1.*two.*three/);
+  b.nodes().find(n => n.attrs?.class === "wk-link").attrs.onclick(); await b.settle();
+  assert.equal(b.shell.right().tab, "run");
+  assert.equal(b.nodes().find(n => n.tag === "button" && n.attrs["data-call"] === "w1").attrs["aria-expanded"], "true");
+  assert.equal(reads.length, 1, "the cached full call is reused");
+  b.app.dispose();
+});
+
+test("sub-agent calls open into the same detail and read clipped calls from the child session", async () => {
+  const reads = [];
+  const child = { id: "sa-1", childSid: "child-sid", goal: "Task", status: "running", acceptingSteer: true,
+    tools: [{ call: "k1", tool: "terminal", status: "ok", args: '{"command":"make"}', result: "y".repeat(300) + "…" }] };
+  const b = harness({ subagents: async () => ({ subagents: [child], failed: [] }) },
+    { toolCall: async (sid, call) => { reads.push([sid, call]); return { call, args: '{"command":"make"}', result: "full build log" }; } });
+  b.shell.openRight("work", "agents"); await b.settle(); b.app.openAgent("sa-1"); await b.settle();
+  const summary = b.nodes().find(n => n.tag === "details" && n.attrs["data-call"] === "k1").children.find(n => n.tag === "summary");
+  assert.equal(summary.attrs.title, '{"command":"make"}', "arguments moved from the summary line to its tooltip");
+  assert.deepEqual(reads, []);
+  openAgentCall(b, "k1"); await b.settle();
+  assert.deepEqual(reads, [["child-sid", "k1"]]); assert.match(b.text(), /full build log/);
+  assert.ok(b.nodes().some(n => n.attrs?.["data-detail"] === "k1"));
+  b.app.dispose();
 });

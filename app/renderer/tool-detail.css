@@ -1,0 +1,34 @@
+/* Inline tool-call detail (tool-detail.js) under a Work › Run row or a sub-agent's call: arguments and output. */
+.wk-run-item > .td { grid-column: 1 / -1; }
+.wk-run-item.open > .wk-run-row { background: var(--l3); }
+.wk-run-item.open > .wk-run-row.selected { background: var(--teal-a); }
+.td { display: flex; flex-direction: column; gap: 10px; margin: 2px 0 10px 26px; padding: 10px 0 2px 12px; border-left: 1px solid var(--line2); min-width: 0; }
+.wk-tool > .td { margin: 0 10px 10px 18px; }
+.td-note { margin: 0; color: var(--t4); font-size: 11px; }
+.td-sec { min-width: 0; }
+.td-sec > header { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; color: var(--t4); font-size: 11px; }
+.td-sec > header > span { flex: 1; }
+.td-toggle, .td-copy { border: 0; border-radius: 5px; padding: 1px 6px; background: none; color: var(--t4); font: 11px var(--sans); cursor: pointer; }
+.td-toggle:hover, .td-copy:hover { background: var(--l3); color: var(--t2); }
+.td-toggle[aria-pressed="true"] { background: var(--l3); color: var(--t1); }
+.td-copy { color: var(--brass); }
+.td-copy:hover { background: var(--brass-a); color: var(--brass-hi); }
+.wk-content .td pre.td-pre, .wk-content .td pre.td-val { margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg);
+  font: 11.5px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; color: var(--t2); }
+.wk-content .td pre.td-val { max-height: 220px; padding: 4px 8px; }
+.wk-content .td pre.td-pre.fail { color: var(--red); }
+.td-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 10px; margin: 0; }
+.td-kv dt { color: var(--t4); font: 11.5px/1.9 var(--mono); }
+.td-kv dd { margin: 0; min-width: 0; }
+.td-kv code.td-val { font: 11.5px/1.9 var(--mono); color: var(--t2); overflow-wrap: anywhere; }
+.td-empty { margin: 0; color: var(--t4); font-size: 11.5px; }
+.td-sum { margin: 0; font: 11.5px var(--mono); }
+.td-sum.ok { color: var(--teal); }
+.td-sum.fail { color: var(--red); overflow-wrap: anywhere; }
+.wk-outside { margin-bottom: 16px; }
+.wk-outside-head { display: flex; align-items: center; gap: 8px; font: 11.5px var(--mono); color: var(--t2); }
+.wk-outside-head small { flex: 1; min-width: 0; color: var(--t4); font: 11px var(--sans); }
+.wk-outside > .td { margin-left: 4px; }
+.wk-tool summary code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wk-tool summary span.wk-tool-state { flex: none; color: var(--t4); }
+.wk-tool.fail summary span.wk-tool-state { color: var(--red); }

@@ -1,0 +1,52 @@
+/* Per-file diffs for patch / write_file calls (diff-view.js): red removals, teal additions, muted context. */
+.dv { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.dv-file { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--bg); min-width: 0; }
+.dv-head { display: flex; align-items: baseline; gap: 8px; padding: 6px 10px; background: var(--l1); border-bottom: 1px solid var(--line); font: 11.5px var(--mono); min-width: 0; }
+.dv-op { flex: none; color: var(--t4); }
+.dv-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--t1); }
+.dv-tag { flex: none; color: var(--t4); font-size: 10.5px; }
+.dv-count { flex: none; display: inline-flex; gap: 6px; font-variant-numeric: tabular-nums; }
+.dv-add { color: var(--teal); }
+.dv-del { color: var(--red); }
+.dv-scroll { overflow-x: auto; max-height: 520px; overflow-y: auto; }
+.dv-body { display: grid; grid-template-columns: max-content minmax(0, 1fr); min-width: max-content; width: 100%; font: 11.5px/1.6 var(--mono); }
+.dv-body.numbered { grid-template-columns: max-content max-content max-content minmax(0, 1fr); }
+.dv-line, .dv-sep { display: contents; }
+.dv-line > span, .dv-sep > span { padding: 0 8px; white-space: pre; }
+.dv-ln { color: var(--t4); text-align: right; user-select: none; font-variant-numeric: tabular-nums; }
+.dv-sign { color: var(--t4); user-select: none; }
+.dv-line > .dv-sign, .dv-sep > .dv-sign { padding: 0 4px; }
+.dv-text { color: var(--t2); }
+.dv-line.ctx .dv-text { color: var(--t3); }
+.dv-line.add > span { background: var(--teal-a); }
+.dv-line.add .dv-sign, .dv-line.add .dv-text { color: var(--t1); }
+.dv-line.add .dv-sign { color: var(--teal); }
+.dv-line.add .dv-ln { background: color-mix(in srgb, var(--teal) 18%, transparent); }
+.dv-line.del > span { background: var(--red-a); }
+.dv-line.del .dv-text { color: var(--t1); }
+.dv-line.del .dv-sign { color: var(--red); }
+.dv-line.del .dv-ln { background: color-mix(in srgb, var(--red) 18%, transparent); }
+.dv-line.note > span { color: var(--t4); font-style: italic; }
+.dv-sep > span { background: var(--l1); color: var(--t4); padding-top: 2px; padding-bottom: 2px; }
+.dv-note { margin: 0; padding: 6px 10px; color: var(--t4); font-size: 11px; }
+.dv-lint { margin: 0; color: var(--red); font: 11.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.dv-lint b { font-weight: 500; }
+.dv-more { display: block; width: 100%; padding: 6px 10px; border: 0; border-top: 1px solid var(--line); background: none; color: var(--brass); font: 11.5px var(--sans); text-align: left; cursor: pointer; }
+.dv-more:hover { background: var(--brass-a); }
+
+/* Work › Diff: one collapsible row per changed file; opening it lists that file's edits, oldest first */
+.wk-files > .wk-file { border-bottom: 1px solid var(--line); }
+.wk-files > .wk-file:last-child { border-bottom: 0; }
+.wk-file > summary { display: flex; align-items: baseline; gap: 8px; padding: 9px 12px; font: 12px var(--mono); cursor: pointer; list-style: none; }
+.wk-file > summary::-webkit-details-marker { display: none; }
+.wk-file > summary::before { content: "▸"; color: var(--t4); flex: none; }
+.wk-file[open] > summary::before { content: "▾"; }
+.wk-file > summary code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--t1); }
+.wk-file > summary:hover { background: var(--l3); }
+.wk-file > summary:focus-visible { outline: 2px solid var(--brass); outline-offset: -2px; }
+.wk-edits { display: flex; flex-direction: column; gap: 10px; padding: 4px 12px 12px; }
+.wk-edits > .wk-note { margin: 4px 0 0; }
+.wk-edit-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; color: var(--t4); font: 11px var(--mono); }
+.wk-edit > .wk-note { margin: 4px 0; }
+.wk-link { border: 0; background: none; padding: 2px 4px; border-radius: 5px; color: var(--brass); font: 11px var(--sans); cursor: pointer; white-space: nowrap; }
+.wk-link:hover { background: var(--brass-a); color: var(--brass-hi); }
