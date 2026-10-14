@@ -95,8 +95,25 @@
     finish();
     return entries.join("\n\n");
   }
+  // Running (and queued) sub-agents first, then newest first; children follow their parent in the same order, so the
+  // tree still reads parent -> children. A root with a running descendant counts as running.
+  const liveAgent = a => a.status === "running" || a.status === "queued";
+  const startOf = a => number(a.startedAt) ?? number(a.row?.firstTs) ?? null;
   function agentRows(agents) {
-    const list = agents.filter(a => a && a.id).slice(0, 128), ids = new Set(list.map(a => a.id)), seen = new Set(), out = [];
+    const all = agents.filter(a => a && a.id).slice(0, 128), ids = new Set(all.map(a => a.id)), seen = new Set(), out = [];
+    const index = new Map(all.map((a, i) => [a, i]));
+    const kids = new Map();
+    for (const a of all) if (a.parentId && ids.has(a.parentId)) { if (!kids.has(a.parentId)) kids.set(a.parentId, []); kids.get(a.parentId).push(a); }
+    const liveMemo = new Map();
+    const live = (a, path = new Set()) => {
+      if (liveMemo.has(a.id)) return liveMemo.get(a.id);
+      if (path.has(a.id)) return liveAgent(a);
+      path.add(a.id);
+      const v = liveAgent(a) || (kids.get(a.id) || []).some(c => live(c, path));
+      liveMemo.set(a.id, v); return v;
+    };
+    // live first; then start time, newest first (unknown start last); then the roster's own order, newest first
+    const list = all.slice().sort((a, b) => (live(b) - live(a)) || ((startOf(b) ?? -Infinity) - (startOf(a) ?? -Infinity)) || (index.get(b) - index.get(a)));
     function walk(a, depth) {
       if (seen.has(a.id)) return;
       seen.add(a.id); out.push({ agent: a, depth: Math.min(depth, 3) });

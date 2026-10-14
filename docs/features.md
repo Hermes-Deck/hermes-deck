@@ -304,7 +304,7 @@ All of these are local to the app; nothing is sent anywhere.
   reasons. "This agent did not publish a plan" when there is none.
 - **Diff**: the files the agent wrote or patched, with +/- counts. Opening a file lists its edits from every `patch`
   and `write_file` call, oldest first (the latest 12), each with its time and **Open in Run**.
-- **Sub-agents**: the session's live sub-agents (goal, model, effort, state, elapsed time, context) and recently failed
+- **Sub-agents**: the session's sub-agents, running ones first and then newest first (goal, model, effort, state, elapsed time, context) and recently failed
   delegations. A sub-agent opens with its figures (elapsed, tokens, context, cache hit, tok/s, fresh / cached / output
   tokens, tool calls, cost; only the ones that exist), its live output and recent tool calls, each opening into the
   same arguments and output detail as Run. Times read like **2m 05s** or **6h 38m**, token counts like **12.4k** or

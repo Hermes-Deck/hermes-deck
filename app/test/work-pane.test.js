@@ -171,6 +171,22 @@ test("Diff renders short paths for clipped write arguments and never shows inven
   b.app.dispose();
 });
 
+test("agent list: running sub-agents first, then newest first; children follow their parent", () => {
+  const rows = W.agentRows([
+    { id: "old-done", status: "completed", startedAt: 100 },
+    { id: "run-old", status: "running", startedAt: 150 },
+    { id: "new-done", status: "completed", startedAt: 300 },
+    { id: "run-new", status: "running", startedAt: 250 },
+    { id: "relay-done", status: "completed", row: { firstTs: 200 } },
+    { id: "parent", status: "completed", startedAt: 50 },
+    { id: "kid-done", parentId: "parent", status: "completed", startedAt: 60 },
+    { id: "kid-run", parentId: "parent", status: "queued", startedAt: 55 },
+    { id: "nostart", status: "failed" },
+  ]);
+  assert.deepEqual(rows.map(x => x.agent.id), ["run-new", "run-old", "parent", "kid-run", "kid-done", "new-done", "relay-done", "old-done", "nostart"]);
+  assert.deepEqual(rows.filter(x => x.depth === 1).map(x => x.agent.id), ["kid-run", "kid-done"]);
+});
+
 test("agent tree includes orphans once and bounds cycles", () => {
   const rows = W.agentRows([{ id: "a", parentId: "b" }, { id: "b", parentId: "a" }, { id: "c", parentId: "missing" }, { id: "d", parentId: "c" }]);
   assert.equal(rows.length, 4); assert.equal(new Set(rows.map(x => x.agent.id)).size, 4);
