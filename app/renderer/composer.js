@@ -92,7 +92,29 @@
     const stop = h("button", { class: "btn mini conv-stop", type: "button", onclick: stopNow }, t("conv.stop"));
     row.append(spinner, label, arg, elapsed, stop);
     const slot = shell.mount("composer-status", row);
-    composer.prepend(tray, slot, queue, error, h("div", { class: "conv-filament", "aria-hidden": "true" }));
+    const filament = h("div", { class: "conv-filament", "aria-hidden": "true", "data-state": "hidden" });
+    composer.prepend(tray, slot, queue, error, filament);
+    const Fil = root.DeckFilament, motion = root.matchMedia?.("(prefers-reduced-motion: reduce)");
+    let arc = null;
+    if (Fil && doc.createElementNS && root.ResizeObserver && root.getComputedStyle) {
+      // The arc is drawn from the card's real border box and CSS radius; measured on resize only, never per frame.
+      arc = Fil.create(doc);
+      filament.append(arc.el);
+      const fit = () => {
+        const cs = root.getComputedStyle(composer), w = composer.offsetWidth, hh = composer.offsetHeight, bw = parseFloat(cs.borderTopWidth) || 0;
+        filament.style.setProperty("left", `${-bw}px`); filament.style.setProperty("top", `${-bw}px`);
+        filament.style.setProperty("width", `${w}px`); filament.style.setProperty("height", `${hh}px`);
+        arc.update(w, hh, parseFloat(cs.borderTopLeftRadius) || 16, bw);
+      };
+      new root.ResizeObserver(fit).observe(composer);
+      fit();
+    }
+    function paintFilament(working, waiting) {
+      const s = Fil ? Fil.state({ working, waiting, reduced: !!motion?.matches }) : "hidden";
+      if (filament.dataset.state !== s) filament.dataset.state = s;
+      arc?.setState(s);
+    }
+    motion?.addEventListener?.("change", () => status());
     const viaEl = h("p", { class: "conv-via" });
     const footer = h("div", { class: "conv-footer" }, doc.getElementById("note"), viaEl);
     composer.after(footer);
@@ -108,6 +130,7 @@
       const waiting = tray.children.length > 0;
       const working = !!view && view.sid === sid && !waiting && !["approval", "question"].includes(view.phase);
       composer.classList.toggle("conv-working", working);
+      paintFilament(working, waiting);
       slot.hidden = !working;
       if (working) {
         const text = view.tool ? t("conv.running", { tool: view.tool }) : view.phase === "thinking" ? t("conv.thinking") : t(view.label?.key || "live.writing", view.label?.vars);

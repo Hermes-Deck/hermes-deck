@@ -10,6 +10,9 @@
   // "unknown": the link dropped before the call's end was seen; that is not a tool failure.
   const failed = call => !["ok", "running", "unknown"].includes(call.status);
   const nodeLive = n => !!n && n.terminalAt == null && (n.active === true || ["thinking", "working", "searching"].includes(n.state));
+  // Readable durations (human.js): "4.2s", "2m 05s", "1h 04m"; a plain seconds fallback when it is not loaded.
+  const human = () => root.DeckHuman || (typeof module === "object" && module.exports ? require("./human") : null);
+  const dur = ms => human()?.duration(ms) || `${(ms / 1000).toFixed(1)}s`;
   /**
    * `seconds` is null for a group that was not observed from start to end (imported transport history): the Deck
    * does not know when that turn began or ended, so it shows a call count, never a fabricated "Worked Ns".
@@ -180,7 +183,7 @@
   }
   function receipt({ h, t, sid, turn, select, selected = null }) {
     const totals = stats(turn);
-    const label = t(totals.running ? "conv.working" : totals.seconds == null ? "conv.receiptCount" : "conv.receipt", totals);
+    const label = t(totals.running ? "conv.working" : totals.seconds == null ? "conv.receiptCount" : "conv.receipt", { ...totals, seconds: totals.seconds == null ? null : dur(totals.seconds * 1000) });
     const fold = h("details", { class: "receipt-fold", open: turn.open ? true : null, ontoggle: () => { turn.open = fold.open; } },
       h("summary", { class: "receipt-summary" }, label, totals.failed ? h("span", { class: "receipt-fail" }, t("conv.failed", totals)) : null),
       h("div", { class: "receipt-calls" }, turn.calls.map(call => {
@@ -193,7 +196,7 @@
           h("summary", { onclick: () => { if (!item.open) select(sid, call.call, false); } },
             h("span", { class: call.status === "running" ? "receipt-spinner" : "receipt-dot", "aria-hidden": "true" }),
             h("span", { class: "receipt-tool" }, call.tool), h("code", { class: "receipt-args" }, call.args),
-            h("span", { class: "receipt-duration" }, call.ms == null ? "…" : `${(call.ms / 1000).toFixed(1)}s`)),
+            h("span", { class: "receipt-duration" }, call.ms == null ? "…" : dur(call.ms))),
           h("pre", { tabindex: "0", "aria-label": t("conv.output") }, call.err || call.result || t("conv.noOutput")));
         return item;
       })));

@@ -19,12 +19,18 @@
 .conv-arg { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px/16px var(--mono); color: var(--t3); }
 .conv-elapsed { flex: none; font: 12px var(--mono); font-variant-numeric: tabular-nums; color: var(--t3); }
 .conv-stop { flex: none; height: 26px; padding: 0 10px; margin-left: auto; line-height: 1; }
-.conv-filament { position: absolute; left: 16px; right: 16px; top: -1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; transition: opacity .4s; }
-.conv-filament::after { content: ""; position: absolute; inset: 0 auto 0 0; width: 22%; background: linear-gradient(90deg, transparent, var(--patina), transparent); }
+/* Thinking filament (iOS parity): a brass arc on the card's top outline only; composer-filament.js sizes the SVG to the card. */
+.conv-filament { position: absolute; left: 0; top: 0; width: 100%; height: 100%; overflow: visible; opacity: 0; pointer-events: none; transition: opacity .4s; }
+.conv-fil-svg { position: absolute; inset: 0; overflow: visible; }
+.conv-fil-svg path { stroke: var(--brass); }
+.conv-fil-g { opacity: .55; }
+.conv-fil-slice { display: none; }
+.conv-filament[data-state="static"], .conv-filament[data-state="moving"] { opacity: 1; }
+.conv-filament[data-state="moving"] .conv-fil-g { opacity: 1; }
+.conv-filament[data-state="moving"] .conv-fil-whole { display: none; }
+.conv-filament[data-state="moving"] .conv-fil-slice { display: inline; stroke-dashoffset: var(--o0); animation: conv-filament 2.4s linear infinite; }
 .app .composer.conv-working { border-color: var(--line3); box-shadow: none; }
-.conv-working .conv-filament { opacity: 1; }
-.conv-working .conv-filament::after { animation: conv-filament 2.4s var(--spring) infinite; }
-@keyframes conv-filament { from { transform: translateX(-100%); } to { transform: translateX(460%); } }
+@keyframes conv-filament { from { stroke-dashoffset: var(--o0); } to { stroke-dashoffset: var(--o1); } }
 .conv-tray { border-bottom: 1px solid var(--line2); background: var(--l1); border-radius: 16px 16px 0 0; padding: 12px 16px; max-height: min(36vh, 320px); overflow: auto; scrollbar-width: thin; }
 .conv-tray .hreq { margin: 0; border: 0; background: none; padding: 0; box-shadow: none; width: 100%; }
 .conv-tray .hreq + .hreq { padding-top: 12px; margin-top: 12px; border-top: 1px solid var(--line); }
@@ -49,4 +55,4 @@
 .conv-via[data-channel="telegram"]::before { background: var(--t2); }
 .conv-error { margin: 8px 16px 0; color: var(--red); font: 12px/1.5 var(--sans); overflow-wrap: anywhere; }
 .conv-tray[hidden], .conv-queue[hidden], .conv-via[hidden], .conv-error[hidden], .composer #composer-status[hidden] { display: none; }
-@media (prefers-reduced-motion: reduce) { .conv-spinner, .receipt-spinner, .conv-working .conv-filament::after { animation: none; } .conv-filament { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .conv-spinner, .receipt-spinner, .conv-filament .conv-fil-slice { animation: none; } .conv-filament { transition: none; } .conv-filament[data-state="moving"] .conv-fil-whole { display: inline; } .conv-filament[data-state="moving"] .conv-fil-slice { display: none; } .conv-filament[data-state="moving"] .conv-fil-g { opacity: .55; } }
