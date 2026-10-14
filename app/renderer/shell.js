@@ -12,17 +12,39 @@
   const T = (key, vars) => I18N().t(key, vars);
 
   // ---------------------------------------------------------------- pure helpers
-  const KINDS = ["inspector", "work"];
+  const KINDS = ["work"];
   /** Tab order per right-slot kind; ids a module adds later go after these, in registration order. */
-  const ORDER = { inspector: ["session", "usage"], work: ["run", "plan", "diff", "agents", "browser", "screen"] };
-  const DEFAULT_TAB = { inspector: "session", work: "run" };
-  /** Right-panel tab ids from before the Blend shell (persisted, --tab=, old callers) -> [kind, tab]. */
+  const ORDER = { work: ["session", "run", "plan", "diff", "agents", "browser", "screen"] };
+  const DEFAULT_TAB = { work: "run" };
+  /**
+   * Old right-panel ids (persisted, --tab=, old callers) -> [kind, tab]. The Inspector is gone: its Session tab is the
+   * Work pane's first tab, and Usage is a main-area view (kind "main"), opened by whoever provides the usageView service.
+   */
   const LEGACY = {
-    activity: ["inspector", "session"], fleet: ["inspector", "usage"], tokens: ["inspector", "usage"],
+    activity: ["work", "session"], session: ["work", "session"],
+    fleet: ["main", "usage"], tokens: ["main", "usage"], usage: ["main", "usage"],
     workspace: ["work", "browser"], screen: ["work", "screen"],
   };
   for (const k of KINDS) for (const id of ORDER[k]) LEGACY[id] = LEGACY[id] || [k, id];
   const legacyTab = (id) => (typeof id === "string" && Object.prototype.hasOwnProperty.call(LEGACY, id) ? LEGACY[id] : null);
+
+  /**
+   * The right slot a stored state comes back as. Returns {kind, last, view}: view "usage" when the stored state was the
+   * old Inspector's Usage tab (the caller opens the Usage view once); an old Inspector Session lands on Work › Session.
+   * get(key) reads the stored strings (deck.right, deck.itab, deck.wtab, and the pre-Blend deck.panelClosed/deck.tab).
+   */
+  function restoreRight(get) {
+    const last = { work: get("deck.wtab") || DEFAULT_TAB.work };
+    const saved = get("deck.right");
+    let old = null;
+    if (saved === "inspector") old = legacyTab(get("deck.itab") || "session") || LEGACY.session;
+    else if (saved !== null) return { kind: KINDS.includes(saved) ? saved : null, last, view: null };
+    else if (get("deck.panelClosed") === "0") old = legacyTab(get("deck.tab") || "activity");
+    if (!old) return { kind: null, last, view: null };
+    if (old[0] === "main") return { kind: null, last, view: old[1] };
+    last[old[0]] = old[1];
+    return { kind: old[0], last, view: null };
+  }
 
   /** One spot for the right slot's transitions: opening one kind closes the other; each kind remembers its tab. */
   function nextRight(state, action, kind, tab) {
@@ -53,7 +75,7 @@
     const key = String(e.key || "").toLowerCase();
     // Ctrl+\ ; on layouts where "\" needs AltGr (Ctrl+Alt on Windows) the key still reads "\"
     if (!e.shiftKey && (e.key === "\\" || (!e.altKey && e.code === "Backslash"))) return "work";
-    if (e.altKey && !e.shiftKey && (e.code === "KeyI" || key === "i")) return "inspector";
+    if (e.altKey && !e.shiftKey && (e.code === "KeyI" || key === "i")) return "session";
     if (!e.shiftKey && !e.altKey && key === "b") return "sidebar";
     if (!e.shiftKey && !e.altKey && key === "j") return "fleet";
     return null;
@@ -98,7 +120,7 @@
 
   // ---------------------------------------------------------------- icons (16px line set from the Blend mockup)
   const ICONS = {
-    side: "M2.5 3.5h11v9h-11zM6.5 3.5v9", insp: "M2.5 3.5h11v9h-11zM9.5 3.5v9", search: "M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 1 1 9 0zM10.5 10.5l3 3",
+    side: "M2.5 3.5h11v9h-11zM6.5 3.5v9", search: "M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 1 1 9 0zM10.5 10.5l3 3",
     work: "M2.5 3.5h4v4h-4zM9.5 8.5h4v4h-4zM6.5 5.5h3v3", gear: "M8 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 1 0 0-5zM8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4",
     inbox: "M2.5 9.5h3l1 2h3l1-2h3M2.5 9.5l2-6h7l2 6v4h-11z", all: "M2.5 4.5h11M2.5 8h11M2.5 11.5h7", running: "M1.5 8h3L6 4l3 8 1.5-4h4",
     waiting: "M4 2.5h8M4 13.5h8M5 2.5c0 3 6 3.5 6 5.5s-6 2.5-6 5.5M11 2.5c0 3-6 3.5-6 5.5s6 2.5 6 5.5", today: "M2.5 3.5h11v10h-11zM2.5 6.5h11M5.5 1.5v3M10.5 1.5v3",
@@ -138,37 +160,32 @@
       get(k) { try { return win.localStorage.getItem(k); } catch { return null; } },
       set(k, v) { try { win.localStorage.setItem(k, v); } catch { /* per-viewer convenience only */ } },
     };
-    const defs = { inspector: new Map(), work: new Map() };
+    const defs = { work: new Map() };
     const services = new Map();
     const live = new Set();
     const el = {
       app: $("app"), side: $("side"), topbar: $("topbar"), chat: $("chat"), inbox: $("inbox"), right: $("right"),
-      insp: $("insp"), work: $("work"), inspTabs: $("insp-tabs"), workTabs: $("work-tabs"), inspBody: $("insp-body"), workBody: $("work-body"),
-      gl: $("gutter-left"), gr: $("gutter-right"), sideOpen: $("side-open"), sideClose: $("side-close"), workBtn: $("work-btn"), inspBtn: $("insp-btn"),
-      inspClose: $("insp-close"), workClose: $("work-close"),
+      work: $("work"), workTabs: $("work-tabs"), workBody: $("work-body"),
+      gl: $("gutter-left"), gr: $("gutter-right"), sideOpen: $("side-open"), sideClose: $("side-close"), workBtn: $("work-btn"),
+      workClose: $("work-close"),
     };
     const ready = !!(el.app && el.right);
     const num = (k) => Number(store.get(k)) || 0;
     const lay = {
       side: num("deck.railW") || 272,
       hidden: store.get("deck.sideHidden") === "1",
-      inspector: num("deck.inspW") || 360,
       work: num("deck.panelW") || 560,
     };
     const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
-    // the right slot: a stored choice, or (first run of the Blend shell) the old panel's open/closed state
-    let right = (() => {
-      const last = { inspector: store.get("deck.itab") || DEFAULT_TAB.inspector, work: store.get("deck.wtab") || DEFAULT_TAB.work };
-      const saved = store.get("deck.right");
-      if (saved !== null) return { kind: KINDS.includes(saved) ? saved : null, last };
-      const old = store.get("deck.panelClosed") === "0" ? legacyTab(store.get("deck.tab") || "activity") : null;
-      if (old) last[old[0]] = old[1];
-      return { kind: old ? old[0] : null, last };
-    })();
+    // the right slot: a stored choice, an old Inspector state (Session -> Work › Session, Usage -> the Usage view once),
+    // or (first run of the Blend shell) the old panel's open/closed state
+    const restored = restoreRight((k) => store.get(k));
+    let right = { kind: restored.kind, last: restored.last };
+    let pendingView = restored.view;
     let main = "chat";
     let hold = () => false;
     let locked = false; // first run: no right slot, no shortcuts
-    const shown = { inspector: null, work: null }; // tab rendered last per kind (scroll resets on a tab change)
+    const shown = { work: null }; // tab rendered last per kind (scroll resets on a tab change)
     const panes = new Map();
 
     const visibleTabs = (kind) => sortTabs(kind, [...defs[kind].keys()].filter((id) => {
@@ -176,20 +193,19 @@
       try { return !d.visible || d.visible(); } catch { return false; }
     }));
     const activeTab = (kind) => pickTab(right.last[kind], visibleTabs(kind));
-    const bodyOf = (kind) => (kind === "work" ? el.workBody : el.inspBody);
+    const bodyOf = () => el.workBody;
     const titleOf = (d, id) => {
       try { return String(typeof d.title === "function" ? d.title() : d.title || id); } catch { return id; }
     };
 
     function persist() {
       store.set("deck.right", right.kind || "");
-      store.set("deck.itab", right.last.inspector);
       store.set("deck.wtab", right.last.work);
       store.set("deck.railW", String(Math.round(lay.side)));
       store.set("deck.sideHidden", lay.hidden ? "1" : "0");
-      store.set("deck.inspW", String(Math.round(lay.inspector)));
       store.set("deck.panelW", String(Math.round(lay.work)));
     }
+    if (store.get("deck.right") === "inspector" || pendingView) persist(); // migrate once: the next start reads the new state
 
     function applyLayout() {
       if (!ready) return;
@@ -206,16 +222,14 @@
       el.app.dataset.right = kind || "";
       el.right.hidden = !kind;
       if (el.gr) el.gr.hidden = !kind;
-      if (el.insp) el.insp.hidden = kind !== "inspector";
       if (el.work) el.work.hidden = kind !== "work";
       if (el.workBtn) { el.workBtn.setAttribute("aria-pressed", kind === "work" ? "true" : "false"); el.workBtn.hidden = locked; }
-      if (el.inspBtn) { el.inspBtn.setAttribute("aria-pressed", kind === "inspector" ? "true" : "false"); el.inspBtn.hidden = locked; }
       if (el.sideOpen) el.sideOpen.hidden = !lay.hidden;
     }
 
     // ------------------------------------------------------------ right slot tabs
     function renderTabs(kind) {
-      const box = kind === "work" ? el.workTabs : el.inspTabs;
+      const box = el.workTabs;
       if (!box) return;
       const cur = activeTab(kind);
       box.replaceChildren(...visibleTabs(kind).map((id) => {
@@ -233,7 +247,7 @@
       }));
     }
     for (const kind of KINDS) {
-      const box = kind === "work" ? el.workTabs : el.inspTabs;
+      const box = el.workTabs;
       if (box) box.addEventListener("keydown", (e) => {
         const d = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
         if (!d) return;
@@ -361,7 +375,7 @@
         g.addEventListener("pointerup", up);
       });
       g.addEventListener("dblclick", () => {
-        if (side === "left") { lay.side = 272; lay.hidden = false; } else if (right.kind) lay[right.kind] = right.kind === "work" ? 560 : 360;
+        if (side === "left") { lay.side = 272; lay.hidden = false; } else if (right.kind) lay[right.kind] = 560;
         applyLayout();
         persist();
       });
@@ -399,7 +413,8 @@
       right: () => ({ kind: right.kind, tab: right.kind ? activeTab(right.kind) : null }),
       isOpen: (kind, tab) => !locked && right.kind === kind && (!tab || activeTab(kind) === tab),
       registerWorkTab: (id, def) => register("work", id, def),
-      registerInspectorTab: (id, def) => register("inspector", id, def),
+      /** A main-area view an old stored Inspector state asked for ("usage"), handed out once; null otherwise. */
+      takeView() { const v = pendingView; pendingView = null; return v; },
       setTabLive(id, on) {
         const was = live.has(id);
         if (on) live.add(id); else live.delete(id);
@@ -475,7 +490,7 @@
     stub("agents", "shell.tab.agents", "shell.empty.agentsTitle", "shell.empty.agentsBody");
 
     // icons of the frame's buttons (index.html keeps no inline SVG)
-    const ICON_OF = { "side-close": "side", "side-open": "side", "work-btn": "work", "insp-btn": "insp", "insp-close": "x", "work-close": "x" };
+    const ICON_OF = { "side-close": "side", "side-open": "side", "work-btn": "work", "work-close": "x" };
     for (const [id, name] of Object.entries(ICON_OF)) { const b = $(id); if (b && !b.firstChild) b.appendChild(icon(doc, name, 16)); }
     const find = $("find-btn");
     if (find) find.prepend(icon(doc, "search", 14));
@@ -490,19 +505,19 @@
     click(el.sideOpen, () => api.toggleSidebar());
     click(el.sideClose, () => api.toggleSidebar());
     click(el.workBtn, () => api.toggleRight("work"));
-    click(el.inspBtn, () => api.toggleRight("inspector"));
     click(el.workClose, () => api.closeRight());
-    click(el.inspClose, () => api.closeRight());
     doc.addEventListener("keydown", (e) => {
       const a = keyAction(e);
       if (!a) return;
       e.preventDefault();
       if (a === "sidebar") return api.toggleSidebar();
       if (locked) return;
-      if (a === "work" || a === "inspector") return api.toggleRight(a);
-      // Ctrl+J: the fleet capsule's panel when a module listens, else the fleet figures in Inspector > Usage
+      if (a === "work") return api.toggleRight("work");
+      // Ctrl+Alt+I: the Work pane on its Session tab (again: closes it)
+      if (a === "session") return api.toggleRight("work", api.isOpen("work", "session") ? undefined : "session");
+      // Ctrl+J: the fleet capsule's panel when a module listens, else the Usage view (app.js's usageView service)
       if (listeners.has("fleet") && listeners.get("fleet").size) emit("fleet", {});
-      else api.toggleRight("inspector", right.kind === "inspector" && activeTab("inspector") === "usage" ? undefined : "usage");
+      else { const view = services.get("usageView"); if (view && typeof view.toggle === "function") view.toggle(); }
     });
     doc.addEventListener("deck-language", () => {
       if (right.kind) renderTabs(right.kind);
@@ -514,5 +529,5 @@
     return api;
   }
 
-  return { create, KINDS, ORDER, FILTERS, DEFAULT_TAB, legacyTab, nextRight, pickTab, sortTabs, keyAction, channelOf, matchFilter, sourceName, ICONS };
+  return { create, KINDS, ORDER, FILTERS, DEFAULT_TAB, legacyTab, restoreRight, nextRight, pickTab, sortTabs, keyAction, channelOf, matchFilter, sourceName, ICONS };
 });

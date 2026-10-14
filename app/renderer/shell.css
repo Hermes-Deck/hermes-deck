@@ -207,7 +207,7 @@ body.mac .app.side-hidden .topbar { padding-left: 80px; }
 .inbox-empty h2 { margin: 4px 0 0; font: 500 24px/1.2 var(--serif); letter-spacing: -0.018em; color: var(--t1); }
 .inbox-empty p { margin: 0 0 6px; font-size: 13px; line-height: 1.55; }
 
-/* ---------- right slot: inspector or work pane ---------- */
+/* ---------- right slot: the work pane ---------- */
 .right { display: flex; min-width: 0; min-height: 0; background: var(--l1); }
 .rpanel { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
 .rhead { flex: none; display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 10px 0 12px; border-bottom: 1px solid var(--line2); }

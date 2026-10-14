@@ -91,8 +91,8 @@ The main process (`app/main/`) owns every connection and every secret. The rende
 
 | Renderer file | View |
 |---|---|
-| `shell.js` | The Blend frame and its `window.DeckShell` API: sidebar (modes, filters), top bar, main area (chat or inbox), the right slot (Inspector or Work pane, one at a time, with tabs), named slots, events, shared services and the frame shortcuts. Later modules plug in through it. |
-| `app.js` | Sidebar rail, chat column, the Inspector's Session, Activity and Usage tabs, the direct Hermes views, and the services other modules use (`h`, `chat`, `openChat`, `triageData`, …). |
+| `shell.js` | The Blend frame and its `window.DeckShell` API: sidebar (modes, filters), top bar, main area (chat or inbox), the right slot (the Work pane, with tabs; an old stored Inspector state migrates to Work › Session or the Usage view), named slots, events, shared services and the frame shortcuts. Later modules plug in through it. |
+| `app.js` | Sidebar rail, chat column, the Work pane's Session tab, the Usage view's contents, the direct Hermes views, and the services other modules use (`h`, `chat`, `openChat`, `triageData`, `relaySession`, `usageView`, …). |
 | `settings-view.js`, `chat-modes.js`, `i18n.js` | The Settings view (General, Hermes, Relay, Telegram, Desktop, This device), the chat-mode editor, and the English and Turkish UI strings. |
 | `sessions-browser.js`, `bots.js`, `activity-view.js`, `live-activity.js` | All sessions; the Bots mode and Bot Chat; the Activity tree; the live "working" row in a Hermes chat. |
 | `outbox.js`, `busy-send.js`, `takeover.js`, `drafts.js`, `attach.js`, `voice.js`, `voice-bubble.js`, `hermes-files.js`, `media-preview.js` | Composer: queued messages, queue-or-steer, explicit take over, per-chat drafts, attachments, dictation, voice notes, files offered by the agent, image previews. |
@@ -103,7 +103,9 @@ The main process (`app/main/`) owns every connection and every secret. The rende
 | `composer.js`, `receipts.js`, `timeline.js`, `think-block.js` | The composer status row, tray and "via" line; per-turn tool-call receipts; the timeline scrubber; reasoning folds. |
 | `work-pane.js` | The Work pane's Run, Plan, Diff and Agents tabs and the live Browser/Screen surface chips. |
 | `inbox.js`, `fleet-capsule.js` | The inbox (Needs you) and the top-bar fleet capsule and panel. They share one read model fed by bridge and relay pushes; answers use the existing `request.answer` path. |
-| `tokens-view.js`, `usage-view.js` | The Inspector's Usage tab: quotas, today's usage, token ranges and cost breakdowns. |
+| `tokens-view.js`, `usage-view.js` | The Usage view's figures: quotas, today's usage, token ranges and cost breakdowns. |
+| `usage-detail.js` | The Usage view: a main-area view over the chat (like Settings) that hosts those figures; opened from the fleet panel's **Usage details**. |
+| `human.js` | Readable durations (`2m 05s`, `6h 38m`) and compact counts (`12.4k`, `2.9M`) shared by every view. |
 | `workspace.js` | The Work pane's Browser tab and the agent-browser rows of Settings → This device. |
 | `botscreen.js`, `space-panel.js` | The Work pane's Screen tab (the agent's frames with click markers, the action log), the Hand to agent consent sheet, the Desktop control rows of Settings → This device, and the agent-space panel. |
 | `botbar.html`, `botbar.js` | The always-on-top bar shown while an agent may act on this computer. |

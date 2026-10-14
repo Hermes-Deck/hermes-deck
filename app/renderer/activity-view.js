@@ -129,6 +129,39 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   }
   const isEquivalent = s => s.cost_label === "API list-price equivalent" || s.cost_estimated === true;
 
+  /**
+   * The metric cells of one session (relay row s, optional bridge node): context, cache hit, speed, fresh / cached /
+   * output tokens, tools, turns. Plain data {id, label, value, tip, meter?, tone?}; k formats a count. sparse drops
+   * the token and tool cells that are zero, so a view shows only figures that exist.
+   */
+  function metricItems(s, node, k, { sparse = false } = {}) {
+    const t = (s && s.tokens) || {};
+    const out = [];
+    const exact = n => Math.round(num(n)).toLocaleString(i18nLocale());
+    const tip = (key, n) => (n === undefined ? i18nText(key) : `${i18nText(key)}\n${exact(n)}`);
+    const p = ctxPercent(s, node);
+    if (p !== null) out.push({ id: "context", label: i18nText("activity.m.context"), value: pct(p), tip: tip("activity.tipContext"), meter: p, tone: p >= CTX_BAD ? "bad" : p >= CTX_WARN ? "warn" : "" });
+    const rate = cacheRate(t);
+    if (rate !== null) out.push({ id: "cache", label: i18nText("activity.m.cache"), value: pct(rate), tip: tip("activity.tipCache"), meter: rate });
+    const tps = tokensPerSec(s);
+    if (tps !== null) out.push({ id: "speed", label: i18nText("activity.m.speed"), value: i18nText("activity.tps", { v: tps.toLocaleString(i18nLocale()) }), tip: tip("activity.tipSpeed") });
+    const fresh = num(t.in) + num(t.cw);
+    if (!sparse || fresh) out.push({ id: "fresh", label: i18nText("activity.m.fresh"), value: k(fresh), tip: tip("activity.tipFresh", fresh) });
+    if (num(t.cr)) out.push({ id: "cached", label: i18nText("activity.m.cached"), value: k(t.cr), tip: tip("activity.tipCached", t.cr) });
+    if (!sparse || num(t.out)) out.push({ id: "output", label: i18nText("activity.m.output"), value: k(num(t.out)), tip: tip("activity.tipOutput", t.out) });
+    if (!sparse || num(s && s.ntools)) out.push({ id: "tools", label: i18nText("activity.m.tools"), value: String(num(s && s.ntools)), tip: tip("activity.tipTools") });
+    if (s && !s.parent && s.turns) out.push({ id: "turns", label: i18nText("activity.m.turns"), value: String(s.turns), tip: tip("activity.tipTurns") });
+    return out;
+  }
+
+  /** The one metric grid (activity drawer, Work › Session, Work › Sub-agents): label, value, optional meter. */
+  function metricGrid(h, items) {
+    return h("div", { class: "ametrics" }, (items || []).map(m => h("div", { class: `ametric${m.tone ? ` ${m.tone}` : ""}`, title: m.tip || null, dataset: m.id ? { metric: m.id } : null },
+      h("span", { class: "ametric-k" }, m.label),
+      h("span", { class: "ametric-v" }, m.value),
+      m.meter !== undefined ? h("span", { class: "ameter", role: "meter", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": m.meter, "aria-label": m.label }, h("i", { style: { width: `${m.meter}%` } })) : null)));
+  }
+
   // ---------------------------------------------------------------- rendering
   function create(ctx) {
     const { h, k, dur, ticker, kidsOf, nodeOf, actions, controlBox, toolList, toggleTools, openDetail, askEl, titleOf, retryIndex, mark, store, isOpenTools, sessions } = ctx;
@@ -156,28 +189,8 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       return s.firstTs && s.lastTs > s.firstTs ? dur((s.lastTs - s.firstTs) * 1000) : "";
     }
 
-    function metric(label, value, tip, extra = {}) {
-      return h("div", { class: `ametric${extra.tone ? ` ${extra.tone}` : ""}`, title: tip },
-        h("span", { class: "ametric-k" }, label),
-        h("span", { class: "ametric-v" }, value),
-        extra.meter !== undefined ? h("span", { class: "ameter", role: "meter", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": extra.meter, "aria-label": label }, h("i", { style: { width: `${extra.meter}%` } })) : null);
-  }
-
     function metrics(s, node) {
-      const t = s.tokens || {};
-      const out = [];
-      const p = ctxPercent(s, node);
-      if (p !== null) out.push(metric(i18nText("activity.m.context"), pct(p), i18nText("activity.tipContext"), { meter: p, tone: p >= CTX_BAD ? "bad" : p >= CTX_WARN ? "warn" : "" }));
-      const rate = cacheRate(t);
-      if (rate !== null) out.push(metric(i18nText("activity.m.cache"), pct(rate), i18nText("activity.tipCache"), { meter: rate }));
-      const tps = tokensPerSec(s);
-      if (tps !== null) out.push(metric(i18nText("activity.m.speed"), i18nText("activity.tps", { v: tps.toLocaleString(i18nLocale()) }), i18nText("activity.tipSpeed")));
-      out.push(metric(i18nText("activity.m.fresh"), k(num(t.in) + num(t.cw)), i18nText("activity.tipFresh")));
-      if (num(t.cr)) out.push(metric(i18nText("activity.m.cached"), k(t.cr), i18nText("activity.tipCached")));
-      out.push(metric(i18nText("activity.m.output"), k(t.out), i18nText("activity.tipOutput")));
-      out.push(metric(i18nText("activity.m.tools"), String(num(s.ntools)), i18nText("activity.tipTools")));
-      if (!s.parent && s.turns) out.push(metric(i18nText("activity.m.turns"), String(s.turns), i18nText("activity.tipTurns")));
-      return h("div", { class: "ametrics" }, out);
+      return metricGrid(h, metricItems(s, node, k));
     }
 
     function menuEl(s, node) {
@@ -321,7 +334,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     return { card, elsewhere, descendants };
   }
 
-  const api = { create, shortModel, effortOf, stripCommonPrefix, cacheRate, tokensPerSec, ctxPercent, statusOf, treeTotals, costText, isLiveKind };
+  const api = { create, shortModel, effortOf, stripCommonPrefix, cacheRate, tokensPerSec, ctxPercent, statusOf, treeTotals, costText, isLiveKind, metricItems, metricGrid };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.DeckActivity = Object.freeze(api);
 })(typeof window !== "undefined" ? window : globalThis);

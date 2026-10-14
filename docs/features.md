@@ -18,19 +18,19 @@ Settings opens from the gear in the top bar or with **Ctrl+,** (**Cmd+,** on mac
 ## Layout and shortcuts
 
 The window has a **sidebar** (resizable; hide it with the button in its header or **Ctrl/Cmd+B**), a **top bar**,
-and a main area that shows the chat or the [inbox](#inbox-and-fleet). The right slot shows either the **Inspector**
-or the **Work pane**, one at a time; each keeps its own width.
+and a main area that shows the chat or the [inbox](#inbox-and-fleet). The right slot holds the **Work pane**; the
+**Usage** view opens over the chat like Settings.
 
 - **Sidebar.** The mode switch (**Telegram | Sessions | Bots**, enabled modes only), then in Sessions mode the
   filters **Needs you** (opens the inbox), **All**, **Running**, **Waiting**, **Today** and **Pinned**, the **Agents**
   list (a click narrows the list to that profile), source chips, **All sessions** and the sessions by profile. The
   footer shows the connections, the fleet summary and the busiest quota window.
 - **Top bar.** Breadcrumb (agent / title, with the parent for a sub-agent) and a channel chip (**Hermes**,
-  **Telegram**, **<Source> · read-only**, **Bot Chat**, **Sub-agent**), the fleet capsule, search, and the Work pane,
-  Inspector and Settings buttons.
-- **Inspector.** **Session** (the chat's facts with **Steer**, **Stop** and **Model**, then what runs in other agents)
-  and **Usage**.
-- **Work pane.** **Run**, **Plan**, **Diff**, **Sub-agents**, **Browser** and **Screen** (see [Work pane](#work-pane)).
+  **Telegram**, **<Source> · read-only**, **Bot Chat**, **Sub-agent**), the fleet capsule, search, and the Work pane
+  and Settings buttons.
+- **Work pane.** **Session** (the chat's facts and figures with **Steer**, **Stop** and **Model**, then what runs in
+  other agents), **Run**, **Plan**, **Diff**, **Sub-agents**, **Browser** and **Screen** (see [Work pane](#work-pane)).
+- **Usage.** Fleet panel › **Usage details** (see [Usage, quotas and Fleet](#usage-quotas-and-fleet)).
 
 | Shortcut (Cmd on macOS) | Action |
 |---|---|
@@ -38,7 +38,7 @@ or the **Work pane**, one at a time; each keeps its own width.
 | **Ctrl+Shift+K** | Model picker |
 | **Ctrl+E** | Cycle the reasoning effort |
 | **Ctrl+\\** | Work pane |
-| **Ctrl+Alt+I** | Inspector |
+| **Ctrl+Alt+I** | Work pane › Session |
 | **Ctrl+J** | Fleet panel |
 | **Ctrl+B** | Hide or show the sidebar |
 | **Ctrl+Shift+H** | Next chat mode |
@@ -111,7 +111,7 @@ profile.
 
 **What it is.** One row per Hermes profile with its face, name, state and a badge when it waits for you. A click opens
 the profile's single **Bot Chat**, a hidden session with that exact title; the bot's other sessions stay one fold
-away. A bot's card in the Inspector lists its **Routines** (the profile's cron jobs, read-only).
+away. A bot's card lists its **Routines** (the profile's cron jobs, read-only).
 
 **How it works.** Everything comes over the direct connection: `profiles.list` (names, faces, the Bot Chat
 reference), `profiles.get_asset` (avatar), `session.list` (exact-title lookup) and `session.create` + `session.title`
@@ -164,7 +164,7 @@ Telegram. Known executable and script types are saved but never opened directly.
   turns.
 - Approvals and questions from the agent appear in the composer tray and are answered there (or in the
   [inbox](#inbox-and-fleet)).
-- The Inspector's **Session** tab ends with what is running in other agents right now (status, title, model and
+- Work › **Session** ends with what is running in other agents right now (status, title, model and
   reasoning level, elapsed time, cost so far). A session's own sub-agents are in Work › **Sub-agents**.
 
 **How it works.** For chats on the direct connection, the plugin streams the turn's events and the app shows them.
@@ -227,7 +227,8 @@ from your next message.
 
 ## Usage, quotas and Fleet
 
-**What it is.** The Inspector's **Usage** tab (it replaces the old Fleet and Token tabs):
+**What it is.** The **Usage** view, opened from the fleet panel's **Usage details** row (or **Ctrl/Cmd+J** when the
+fleet panel is unavailable). It covers the chat column like Settings; **Back** or **Esc** returns to the chat:
 
 - **Quotas** (Claude and Codex subscription windows: session and weekly limits with reset times, brass above 60%,
   and a **Refresh** button), today's usage across all agents, and **Gateways** (each profile's gateway and platform
@@ -290,12 +291,18 @@ All of these are local to the app; nothing is sent anywhere.
 
 **What it is.** The right slot's work view for the chat on screen (**Ctrl/Cmd+\\**):
 
+- **Session** (first tab; **Ctrl/Cmd+Alt+I**): the chat's channel, agent, profile, model and session id, its figures
+  when the relay has them (context with a meter, cache hit, tok/s, fresh / cached / output tokens, tools, turns), and
+  **Steer**, **Stop** and **Model**; then what runs in other agents.
 - **Run**: the session's recent tool calls with status, timing bars and the selected call's output.
 - **Plan**: the agent's own task list, live as it changes, with done/active/pending states, phases and blocked
   reasons. "This agent did not publish a plan" when there is none.
 - **Diff**: the files the agent wrote or patched, with the +/- counts the tool calls show. It is not a full diff.
-- **Sub-agents**: the session's live sub-agents (goal, model, effort, state, elapsed time, tokens, cost, live output and
-  recent tool calls) and recently failed delegations. **Steer** sends a message to one sub-agent and **Stop** ends it.
+- **Sub-agents**: the session's live sub-agents (goal, model, effort, state, elapsed time, context) and recently failed
+  delegations. A sub-agent opens with its figures (elapsed, tokens, context, cache hit, tok/s, fresh / cached / output
+  tokens, tool calls, cost; only the ones that exist), its live output and recent tool calls. Times read like
+  **2m 05s** or **6h 38m**, token counts like **12.4k** or **2.9M** (hover for the exact number). **Steer** sends a
+  message to one sub-agent and **Stop** ends it.
 - **Browser** and **Screen**: the [agent browser](#agent-browsers-browser-tab) and
   [desktop control](#desktop-control-screen-tab) views.
 
@@ -320,7 +327,8 @@ needs the relay.
 - **Fleet capsule** in the top bar: running agents (teal sweep), agents that wait for you (brass ring), "N running",
   "N need you" and today's cost. A click or **Ctrl/Cmd+J** opens the fleet panel: agents sorted waiting → running →
   idle → offline with task, elapsed time and model · effort, inline approvals and answers, sub-agent lines (open
-  Work › Sub-agents), today's cost, tokens, calls and cache hit, and quota bars.
+  Work › Sub-agents), a **Usage details** row that opens the [Usage view](#usage-quotas-and-fleet), today's cost,
+  tokens, calls and cache hit, and quota bars.
 
 **How it works.** Approvals and questions come from the direct connection and are answered through the same
 `request.answer` path as in the chat, once per click, never resent. Sessions, agents, costs and quotas come from the

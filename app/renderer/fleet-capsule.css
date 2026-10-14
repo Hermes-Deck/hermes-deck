@@ -38,6 +38,13 @@
 .tf-child span:first-child { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tf-child:hover { color: var(--t1); }
 .tf-today { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; padding: 14px 16px; border-top: 1px solid var(--line); background: var(--l2); }
+/* the titled entry to the full Usage view: one row above today's figures, a chevron says it opens something */
+.tf-usage { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 16px; border: 0; border-top: 1px solid var(--line); background: var(--l2); color: var(--t2); font: 500 12px var(--sans); text-align: left; cursor: pointer; transition: background .15s, color .15s; }
+.tf-usage:hover { background: var(--l3); color: var(--t1); }
+.tf-usage .tf-chev { margin-left: auto; color: var(--t3); font-size: 15px; line-height: 1; }
+.tf-usage:hover .tf-chev { color: var(--brass); }
+.tf-usage:focus-visible { outline: 2px solid var(--brass); outline-offset: -2px; }
+.tf-usage + .tf-today { border-top: 0; padding-top: 4px; }
 .tf-today small { display: block; font: 500 10px var(--mono); color: var(--t3); letter-spacing: .04em; }
 .tf-today b { display: block; font: 500 17px var(--mono); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; }
 .tf-quotas { padding: 8px 16px; background: var(--l2); }
@@ -46,7 +53,7 @@
 .tf-footer { padding: 10px 16px; border-top: 1px solid var(--line); font: 11px/1.7 var(--sans); color: var(--t3); }
 .tf-empty, .tf-notice { padding: 16px; color: var(--t3); font-size: 12.5px; }
 .tf-cap:focus-visible, .tf-agent-main:focus-visible, .tf-child:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
-.app[data-right="work"] .tf-cost, .app[data-right="inspector"] .tf-cost { display: none; }
+.app[data-right="work"] .tf-cost { display: none; }
 @media (max-width: 900px) { .tf-stack, .tf-cost { display: none; } .tf-cap { gap: 6px; padding: 0 8px; font-size: 11px; } }
 @media (max-width: 480px) { .tf-agent { gap: 8px; padding: 10px 12px; } .tf-runtime small { max-width: 90px; } .tf-details { grid-column: 1/4; } .tf-today { gap: 8px; padding: 12px; } .tf-today b { font-size: 14px; } }
 @media (prefers-reduced-motion: reduce) { .tf-cap { transition: none; } .tf-stack .tf-avatar::after, .tf-panel.show { animation: none; } .tf-stack .tf-avatar.running::after { background: var(--teal); } }

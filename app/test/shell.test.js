@@ -24,44 +24,59 @@ function appFn(name) {
   throw new Error(`unterminated ${name}`);
 }
 
-test("right slot: one kind at a time, each kind remembers its tab, toggle closes only the open kind", () => {
+test("right slot: the Work pane alone, it remembers its tab, toggle closes it, an old kind changes nothing", () => {
+  assert.deepEqual(SH.KINDS, ["work"], "the Inspector is gone");
   let r = { kind: null, last: { ...SH.DEFAULT_TAB } };
-  r = SH.nextRight(r, "open", "inspector", "usage");
-  assert.deepEqual(plain(r), { kind: "inspector", last: { inspector: "usage", work: "run" } });
-  r = SH.nextRight(r, "open", "work", "browser");
-  assert.equal(r.kind, "work", "opening the work pane closes the inspector");
-  assert.equal(r.last.inspector, "usage", "the inspector keeps its tab for next time");
-  r = SH.nextRight(r, "toggle", "inspector");
-  assert.equal(r.kind, "inspector", "toggling the other kind switches to it");
-  r = SH.nextRight(r, "toggle", "inspector");
+  assert.equal(r.last.work, "run", "a fresh profile opens Run");
+  r = SH.nextRight(r, "open", "work", "session");
+  assert.deepEqual(plain(r), { kind: "work", last: { work: "session" } });
+  r = SH.nextRight(r, "toggle", "work");
   assert.equal(r.kind, null, "toggling the open kind closes the slot");
+  assert.equal(r.last.work, "session", "the pane keeps its tab for next time");
   r = SH.nextRight(r, "toggle", "work", "screen");
   assert.deepEqual([r.kind, r.last.work], ["work", "screen"]);
   assert.equal(SH.nextRight(r, "toggle", "work", "plan").kind, "work", "a toggle with a tab opens that tab");
+  assert.equal(SH.nextRight(r, "open", "inspector", "usage").kind, "work", "the removed Inspector kind changes nothing");
   assert.equal(SH.nextRight(r, "open", "bogus").kind, "work", "an unknown kind changes nothing");
   assert.equal(SH.nextRight(r, "close").kind, null);
 });
 
-test("old right-panel tab ids route into the new slot", () => {
-  assert.deepEqual(SH.legacyTab("activity"), ["inspector", "session"]);
-  assert.deepEqual(SH.legacyTab("fleet"), ["inspector", "usage"], "Fleet moved into Usage");
-  assert.deepEqual(SH.legacyTab("tokens"), ["inspector", "usage"], "Token moved into Usage");
+test("old right-panel tab ids route into the Work pane or the Usage view", () => {
+  assert.deepEqual(SH.legacyTab("activity"), ["work", "session"], "Activity became Work › Session");
+  assert.deepEqual(SH.legacyTab("session"), ["work", "session"], "Inspector › Session is Work › Session");
+  assert.deepEqual(SH.legacyTab("fleet"), ["main", "usage"], "Fleet opens the Usage view");
+  assert.deepEqual(SH.legacyTab("tokens"), ["main", "usage"], "Token opens the Usage view");
+  assert.deepEqual(SH.legacyTab("usage"), ["main", "usage"], "Inspector › Usage is the Usage view");
   assert.deepEqual(SH.legacyTab("workspace"), ["work", "browser"]);
   assert.deepEqual(SH.legacyTab("screen"), ["work", "screen"]);
   assert.deepEqual(SH.legacyTab("plan"), ["work", "plan"]);
   assert.equal(SH.legacyTab("settings"), null, "Settings is its own view, not a tab");
   assert.equal(SH.legacyTab("__proto__"), null);
   assert.equal(SH.pickTab("screen", ["run", "browser"]), "run", "a hidden tab falls back to the first visible one");
-  assert.deepEqual(SH.sortTabs("work", ["custom", "screen", "run", "browser"]), ["run", "browser", "screen", "custom"]);
+  assert.deepEqual(SH.sortTabs("work", ["custom", "screen", "run", "browser", "session"]), ["session", "run", "browser", "screen", "custom"], "Session is the first tab");
 });
 
-test("shortcuts: Ctrl/Cmd+\\ work pane, Ctrl/Cmd+Alt+I inspector, Ctrl/Cmd+B sidebar, Ctrl/Cmd+J fleet", () => {
+test("stored right-slot state: an old Inspector comes back as Work › Session or the Usage view", () => {
+  const from = (o) => SH.restoreRight((k) => (Object.prototype.hasOwnProperty.call(o, k) ? o[k] : null));
+  assert.deepEqual(plain(from({})), { kind: null, last: { work: "run" }, view: null }, "fresh profile: closed, Run remembered");
+  assert.deepEqual(plain(from({ "deck.right": "work", "deck.wtab": "plan" })), { kind: "work", last: { work: "plan" }, view: null });
+  assert.deepEqual(plain(from({ "deck.right": "", "deck.wtab": "diff" })), { kind: null, last: { work: "diff" }, view: null });
+  assert.deepEqual(plain(from({ "deck.right": "inspector", "deck.itab": "session", "deck.wtab": "run" })), { kind: "work", last: { work: "session" }, view: null });
+  assert.deepEqual(plain(from({ "deck.right": "inspector", "deck.itab": "activity" })), { kind: "work", last: { work: "session" }, view: null });
+  assert.deepEqual(plain(from({ "deck.right": "inspector", "deck.itab": "usage", "deck.wtab": "agents" })), { kind: null, last: { work: "agents" }, view: "usage" });
+  assert.deepEqual(plain(from({ "deck.right": "inspector", "deck.itab": "nonsense" })), { kind: "work", last: { work: "session" }, view: null });
+  assert.deepEqual(plain(from({ "deck.panelClosed": "0", "deck.tab": "fleet" })), { kind: null, last: { work: "run" }, view: "usage" }, "pre-Blend Fleet");
+  assert.deepEqual(plain(from({ "deck.panelClosed": "0", "deck.tab": "activity" })), { kind: "work", last: { work: "session" }, view: null }, "pre-Blend Activity");
+  assert.deepEqual(plain(from({ "deck.right": "bogus" })), { kind: null, last: { work: "run" }, view: null });
+});
+
+test("shortcuts: Ctrl/Cmd+\\ work pane, Ctrl/Cmd+Alt+I its Session tab, Ctrl/Cmd+B sidebar, Ctrl/Cmd+J fleet", () => {
   const k = (key, mods = {}) => SH.keyAction({ key, ctrlKey: true, ...mods });
   assert.equal(k("\\"), "work");
   assert.equal(k("\\", { altKey: true }), "work", "AltGr layouts (Ctrl+Alt) still reach the work pane");
   assert.equal(SH.keyAction({ key: "\\", metaKey: true }), "work", "Cmd on macOS");
-  assert.equal(k("i", { altKey: true }), "inspector");
-  assert.equal(k("ı", { altKey: true, code: "KeyI" }), "inspector", "Turkish keyboard: the key's code counts");
+  assert.equal(k("i", { altKey: true }), "session");
+  assert.equal(k("ı", { altKey: true, code: "KeyI" }), "session", "Turkish keyboard: the key's code counts");
   assert.equal(k("b"), "sidebar");
   assert.equal(k("j"), "fleet");
   assert.equal(k("i"), null, "plain Ctrl+I is left to the page");
@@ -138,8 +153,8 @@ function fakeDom(ids) {
   const win = { localStorage: { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)) }, innerWidth: 1440, addEventListener() {}, navigator: { platform: "Linux" }, console };
   return { doc, win, byId, mem };
 }
-const IDS = ["app", "side", "topbar", "chat", "inbox", "right", "insp", "work", "insp-tabs", "work-tabs", "insp-body", "work-body", "gutter-left", "gutter-right",
-  "side-open", "side-close", "work-btn", "insp-btn", "insp-close", "work-close", "capsule", "timeline", "composer-status", "crumb-extra", "side-extra", "find-btn", "find-kbd"];
+const IDS = ["app", "side", "topbar", "chat", "inbox", "right", "work", "work-tabs", "work-body", "gutter-left", "gutter-right",
+  "side-open", "side-close", "work-btn", "work-close", "capsule", "timeline", "composer-status", "crumb-extra", "side-extra", "find-btn", "find-kbd"];
 
 test("DeckShell API: register tabs, open/close the right slot, events, live dots, slots, inbox stub", () => {
   const { doc, win, byId, mem } = fakeDom(IDS);
@@ -149,6 +164,7 @@ test("DeckShell API: register tabs, open/close the right slot, events, live dots
   api.on("main", (m) => events.push(["main", m.kind]));
   assert.deepEqual(plain(api.right()), { kind: null, tab: null }, "the right slot starts closed");
   assert.equal(byId.get("right").hidden, true);
+  assert.equal(api.registerInspectorTab, undefined, "no Inspector registration left");
 
   let renders = 0;
   api.registerWorkTab("run", { title: "Run", render: (el) => { renders++; el.replaceChildren(doc.createTextNode("runs")); } });
@@ -156,14 +172,15 @@ test("DeckShell API: register tabs, open/close the right slot, events, live dots
   assert.deepEqual(plain(api.right()), { kind: "work", tab: "run" });
   assert.equal(byId.get("right").hidden, false);
   assert.equal(byId.get("work").hidden, false);
-  assert.equal(byId.get("insp").hidden, true);
   assert.equal(renders, 1, "the module's renderer replaced the shell's empty state");
   assert.equal(mem.get("deck.right"), "work", "the open kind is remembered");
 
-  api.registerInspectorTab("activity", { title: "Activity", render: (el) => el.replaceChildren(doc.createTextNode("tree")) });
-  api.openRight("inspector", "activity");
-  assert.equal(byId.get("work").hidden, true, "one right panel at a time");
-  assert.deepEqual(events.filter((e) => e[0] === "right").map((e) => e.slice(1)), [["work", "run"], ["inspector", "activity"]]);
+  api.registerWorkTab("session", { title: "Session", render: (el) => el.replaceChildren(doc.createTextNode("facts")) });
+  assert.deepEqual(byId.get("work-tabs").children.map((b) => b.dataset.tab), ["session", "run", "plan", "diff", "agents"], "Session is the first tab");
+  api.openRight("inspector", "session");
+  assert.deepEqual(plain(api.right()), { kind: "work", tab: "run" }, "the removed Inspector kind changes nothing");
+  api.openRight("work", "session");
+  assert.deepEqual(events.filter((e) => e[0] === "right").map((e) => e.slice(1)), [["work", "run"], ["work", "session"]]);
 
   // weak registration (app.js defaults) never replaces a module's own tab
   assert.equal(api.registerWorkTab("run", { weak: true, render() { throw new Error("must not run"); } }), false);
@@ -182,7 +199,6 @@ test("DeckShell API: register tabs, open/close the right slot, events, live dots
 
   // only the shown tab's pane is attached: a module root elsewhere is disconnected and stops its live view
   assert.deepEqual(byId.get("work-body").children.map((p) => p.dataset.tab), ["diff"]);
-  assert.deepEqual(byId.get("insp-body").children.map((p) => p.dataset.tab), []);
   api.openRight("work", "run");
   assert.deepEqual(byId.get("work-body").children.map((p) => p.dataset.tab), ["run"]);
   assert.equal(byId.get("work-body").children[0].children[0].text, "runs", "a tab's content survives being detached");
@@ -232,27 +248,83 @@ test("DeckShell API: register tabs, open/close the right slot, events, live dots
   assert.deepEqual(got, ["workspace"]);
 });
 
-test("DeckShell keys: Ctrl+\\ toggles the work pane, Ctrl+B the sidebar; first run locks the right slot", () => {
+test("DeckShell keys: Ctrl+\\ toggles the work pane, Ctrl+Alt+I its Session tab, Ctrl+B the sidebar; first run locks the right slot", () => {
   const { doc, win, byId } = fakeDom(IDS);
   const api = SH.create(doc, win);
+  api.registerWorkTab("session", { render() {} });
   const key = (k, mods = {}) => doc.fire("keydown", { key: k, ctrlKey: true, preventDefault() {}, ...mods });
   key("\\");
-  assert.equal(api.right().kind, "work");
+  assert.deepEqual(plain(api.right()), { kind: "work", tab: "run" }, "a fresh profile opens Run");
+  key("i", { altKey: true, code: "KeyI" });
+  assert.deepEqual(plain(api.right()), { kind: "work", tab: "session" }, "Ctrl+Alt+I lands on Work › Session");
+  key("i", { altKey: true, code: "KeyI" });
+  assert.equal(api.right().kind, null, "again: closes the pane");
+  key("i", { altKey: true, code: "KeyI" });
+  assert.deepEqual(plain(api.right()), { kind: "work", tab: "session" }, "from closed: opens on Session");
+  api.openRight("work", "plan");
+  key("i", { altKey: true, code: "KeyI" });
+  assert.deepEqual(plain(api.right()), { kind: "work", tab: "session" }, "from another Work tab: switches to Session");
   key("\\");
   assert.equal(api.right().kind, null);
-  key("i", { altKey: true, code: "KeyI" });
-  assert.equal(api.right().kind, "inspector");
   key("b");
   assert.equal(api.sidebarHidden(), true);
   assert.equal(byId.get("app").classList.contains("side-hidden"), true);
   key("b");
   assert.equal(api.sidebarHidden(), false);
+  key("i", { altKey: true, code: "KeyI" });
   api.setLocked(true);
   assert.equal(byId.get("right").hidden, true, "first run: no right slot");
   key("\\");
-  assert.equal(api.right().kind, "inspector", "locked: the shortcut changes nothing");
+  key("i", { altKey: true, code: "KeyI" });
+  assert.deepEqual(plain(api.right()), { kind: "work", tab: "session" }, "locked: the shortcuts change nothing");
   api.setLocked(false);
   assert.equal(byId.get("right").hidden, false);
+});
+
+test("Ctrl+J: the fleet panel when it listens, else the Usage view through the usageView service", () => {
+  const { doc, win } = fakeDom(IDS);
+  const api = SH.create(doc, win);
+  const key = () => doc.fire("keydown", { key: "j", ctrlKey: true, preventDefault() {} });
+  let toggles = 0;
+  key(); // nothing provides a Usage view yet: a no-op, never an Inspector
+  assert.equal(api.right().kind, null);
+  api.provide("usageView", { toggle: () => { toggles++; } });
+  key();
+  assert.equal(toggles, 1, "no fleet listener: the Usage view toggles");
+  assert.equal(api.right().kind, null, "the right slot is untouched");
+  let fleet = 0;
+  const off = api.on("fleet", () => { fleet++; });
+  key();
+  assert.deepEqual([fleet, toggles], [1, 1], "the fleet panel wins while it listens");
+  off();
+  key();
+  assert.equal(toggles, 2);
+});
+
+test("a stored Inspector state migrates once: Session -> Work › Session, Usage -> the Usage view", () => {
+  const session = fakeDom(IDS);
+  session.mem.set("deck.right", "inspector");
+  session.mem.set("deck.itab", "session");
+  session.mem.set("deck.wtab", "run");
+  const a = SH.create(session.doc, session.win);
+  a.registerWorkTab("session", { render() {} });
+  assert.deepEqual(plain(a.right()), { kind: "work", tab: "session" });
+  assert.equal(a.takeView(), null);
+  assert.equal(session.mem.get("deck.right"), "work", "the new state is written at once, so the next start reads it");
+  assert.equal(session.mem.get("deck.wtab"), "session");
+
+  const usage = fakeDom(IDS);
+  usage.mem.set("deck.right", "inspector");
+  usage.mem.set("deck.itab", "usage");
+  usage.mem.set("deck.wtab", "agents");
+  const b = SH.create(usage.doc, usage.win);
+  assert.equal(b.right().kind, null, "the right slot stays closed");
+  assert.equal(b.takeView(), "usage", "app.js opens the Usage view");
+  assert.equal(b.takeView(), null, "handed out once");
+  assert.equal(usage.mem.get("deck.right"), "");
+  assert.equal(usage.mem.get("deck.wtab"), "agents", "the Work tab is kept");
+  const again = SH.create(usage.doc, usage.win);
+  assert.equal(again.takeView(), null, "the next start does not reopen it");
 });
 
 test("an old open right panel comes back as the matching right-slot tab", () => {
@@ -269,11 +341,15 @@ test("an old open right panel comes back as the matching right-slot tab", () => 
 
 test("wiring: index.html has the Blend frame and every slot; scripts load in order; no inline style or script", () => {
   const html = fs.readFileSync(path.join(RENDERER, "index.html"), "utf8");
-  for (const id of ["app", "side", "modes", "rail", "side-foot", "conn", "topbar", "crumb", "capsule", "find-btn", "work-btn", "insp-btn",
-    "chat", "inbox", "timeline", "composer-status", "right", "insp", "work", "insp-tabs", "work-tabs", "insp-body", "work-body", "msgs", "input", "send", "detail"]) {
+  for (const id of ["app", "side", "modes", "rail", "side-foot", "conn", "topbar", "crumb", "capsule", "find-btn", "work-btn",
+    "chat", "inbox", "timeline", "composer-status", "right", "work", "work-tabs", "work-body", "msgs", "input", "send", "detail"]) {
     assert.ok(html.includes(`id="${id}"`), `#${id}`);
   }
+  for (const gone of ["insp", "insp-btn", "insp-tabs", "insp-body", "insp-close"]) assert.ok(!html.includes(`id="${gone}"`), `#${gone} is gone with the Inspector`);
+  assert.ok(!/shell\.(inspector|inspectorTip|closeInspector)/.test(html), "no removed Inspector labels");
   assert.ok(html.indexOf('src="shell.js"') > html.indexOf('src="i18n.js"') && html.indexOf('src="shell.js"') < html.indexOf('src="app.js"'));
+  assert.ok(html.indexOf('src="human.js"') < html.indexOf('src="app.js"') && html.indexOf('src="human.js"') < html.indexOf('src="work-pane.js"'), "readable numbers load before their users");
+  assert.ok(html.indexOf('src="usage-detail.js"') > 0 && html.indexOf('src="usage-detail.js"') < html.indexOf('src="app.js"'), "the Usage view loads before app.js");
   for (const lane of ["b", "d", "e"]) {
     assert.ok(html.indexOf(`src="i18n-${lane}.js"`) > html.indexOf('src="i18n.js"') && html.indexOf(`src="i18n-${lane}.js"`) < html.indexOf('src="shell.js"'), `i18n-${lane}.js`);
   }
@@ -286,7 +362,21 @@ test("wiring: index.html has the Blend frame and every slot; scripts load in ord
   assert.ok(!/togglePanel|toggleCompact|panel-closed|"panel-open"/.test(app), "the old panel toggle and compact rail are gone");
   assert.match(app, /SH\.registerWorkTab\("browser"/, "Workspace mounts as the work pane's Browser tab");
   assert.match(app, /SH\.registerWorkTab\("screen"/, "Bot screen mounts as the work pane's Screen tab");
-  assert.match(app, /SH\.registerInspectorTab\("usage"/);
+  assert.match(app, /SH\.registerWorkTab\("session"/, "Session is a Work pane tab");
+  assert.ok(!/registerInspectorTab|isOpen\("inspector"/.test(app), "nothing in app.js still reaches for the Inspector");
+  assert.match(app, /SH\.provide\("usageView"/, "the Usage view is a shared service (Ctrl+J fallback, fleet panel)");
+  assert.match(app, /SH\.provide\("relaySession"/, "work-pane.js reads a child's relay session through a service");
+  assert.match(app, /isOpen: \(\) => UD\.isOpen\(\)/, "token refreshes follow the Usage view's open state");
+});
+
+test("app.js setTab: old ids reach Work › Session or the Usage view (--tab=usage|fleet|tokens|session|activity)", () => {
+  const calls = [];
+  const SVM = require("../renderer/settings-view");
+  const make = new Function("SVM", "SH", "UD", "openSettings", "screenState", `${appFn("setTab")}; return setTab;`);
+  const setTab = make(SVM, { legacyTab: SH.legacyTab, openRight: (k, t) => calls.push(["right", k, t]) }, { open: () => calls.push(["usage"]) },
+    () => calls.push(["settings"]), () => null);
+  for (const id of ["usage", "fleet", "tokens", "session", "activity", "plan", "settings", "bogus"]) setTab(id);
+  assert.deepEqual(calls, [["usage"], ["usage"], ["usage"], ["right", "work", "session"], ["right", "work", "session"], ["right", "work", "plan"], ["settings"], ["right", "work", "session"]]);
 });
 
 test("fonts: Geist, Geist Mono and Newsreader come from @fontsource through copy-fonts.js, never a CDN", () => {

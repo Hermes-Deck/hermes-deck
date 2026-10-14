@@ -104,16 +104,31 @@
   // --- relay-sourced sub-agents (works for sessions this Deck does not own, and for finished children)
   const RELAY_STATE = { running: "running", done: "completed", failed: "failed", stopped: "interrupted", idle: "queued" };
   const notOwned = e => /not owned|session not found|\b4001\b/i.test(String(e && e.message || e || ""));
-  function relayAgents(children) {
+  const mod = (path, name) => () => typeof module === "object" && module.exports ? require(path) : root[name];
+  const human = mod("./human", "DeckHuman"), activity = mod("./activity-view", "DeckActivity"), usage = mod("./usage-view", "DeckUsage");
+  /**
+   * Elapsed time of one relay child: a finished child's own measured run (sub_stop ms); a live one counts from its own
+   * first event to now; anything else spans its first to its last event. Never the parent's clock.
+   */
+  function relayElapsedMs(c, now = Date.now() / 1000) {
+    if (number(c.ms) !== null) return c.ms;
+    if (number(c.firstTs) === null) return null;
+    if (c.state === "running" && !c.stale) return Math.max(0, (now - c.firstTs) * 1000);
+    return number(c.lastTs) !== null ? Math.max(0, (c.lastTs - c.firstTs) * 1000) : null;
+  }
+  function relayAgents(children, now = Date.now() / 1000) {
     return (Array.isArray(children) ? children : []).filter(c => c && c.sid).slice(0, 128).map(c => {
-      const ms = number(c.ms) ?? (number(c.lastTs) !== null && number(c.firstTs) !== null ? Math.max(0, (c.lastTs - c.firstTs) * 1000) : null);
+      const ms = relayElapsedMs(c, now);
       const tk = c.tokens && typeof c.tokens === "object" ? { input: number(c.tokens.in) || 0, output: number(c.tokens.out) || 0, cache_read: number(c.tokens.cr) || 0, cache_write: number(c.tokens.cw) || 0 } : null;
       return { id: c.sa || c.sid, childSid: c.sid, goal: c.goal || c.role || "", model: c.route?.model || c.model || "", effort: c.route?.effort || "",
         category: c.route?.category || "", status: RELAY_STATE[c.state] || "unknown", elapsedS: ms === null ? null : ms / 1000, toolCount: number(c.ntools),
-        tokens: tk, summary: c.summary || "", acceptingSteer: false, relayOnly: true };
+        tokens: tk, summary: c.summary || "", acceptingSteer: false, relayOnly: true, row: c };
     });
   }
   const present = (a, b) => a === undefined || a === null || a === "" ? b : a;
+  // Hermes' roster reports elapsed as now - started for every listed child, so a finished child's figure keeps
+  // growing; the relay's measured run time wins for those.
+  const settled = b => b && b.status !== "running" && b.status !== "queued";
   /** Bridge rows win (live controls, tree); relay rows add finished children and fill goal/model/summary/tokens/counts. */
   function mergeRoster(relayRows, bridgeRows) {
     const relay = relayRows || [], seen = new Set();
@@ -121,7 +136,8 @@
       const r = relay.find(x => (x.id === b.id) || (b.childSid && x.childSid === b.childSid));
       if (r) seen.add(r);
       return r ? { ...b, goal: present(b.goal, r.goal), model: present(b.model, r.model), effort: present(b.effort, r.effort), childSid: present(b.childSid, r.childSid),
-        summary: present(b.summary, r.summary), tokens: present(b.tokens, r.tokens), toolCount: present(b.toolCount, r.toolCount), elapsedS: present(b.elapsedS, r.elapsedS) } : b;
+        summary: present(b.summary, r.summary), tokens: present(b.tokens, r.tokens), toolCount: present(b.toolCount, r.toolCount),
+        elapsedS: settled(b) && number(r.elapsedS) !== null ? r.elapsedS : present(b.elapsedS, r.elapsedS), row: r.row } : b;
     });
     for (const r of relay) if (!seen.has(r)) out.push(r);
     return out.slice(0, 128);
@@ -300,7 +316,8 @@
         }
       }
     }
-    const duration = ms => ms == null ? "—" : t("work.seconds", { n: (ms / 1000).toFixed(1) });
+    const duration = ms => (ms == null ? "" : human().duration(ms)) || "—";
+    const count = n => human().count(n);
     const money = (value, estimated) => value == null ? "—" : `${estimated ? "≈" : ""}$${value.toFixed(4)}`;
     function stat(label, value, bad = false, title = null) { return h("div", { title }, h("small", null, t(label)), h("b", { class: bad ? "bad" : "" }, value)); }
     // Expansion is recorded on the user's click (summary click precedes the native toggle), so detached or
@@ -534,6 +551,38 @@
       if (stopped.length) rows.push(h("p", { class: "wk-note wk-stopped" }, t("work.stoppedAgents", { n: stopped.length })));
       return rows;
     }
+    // The child's own relay session (live via the app's relaySession service, else the roster's copy) feeds the
+    // same metric cells as the activity drawer; bridge-only fields fill in when the relay has none.
+    const relaySession = sid => { try { return (sid && shell.service("relaySession")?.(sid)) || null; } catch { return null; } };
+    function agentFigures(a, hist) {
+      const rel = relaySession(a.childSid) || a.row || null, tk = a.tokens;
+      const tokens = rel?.tokens && typeof rel.tokens === "object" ? rel.tokens
+        : tk ? { in: number(tk.input) || 0, out: number(tk.output) || 0, cr: number(tk.cache_read) || 0, cw: number(tk.cache_write) || 0 } : null;
+      const total = tokens ? ["in", "out", "cr", "cw"].reduce((n, key) => n + (number(tokens[key]) || 0), 0) : null;
+      const source = { ...(rel || {}), tokens: tokens || {}, parent: rel?.parent || true, ntools: 0 };
+      const node = { ctxPercent: a.ctxPercent, ctxMax: a.ctxMax, ctxUsed: a.ctxUsed };
+      const ctx = activity().ctxPercent(source, node);
+      const calls = number(a.toolCount) ?? a.tools?.length ?? hist?.calls.length ?? number(rel?.ntools) ?? 0;
+      const cost = number(a.costUsd) ?? (number(rel?.cost) || null);
+      const estimated = a.costStatus === "estimated" || (number(a.costUsd) === null && !!rel && (rel.cost_estimated === true || rel.cost_label === "API list-price equivalent"));
+      return { source, node, ctx, total, calls, cost, estimated };
+    }
+    function agentGrid(a, hist) {
+      const f = agentFigures(a, hist), A = activity(), items = [];
+      const elapsed = number(a.elapsedS) === null ? null : a.elapsedS * 1000;
+      if (elapsed !== null) items.push({ id: "elapsed", label: t("work.elapsed"), value: duration(elapsed) });
+      if (f.total !== null) items.push({ id: "tokens", label: t("work.tokens"), value: count(f.total), tip: `${t("work.tokensHint")}\n${human().exact(f.total)}` });
+      items.push(...A.metricItems(f.source, f.node, count, { sparse: true }));
+      items.push({ id: "calls", label: t("work.calls"), value: count(f.calls) });
+      if (f.cost !== null) items.push({ id: "cost", label: t("work.agentCost"), value: money(f.cost, f.estimated) });
+      return A.metricGrid(h, items);
+    }
+    /** One short line under a sub-agent's goal: model · effort · state · elapsed · context. */
+    function agentLine(agent) {
+      const elapsed = number(agent.elapsedS) === null ? null : duration(agent.elapsedS * 1000);
+      const ctx = agentFigures(agent, null).ctx;
+      return [agent.model, agent.effort, agentState(agent), elapsed, ctx === null ? null : t("wux.ctx", { p: usage().pct(ctx) })].filter(Boolean).join(" · ");
+    }
     function renderAgents(el) {
       const sid = current();
       if (!sid) return el.replaceChildren(shell.empty(t("work.noSession")));
@@ -544,13 +593,12 @@
         const notice = noticeKey ? h("p", { class: "wk-note", role: "status" }, t(noticeKey)) : null;
         el.replaceChildren(h("section", { class: "wk-content" }, error, notice, rows.length ? h("div", { class: "wk-agents" }, rows.map(({ agent, depth }) => h("button", {
           class: `wk-agent depth-${depth}${agent.status === "running" ? " live" : ""}`, type: "button", "data-agent": agent.id, onclick: () => openAgent(agent.id) },
-          h("span", { class: "wk-agent-dot", "aria-hidden": "true" }), h("span", null, h("b", null, agent.goal || agent.id), h("small", null, [agent.model, agent.effort, agentState(agent), duration(number(agent.elapsedS) === null ? null : agent.elapsedS * 1000)].filter(Boolean).join(" · ")))))) : shell.empty(t(r.agentLoading ? "work.loading" : "work.noAgents")),
+          h("span", { class: "wk-agent-dot", "aria-hidden": "true" }), h("span", null, h("b", null, agent.goal || agent.id), h("small", null, agentLine(agent)))))) : shell.empty(t(r.agentLoading ? "work.loading" : "work.noAgents")),
           ...failedRows(r)));
         return;
       }
-      const message = r.agentMessages.get(a.id) || controlNotice(a), busy = r.busy.has(a.id), tokens = a.tokens;
+      const message = r.agentMessages.get(a.id) || controlNotice(a), busy = r.busy.has(a.id);
       const notes = agentNotes(r.tail?.text), hist = a.childSid ? r.childHist.get(a.childSid) : null;
-      const tokenCount = tokens ? (number(tokens.input) || 0) + (number(tokens.output) || 0) + (number(tokens.cache_read) || 0) + (number(tokens.cache_write) || 0) : null;
       const field = h("textarea", { class: "wk-steer-input", "data-hold": "", "aria-label": t("work.steerLabel"), placeholder: t("work.steerPlaceholder"), maxlength: 32000,
         disabled: !canSteer(a) || busy || !deck.bridge?.steerSubagent, oninput: e => { r.drafts.set(a.id, e.target.value); syncControls(r); },
         onkeydown: e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) { e.preventDefault(); mutateAgent("steer", sid, a.id); } } });
@@ -563,7 +611,7 @@
         h("header", { class: "wk-agent-head" }, h("b", null, a.id), h("small", null, [a.model, a.effort, agentState(a), a.state ? t(`work.runtimeState.${["idle", "thinking", "working", "searching", "finished", "error", "question", "approval", "ratelimit"].includes(a.state) ? a.state : "unknown"}`) : null].filter(Boolean).join(" · "))),
         r.vanished.has(a.id) ? h("p", { class: "wk-note", role: "status" }, t("work.agentGone")) : null,
         h("p", { class: "wk-task-goal" }, a.goal),
-        h("div", { class: "wk-stats" }, stat("work.elapsed", duration(number(a.elapsedS) === null ? null : a.elapsedS * 1000)), stat("work.tokens", tokenCount === null ? "—" : String(tokenCount), false, t("work.tokensHint")), stat("work.calls", String(number(a.toolCount) ?? a.tools?.length ?? hist?.calls.length ?? 0)), stat("work.agentCost", money(number(a.costUsd), a.costStatus === "estimated"))),
+        agentGrid(a, hist),
         notes ? [h("h3", { class: "wk-label" }, t("work.notes")), h("pre", { class: "wk-notes" }, notes)] : null,
         r.tail?.error ? h("p", { class: "wk-error", role: "alert" }, r.tail.error)
           : r.tail?.available === false ? h("p", { class: "wk-note" }, t("work.tailEnded")) : null,

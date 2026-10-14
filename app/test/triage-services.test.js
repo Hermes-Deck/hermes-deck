@@ -26,6 +26,7 @@ function world({ bridge = "open", modes = ["telegram", "sessions", "bots"], mode
     bridgeOpen: () => ctx.H.status.status === "open",
     setChatChannel(v) { calls.push(["mode", v]); ctx.mode = v; },
     SV: { close: () => calls.push(["settings-close"]) },
+    UD: { close: () => calls.push(["usage-close"]) },
     SH: { setMain: (k) => calls.push(["main", k]) },
     hermesSelect: (sid) => calls.push(["select", sid]),
     hermesOpen: (sid, profile) => calls.push(["open", sid, profile]),
@@ -39,19 +40,19 @@ function world({ bridge = "open", modes = ["telegram", "sessions", "bots"], mode
 test("openChat switches from Telegram to Sessions and selects a known direct session", () => {
   const { ctx, calls } = world();
   assert.equal(ctx.openChatFor({ sid: "s-live", profile: "default", origin: "direct" }), true);
-  assert.deepEqual(plain(calls), [["mode", "sessions"], ["settings-close"], ["main", "chat"], ["select", "s-live"]]);
+  assert.deepEqual(plain(calls), [["mode", "sessions"], ["settings-close"], ["usage-close"], ["main", "chat"], ["select", "s-live"]]);
 });
 
 test("openChat opens a session the rail does not list with its profile, and keeps the current Hermes mode", () => {
   const { ctx, calls } = world({ modes: ["sessions"], mode: "sessions" });
   assert.equal(ctx.openChatFor({ sid: "s-stored", profile: "research", origin: "relay" }), true);
-  assert.deepEqual(plain(calls), [["settings-close"], ["main", "chat"], ["open", "s-stored", "research"]]);
+  assert.deepEqual(plain(calls), [["settings-close"], ["usage-close"], ["main", "chat"], ["open", "s-stored", "research"]]);
 });
 
 test("openChat without the direct connection shows a relay session read-only, else reports false", () => {
   const w = world({ bridge: "closed", relay: ["s-relay"] });
   assert.equal(w.ctx.openChatFor({ sid: "s-relay", profile: "default", origin: "relay" }), true);
-  assert.deepEqual(plain(w.calls), [["settings-close"], ["main", "chat"], ["detail", "s-relay"]]);
+  assert.deepEqual(plain(w.calls), [["settings-close"], ["usage-close"], ["main", "chat"], ["detail", "s-relay"]]);
   const none = world({ bridge: "closed" });
   assert.equal(none.ctx.openChatFor({ sid: "s-gone" }), false);
   assert.deepEqual(plain(none.calls), [], "nothing navigates when the session cannot be shown");

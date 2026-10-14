@@ -49,12 +49,8 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   }
 
   const nowS = () => Date.now() / 1000;
-  const k = (n) => {
-    n = n || 0;
-    if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
-    if (n >= 1e3) return Math.round(n / 1e3) + "k";
-    return String(Math.round(n));
-  };
+  // readable counts and durations come from human.js (one formatter for every view)
+  const k = (n) => window.DeckHuman.count(n || 0);
   const hm = (ts) => new Date(ts * 1000).toLocaleTimeString(i18nLocale(), { hour: "2-digit", minute: "2-digit" });
   const ago = (ts) => {
     const d = nowS() - ts;
@@ -63,13 +59,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     if (d < 86400) return i18nText("U0404", { v: Math.round(d / 3600) });
     return i18nText("U0405", { v: Math.round(d / 86400) });
   };
-  const dur = (ms) => {
-    if (ms === undefined || ms === null) return "";
-    if (ms < 1000) return `${Math.round(ms)} ms`;
-    const s = Math.round(ms / 1000);
-    if (s < 60) return i18nText("common.seconds", { s: s });
-    return i18nText("A0212", { v: Math.floor(s / 60), v2: s % 60 });
-  };
+  const dur = (ms) => window.DeckHuman.duration(ms);
   const since = (ts) => dur(Math.max(0, (nowS() - ts) * 1000));
   const dayKey = (ts) => new Date(ts * 1000).toLocaleDateString("sv-SE");
   const dayLabel = (ts) => {
@@ -482,6 +472,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     const sb = allSessionsView();
     if (!sb || !hermesMode()) return;
     SV.close();
+    UD.close(false);
     SH.setMain("chat");
     if (sb.isOpen()) sb.close();
     else sb.show();
@@ -507,7 +498,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   }
 
   // ---------------------------------------------------------------- layout: the Blend shell (shell.js)
-  // Widths, the hidden sidebar (Ctrl/Cmd+B), the right slot (inspector Ctrl/Cmd+Alt+I, work pane Ctrl/Cmd+\\) and their
+  // Widths, the hidden sidebar (Ctrl/Cmd+B), the right slot (the Work pane: Ctrl/Cmd+\\, its Session tab: Ctrl/Cmd+Alt+I) and their
   // gutters live in shell.js. Here: the rail's collapsible sections and the shortcuts that reach app state.
   const layout = {
     compact: false, // the old coin-only rail is gone: a hidden sidebar replaces it
@@ -542,6 +533,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   // a rail click (a chat, All sessions) shows what was clicked: the Settings view steps aside, the chat takes the main area
   els.rail.addEventListener("click", (e) => {
     SV.close();
+    UD.close(false);
     if (e.target && e.target.closest && e.target.closest(".row")) SH.setMain("chat");
   });
   SH.setHold((el) => holdRegion(el));
@@ -690,7 +682,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       channel: c.channel ? c.channel.id : null, subagent: !!c.subagent, parent: c.parent ? c.parent.sid : null, readOnly: !!c.readOnly, source: c.source || "" });
   }
 
-  /** Inspector > Session: the facts of the chat on screen, then its live session card(s). */
+  /** Work › Session: the facts of the chat on screen (its metric grid first when the relay has figures), then controls. */
   function paneSession(kids) {
     const c = currentChat();
     if (!c.id) {
@@ -698,20 +690,23 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       return;
     }
     const n = c.sid ? H.nodes.get(c.sid) : null;
+    const rel = c.sid ? S.relay.sessions.get(c.sid) : null;
+    const items = rel && window.DeckActivity ? window.DeckActivity.metricItems(rel, n, k, { sparse: true }) : [];
     const rows = [
       [i18nText("shell.fact.channel"), i18nText(c.channel.key, c.channel.vars)],
       c.agent ? [i18nText("shell.fact.agent"), c.agent] : null,
       c.kind === "hermes" ? [i18nText("shell.fact.profile"), profileLabel(c.profile)] : null,
       n && n.source ? [i18nText("shell.fact.source"), n.source] : null,
       n && n.model ? [i18nText("shell.fact.model"), n.model] : null,
-      n && n.ctxMax && n.ctxUsed ? [i18nText("shell.fact.context"), `${Math.round((100 * n.ctxUsed) / n.ctxMax)}%`] : null,
+      n && n.ctxMax && n.ctxUsed && !items.some((m) => m.id === "context") ? [i18nText("shell.fact.context"), `${Math.round((100 * n.ctxUsed) / n.ctxMax)}%`] : null,
       c.sid ? [i18nText("shell.fact.id"), c.sid, "mono"] : null,
     ].filter(Boolean);
     kids.push(h("section", { class: "card sh-facts" },
       c.title ? h("h3", { class: "sh-facts-title" }, c.title) : null,
+      items.length ? window.DeckActivity.metricGrid(h, items) : null,
       h("dl", { class: "sh-kv" }, ...rows.flatMap(([k, v, cls]) => [h("dt", null, k), h("dd", { class: cls || null, title: v }, v)])),
       n ? hermesControls(n, `card:${n.sid}`) : null)); // Steer · Stop · Model for the open session
-    // the session's cards, sub-agents and tool calls are in Activity
+    // the session's sub-agents and tool calls are in the other Work tabs
   }
 
   function renderHead() {
@@ -1142,7 +1137,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     screenTab: () => screenTabOn(),
     openScreen: () => setTab("screen"),
     onToggle: (open) => {
-      if (open) SH.setMain("chat"); // Settings draws over the chat column
+      if (open) { SH.setMain("chat"); UD.close(false); } // Settings draws over the chat column (and replaces the Usage view)
       renderGear();
     },
   });
@@ -1198,17 +1193,16 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     gear.setAttribute("aria-pressed", SV.isOpen() ? "true" : "false");
   }
 
-  // ---------------------------------------------------------------- right slot (shell.js): Inspector | Work pane
-  // Inspector tabs: Session (facts of the chat on screen), Activity (the activity tree), Usage (quotas + fleet, then
-  // tokens). Work pane tabs: Browser (workspace.js) and Screen (botscreen.js) mounted unchanged; Run, Plan, Diff and
-  // Agents are shell.js empty states until their module registers. The old tab ids below still route: setTab callers,
-  // --tab=<id> screenshot runs and a persisted deck.tab.
+  // ---------------------------------------------------------------- right slot (shell.js): the Work pane
+  // Work pane tabs: Session (facts of the chat on screen, its metrics and controls) first, then Run, Plan, Diff and
+  // Agents (work-pane.js; shell.js empty states until it registers), Browser (workspace.js) and Screen (botscreen.js)
+  // mounted unchanged. Usage is a main-area view (usage-detail.js), not a tab. The old tab ids still route: setTab
+  // callers, --tab=<id> screenshot runs and a persisted deck.tab.
   /** The tab ids the rest of app.js reads in S.tab (old names, so existing checks keep working). */
-  const OLD_ID = { "inspector:session": "session", "inspector:activity": "activity", "inspector:usage": "usage", "work:browser": "workspace", "work:screen": "screen" };
+  const OLD_ID = { "work:browser": "workspace", "work:screen": "screen" };
   const tabIdOf = (r) => (r && r.kind ? OLD_ID[`${r.kind}:${r.tab}`] || r.tab || "" : "");
   SH.on("right", (r) => {
     S.tab = tabIdOf(r);
-    if (S.tab === "usage") refreshTokens();
     renderGear();
   });
 
@@ -1221,6 +1215,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     if (id === "settings") return openSettings(); // Settings is its own view now (old callers, --tab=settings)
     id = SVM.tabFor(id, screenState());
     const to = SH.legacyTab(id) || SH.legacyTab("activity");
+    if (to[0] === "main") return UD.open(); // Usage (old fleet / tokens / usage tabs) is a main-area view
     SH.openRight(to[0], to[1]);
   }
 
@@ -1249,10 +1244,9 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
    * once at boot, after every const of this file exists: registering an open tab renders it at once.
    */
   function registerShellTabs() {
-    // Session holds the chat's facts and controls, then (Telegram mode) its relay sessions and what runs elsewhere.
-    // Sub-agents live in the Work pane only, so nothing is shown twice.
-    SH.registerInspectorTab("session", { weak: true, title: () => i18nText("shell.tab.session"), render: paneTab((kids) => paneSessionTab(kids)) });
-    SH.registerInspectorTab("usage", { weak: true, title: () => i18nText("shell.tab.usage"), render: paneTab((kids) => { paneFleet(kids); paneTokens(kids); }) });
+    // Session holds the chat's facts, metrics and controls, then (Telegram mode) its relay sessions and what runs
+    // elsewhere. It is the Work pane's first tab; sub-agents live in their own tab, so nothing is shown twice.
+    SH.registerWorkTab("session", { weak: true, title: () => i18nText("shell.tab.session"), render: paneTab((kids) => paneSessionTab(kids)) });
     SH.registerWorkTab("browser", { weak: true, title: () => i18nText("shell.tab.browser"),
       render: mountOnce(workspace, () => h("div", { class: "later-pane" }, h("h3", null, i18nNode("U0476")), i18nNode("U0477"))) });
     // the Bot screen tab is conditional: only while desktop control is on (Settings > This device)
@@ -1266,6 +1260,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     SH.setLocked(firstRun); // first run: no right slot until setup is done
     if (firstRun) return;
     SH.refresh();
+    UD.refresh(); // the Usage view, when open, follows the same render loop
   }
 
   function nums(s) {
@@ -1595,7 +1590,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   const TV = window.DeckTokens
     ? window.DeckTokens.create({
       h, k, deck, store, mark,
-      isOpen: () => SH.isOpen("inspector", "usage"),
+      isOpen: () => UD.isOpen(),
       snapshotRows: () => S.relay.tokens,
       usageStatus: () => S.relay.fleet && S.relay.fleet.usage,
       sessions: () => S.relay.sessions.values(),
@@ -1605,6 +1600,20 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   async function refreshTokens() {
     if (TV) await TV.refresh();
   }
+  // The Usage view (usage-detail.js): quotas, today across all agents, profiles, services, then token history, over
+  // the chat column like Settings. Opened from the fleet panel's "Usage details", Ctrl/Cmd+J without the fleet panel
+  // and --tab=usage|fleet|tokens; Back or Escape returns to the chat. It draws the same paneFleet + paneTokens.
+  const UD = window.DeckUsageDetail.create({
+    h, t: i18nText,
+    fill: (kids) => { paneFleet(kids); paneTokens(kids); window.DeckI18n.apply(document); },
+    canOpen: () => !!(S.settings && S.settings.firstRunDone),
+    onToggle: (open) => {
+      if (!open) return;
+      SV.close(); // one view over the chat at a time (an open All sessions browser stays under it, as with Settings)
+      SH.setMain("chat");
+      refreshTokens();
+    },
+  });
 
   // ---------------------------------------------------------------- scheduler (throttled, focus-safe)
   const dirty = new Set();
@@ -1933,7 +1942,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
         break;
       case "fleet":
         S.relay.fleet = m.fleet;
-        if (SH.isOpen("inspector", "usage")) mark("panel");
+        if (UD.isOpen()) mark("panel");
         mark("top"); // the sidebar footer's quota bar
         break;
       case "agents":
@@ -4302,6 +4311,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       if (!hermesMode() || (chatMode() !== "sessions" && hermesModes.includes("sessions"))) setChatChannel(hermesModes.includes("sessions") ? "sessions" : hermesModes[0]);
       if (!hermesMode()) return false;
       SV.close();
+      UD.close(false);
       SH.setMain("chat");
       if (H.nodes.has(sid)) hermesSelect(sid);
       else hermesOpen(sid, (req.profile && String(req.profile)) || "default");
@@ -4309,6 +4319,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     }
     if (AG && S.relay.sessions.has(sid)) {
       SV.close();
+      UD.close(false);
       SH.setMain("chat");
       AG.open(sid);
       return true;
@@ -4359,12 +4370,16 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   SH.provide("openChat", (req) => openChatFor(req));
   SH.provide("triageData", () => triageData());
   SH.provide("stopTurn", (req) => stopTurnFor(req));
+  SH.provide("relaySession", (sid) => (typeof sid === "string" && S.relay.sessions.get(sid)) || null); // work-pane.js: a child's live metrics
+  SH.provide("usageView", { open: () => UD.open(), close: () => UD.close(), toggle: () => UD.toggle(), isOpen: () => UD.isOpen() });
   (async () => {
     const st = await deck.ready();
     const ui = st.ui || {};
-    // --tab=<id> (screenshot runs) opens that tab in the right slot; the slot itself remembers its last state
+    // --tab=<id> (screenshot runs) opens that tab in the right slot; the slot itself remembers its last state. Main-area
+    // views (Settings, Usage) open at the end, once settings say first run is done.
     const wantTab = ui.tab && ui.tab.split(":")[0];
-    if (wantTab && wantTab !== "settings") setTab(wantTab);
+    const wantView = !!wantTab && (wantTab === "settings" || (SH.legacyTab(wantTab) || [])[0] === "main");
+    if (wantTab && !wantView) setTab(wantTab);
     S.tab = tabIdOf(SH.right());
     pendingSelect = ui.select || null;
     applyTgStatus(st.tg || {});
@@ -4395,7 +4410,10 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     renderTabs();
     renderNote();
     mark("top", "rail", "head", "msgs", "strip", "panel", true);
-    if (SH.isOpen("inspector", "usage")) refreshTokens();
+    // an old stored Inspector › Usage state comes back as the Usage view, once; --tab=usage|fleet|tokens opens it too
+    const oldView = SH.takeView();
+    if (wantView && wantTab !== "settings") setTab(wantTab);
+    else if (oldView === "usage" && !wantTab) UD.open();
     // --tab=settings[:<section>] (screenshot runs) opens the Settings view, at a section if one is named
     if (typeof ui.tab === "string" && ui.tab.split(":")[0] === "settings") openSettings(ui.tab.split(":")[1] || undefined);
     deck.rendered();

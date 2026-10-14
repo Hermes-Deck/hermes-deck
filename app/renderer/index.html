@@ -61,8 +61,7 @@
       <div class="crumb-extra" id="crumb-extra" hidden></div>
       <div class="capsule" id="capsule"></div>
       <button class="findbtn" id="find-btn" type="button" title="Search all sessions (Ctrl+K)" data-i18n-title="shell.searchTip"><span class="find-label" data-i18n="shell.search">Search sessions</span><kbd class="find-kbd" id="find-kbd">Ctrl K</kbd></button>
-      <button class="ib" id="work-btn" type="button" aria-pressed="false" title="Work pane (Ctrl+\)" data-i18n-title="shell.workTip" aria-label="Work pane" data-i18n-aria-label="shell.work"></button>
-      <button class="ib" id="insp-btn" type="button" aria-pressed="false" title="Inspector (Ctrl+Alt+I)" data-i18n-title="shell.inspectorTip" aria-label="Inspector" data-i18n-aria-label="shell.inspector"></button>
+      <button class="ib" id="work-btn" type="button" aria-pressed="false" title="Work pane (Ctrl+\) · Session (Ctrl+Alt+I)" data-i18n-title="shell.workTip" aria-label="Work pane" data-i18n-aria-label="shell.work"></button>
     </header>
     <div class="body" id="body">
       <main class="chat" id="chat">
@@ -86,10 +85,6 @@
     </div>
     <div class="gutter" id="gutter-right" hidden role="separator" aria-orientation="vertical" aria-label="Right panel width" data-i18n-aria-label="html.rightWidth" tabindex="0"></div>
     <div class="right" id="right" hidden>
-      <section class="rpanel insp" id="insp" aria-label="Inspector" data-i18n-aria-label="shell.inspector" hidden>
-        <header class="rhead"><div class="rtabs" id="insp-tabs" role="tablist" aria-label="Inspector" data-i18n-aria-label="shell.inspector"></div><span class="sp"></span><button class="ib" id="insp-close" type="button" title="Close inspector" data-i18n-title="shell.closeInspector" aria-label="Close inspector" data-i18n-aria-label="shell.closeInspector"></button></header>
-        <div class="rbody" id="insp-body"></div>
-      </section>
       <section class="rpanel work" id="work" aria-label="Work pane" data-i18n-aria-label="shell.work" hidden>
         <header class="rhead"><div class="rtabs" id="work-tabs" role="tablist" aria-label="Work pane" data-i18n-aria-label="shell.work"></div><span class="sp"></span><button class="ib" id="work-close" type="button" title="Close work pane" data-i18n-title="shell.closeWork" aria-label="Close work pane" data-i18n-aria-label="shell.closeWork"></button></header>
         <div class="rbody" id="work-body"></div>
@@ -100,6 +95,7 @@
   <script src="i18n-b.js"></script>
   <script src="i18n-d.js"></script>
   <script src="i18n-e.js"></script>
+  <script src="human.js"></script>
   <script src="shell.js"></script>
   <script src="drafts.js"></script>
   <script src="takeover.js"></script>
@@ -127,6 +123,7 @@
   <script src="usage-view.js"></script>
   <script src="activity-view.js"></script>
   <script src="tokens-view.js"></script>
+  <script src="usage-detail.js"></script>
   <script src="chat-modes.js"></script>
   <script src="outbox.js"></script>
   <script src="live-activity.js"></script>

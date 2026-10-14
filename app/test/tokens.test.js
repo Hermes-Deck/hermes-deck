@@ -193,7 +193,7 @@ test("tokens view Refresh reloads the selected range and reports failed reads wi
   view.pane(kids);
   const walk = n => [n, ...(n.children || []).filter(c => typeof c === "object").flatMap(walk)];
   const refresh = kids.flatMap(walk).find(n => n.attrs?.class === "tok-refresh quota-refresh");
-  assert.ok(refresh, "the Usage inspector contains an explicit token refresh action");
+  assert.ok(refresh, "the Usage view contains an explicit token refresh action");
   await refresh.attrs.onclick();
   assert.equal(reads, 1);
   fail = true;

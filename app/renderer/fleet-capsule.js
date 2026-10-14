@@ -118,6 +118,9 @@
           details.length ? h("div", { class: "tf-details" }, details) : null));
       }
       const stats = [["today", cost], ["tokens", total ? number(total.tokens) : "–"], ["calls", total ? number(total.n) : "–"], ["cache", total?.hit != null ? usage.pct(total.hit * 100) : "–"]];
+      // the titled entry to the full Usage view (quotas, today, profiles, token history); the popover steps aside
+      if (ctx.openUsage) kids.push(h("button", { type: "button", class: "tf-usage", title: t("usagev.detailsTip"), dataset: { fk: "fleet-usage" },
+        onclick: () => { close(false); ctx.openUsage(); } }, h("span", null, t("usagev.details")), h("span", { class: "tf-chev", "aria-hidden": "true" }, "›")));
       kids.push(h("section", { class: "tf-today" }, stats.map(([key, value]) => h("div", null, h("small", null, t(`triage.${key}`)), h("b", null, value)))));
       if (store.data.fleet) kids.push(h("section", { class: "tf-quotas", "aria-label": t("triage.quota") }, usage.quotaRows(h, store.data.fleet)));
       if (notice) kids.push(h("p", { class: "tf-notice", role: "status" }, notice));
@@ -168,7 +171,8 @@
       return b;
     };
     api.view = createFleet({ h, shell, store, doc: root.document, win: root, t, usage: root.DeckUsage, openChat: inbox.openChat, refreshButton,
-      selectAgent: selection => selectAgent(root.document, selection) });
+      selectAgent: selection => selectAgent(root.document, selection),
+      openUsage: () => shell.service("usageView")?.open() });
     shell.mount("capsule", api.view.button);
     shell.on("fleet", api.view.toggle);
     root.document.addEventListener("deck-language", api.view.redraw);
