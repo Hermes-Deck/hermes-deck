@@ -340,7 +340,8 @@ needs the relay.
   tokens, calls and cache hit, and quota bars.
 
 **How it works.** Approvals and questions come from the direct connection and are answered through the same
-`request.answer` path as in the chat, once per click, never resent. Sessions, agents, costs and quotas come from the
+`request.answer` path as in the chat, once per click, never resent. An answer from one Deck (desktop or phone) clears
+the card on every other Deck connected to the same Hermes. Sessions, agents, costs and quotas come from the
 relay snapshot. Nothing is inferred from tool arguments; a relay-only session has no inline approval.
 
 **Needs.** Direct connection for approvals and questions; relay for the fleet, costs, quotas and finished sessions.

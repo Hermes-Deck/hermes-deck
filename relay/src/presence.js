@@ -206,6 +206,19 @@ class Presence extends EventEmitter {
   }
 
   /**
+   * Whether the user is at a Deck computer right now: a desktop Deck (not a phone) whose heartbeat is fresh, awake,
+   * unlocked, with input within `idleS` seconds. Phone pushes stay quiet meanwhile (mobile.js). idleS <= 0: never.
+   */
+  atDesk(idleS, now = this.now()) {
+    if (!(idleS > 0)) return false;
+    for (const { hb, conn } of this.devices().values()) {
+      if (conn && conn.mobileDevice) continue;
+      if (now - hb.at < this.o.staleMs && !hb.asleep && !hb.locked && hb.idleSec < idleS) return true;
+    }
+    return false;
+  }
+
+  /**
    * Deck computers that host agents' own desktops (desktops.js): fresh, awake, with a desktops heartbeat. A locked
    * screen does not count: containers keep running behind a screen lock (only sleep stops them), so agents keep working.
    */

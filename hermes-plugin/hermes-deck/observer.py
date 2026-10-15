@@ -1825,6 +1825,41 @@ def request_arrival_reply(obj, server):
     return dict(obj, result=dict(result, open_requests=decorated)) if replay else decorated[0]
 
 
+def open_request(server, request_id):
+    """(sid, method) of a still-open server request, read before request.answer settles it; None when unknown."""
+    try:
+        requests = getattr(server, "_server_requests", None)
+        if requests is None or not isinstance(request_id, str):
+            return None
+        with requests._lock:
+            req = requests._open.get(request_id)
+            if req is None or not isinstance(req.sid, str) or not isinstance(req.method, str):
+                return None
+            return req.sid, req.method
+    except Exception:
+        return None  # an engine without this table keeps the old behaviour
+
+
+def withdraw_answered(server, request_id, opened, response):
+    """Hermes sends request.cancel only when a request times out or is interrupted, never when one window answers
+    it, so every other attached Deck (the phone after the desktop answered, or the reverse) kept the card and
+    could not clear it. After a request.answer that settled it ("ok"), withdraw it from every window with
+    Hermes' own event, routed like the request was. Never raises."""
+    try:
+        result = response.get("result") if isinstance(response, dict) else None
+        if opened is None or not isinstance(result, dict) or result.get("status") != "ok":
+            return False
+        sid, method = opened
+        emit = getattr(server, "_emit", None)
+        if not callable(emit):
+            return False
+        emit("request.cancel", sid, {"id": request_id, "method": method, "reason": "answered"})
+        return True
+    except Exception:
+        logger.debug("Hermes Deck: answered request %s not withdrawn from other windows", request_id, exc_info=True)
+        return False
+
+
 class OneInFlight:
     """At most one request of a kind in flight per control connection. acquire() returns a ticket, or None
     while another one runs; a ticket older than `stale` seconds no longer blocks (its reply never came)."""
@@ -2712,9 +2747,12 @@ class Observer:
                                     continue
                                 transport = AvatarReply(peer, connection_fanout, request.get("id"),
                                                         lambda ticket=ticket: avatars.release(ticket))
+                            opened = open_request(server, params.get("id")) if method == "request.answer" else None
                             token = bind_transport(transport)
                             try:
                                 response = server.dispatch(request, transport=transport)
+                                if method == "request.answer":
+                                    withdraw_answered(server, params.get("id"), opened, response)
                                 if method in SUBAGENT_READS:
                                     # the sub-agent detail view: Hermes' own reply, completed (and redacted) here
                                     response = enrich_subagent_reply(method, response, self)

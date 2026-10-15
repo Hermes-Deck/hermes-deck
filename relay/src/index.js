@@ -76,6 +76,8 @@ function config(env = process.env, mem = os.totalmem()) {
     token: env.DECK_RELAY_TOKEN || "",
     mobileDevicesFile: env.DECK_MOBILE_DEVICES_FILE || home(".hermes-deck", "mobile-devices.json"),
     mobileBridge: { mode: env.DECK_MOBILE_BRIDGE_STREAM ? "local" : "off", python: env.DECK_MOBILE_BRIDGE_PYTHON || "python3", stream: env.DECK_MOBILE_BRIDGE_STREAM || "" },
+    // phone pushes stay quiet while a desktop Deck had input within this many seconds (presence.atDesk); 0 turns it off
+    pushDeskIdleS: Math.max(0, Number(env.DECK_PUSH_DESK_IDLE ?? 120) || 0),
     queryToken: on(env.DECK_RELAY_QUERY_TOKEN), // also accept ?token= on the WebSocket (off: header only)
     eventsDir: env.DECK_EVENTS_DIR || home(".hermes-deck", "events"),
     stateDir: env.DECK_STATE_DIR || home(".hermes-deck", "state"),
@@ -430,7 +432,7 @@ async function start(cfg) {
   // Large downloads (downloads.js): deck.file_grant tickets in <spool>/downloads, streamed by GET /downloads/<id> and
   // /mobile/files/<id>; DECK_DOWNLOAD_MAX caps one file on this side (default 8 GiB).
   const downloads = new DownloadTickets({ spool: uploads, ...(cfg.downloads || downloadConfig({})) });
-  const mobile = new MobileRelay({ uploads, downloads, tokensFile: cfg.mobileDevicesFile || path.join(cfg.dataDir, "mobile-devices.json"), bridgeConfig: cfg.mobileBridge, push: new MobilePushClient(), capabilities: { history: !!history, workspace: !!workspace && !!fallback?.available, desktop: false } });
+  const mobile = new MobileRelay({ uploads, downloads, tokensFile: cfg.mobileDevicesFile || path.join(cfg.dataDir, "mobile-devices.json"), bridgeConfig: cfg.mobileBridge, push: new MobilePushClient(), atDesk: () => presence.atDesk(cfg.pushDeskIdleS), capabilities: { history: !!history, workspace: !!workspace && !!fallback?.available, desktop: false } });
   const host = { protocol: compat.PROTOCOL, plugins: compat.pluginCache(cfg.hermesRoot || null), update: () => compat.updateStatus(cfg.dataDir) };
   const { HostUpdate } = require("./host-update");
   const { Restarts } = require("./restarts");

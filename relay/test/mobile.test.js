@@ -916,3 +916,33 @@ test('POST /fleet/quotas/refresh: relay token and mobile token allowed, other PO
     assert.equal((await fetch(base + '/fleet/other', { method: 'POST', headers: { authorization: 'Bearer mobile' } })).status, 403);
   } finally { relay.server.close(); }
 });
+test('phone pushes stay quiet while the user is at a desktop Deck; open requests reach the phone once the desk goes quiet', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'deck-mobile-desk-')), file = path.join(dir, 'devices.json'), notices = [];
+  let atDesk = true;
+  const mobile = new MobileRelay({ tokensFile: file, bridgeConfig: { mode: 'off' }, atDesk: () => atDesk,
+    push: { configured: true, notify: async (deviceId, event) => notices.push(event), removeDevice: async () => {} } });
+  t.after(() => mobile.stop());
+  const paired = mobile.pair({ code: createPair(file), name: 'phone' }), device = mobile.device(paired.deviceId);
+  device.observePush = true; mobile.persist(device);
+  const open = [{ id: 'q-1', sid: 'session-a', profile: 'default', kind: 'question', questions: [{ qid: 'a', question: 'Which one?' }] },
+    { id: 'q-2', sid: 'session-a', profile: 'default', kind: 'question', questions: [{ qid: 'a', question: 'Answered at the desk' }] }];
+  device.bridge = { listRequests: () => open, stop() {} };
+  // at the desk: nothing is queued for the phone, replies included
+  assert.equal(mobile.notify(device, 'requests', open).atDesk, 2);
+  assert.equal(mobile.notify(device, 'native', { type: 'message.complete', sid: 'session-a', profile: 'default', payload: { text: 'done' } }).atDesk, 1);
+  mobile.deskCheck();
+  await mobile.flushPush();
+  assert.deepEqual(notices, []);
+  assert.equal(device.notifications.size, 0);
+  // q-2 was answered on the desktop (its bridge dropped it); the user walks away: only q-1 still needs them
+  open.pop();
+  atDesk = false;
+  mobile.deskCheck();
+  await mobile.flushPush();
+  assert.deepEqual(notices.map(n => n.kind), ['question']);
+  assert.deepEqual([...device.notifications.values()].map(n => n.sid), ['session-a']);
+  // the next check does not offer it again
+  mobile.deskCheck();
+  await mobile.flushPush();
+  assert.equal(notices.length, 1);
+});

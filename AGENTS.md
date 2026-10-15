@@ -11,6 +11,9 @@ Instructions for AI coding agents working in this repository. Humans: see [CONTR
 | Hermes plugin (Python) | `hermes-plugin/hermes-deck/__init__.py` (`register`), `events.py` (hooks → NDJSON, desktop fence), `observer.py` (live sessions, control socket), `stream.py` (stdio bridge), `install.py` | `hermes-plugin/hermes-deck/test_*.py` |
 | Versions | `compat.json`, `app/package.json`, `relay/package.json`, `hermes-plugin/hermes-deck/plugin.yaml`, `hermes-plugin/hermes-deck/stream.py` (`VERSION`) | `relay/test/compat.test.js` |
 
+The iOS app lives in its own repository, [Hermes-Deck/ios-app](https://github.com/Hermes-Deck/ios-app); it reaches Hermes only through the relay's
+mobile API (`relay/src/mobile.js`), so a phone feature still starts with a relay op and capability flag here.
+
 Architecture and data flow: [docs/architecture.md](docs/architecture.md). Desktop-control wire format:
 [docs/bot-screen-protocol.md](docs/bot-screen-protocol.md).
 

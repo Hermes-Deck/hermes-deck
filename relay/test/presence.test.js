@@ -336,3 +336,31 @@ test("I2 desktop hosts: a locked Deck stays a desktop host; asleep and stale one
   c.add(31);
   assert.deepEqual(p.desktopHosts(), []);
 });
+
+test("presence: atDesk = a desktop Deck (never a phone) fresh, awake, unlocked, with recent input; 0 turns it off", () => {
+  const c = clock();
+  const p = new Presence({ now: c.now });
+  const pc = {};
+  const phone = { mobileDevice: { id: "mobile-1" } };
+  p.connect(pc);
+  p.connect(phone);
+  assert.strictEqual(p.atDesk(120), false);
+  p.heartbeat(phone, beat(MAC, { idleSec: 0, hosting: { browser: false, desktop: false } }));
+  assert.strictEqual(p.atDesk(120), false); // the phone in the user's hand is not the desk
+  p.heartbeat(pc, beat(PC, { idleSec: 20, hosting: { browser: false, desktop: false } }));
+  assert.strictEqual(p.atDesk(120), true); // no hosting switch needed
+  assert.strictEqual(p.atDesk(0), false);
+  assert.strictEqual(p.atDesk(undefined), false);
+  assert.strictEqual(p.atDesk(15), false);
+  p.heartbeat(pc, beat(PC, { idleSec: 1, locked: true }));
+  assert.strictEqual(p.atDesk(120), false);
+  p.heartbeat(pc, beat(PC, { idleSec: 1, asleep: true }));
+  assert.strictEqual(p.atDesk(120), false);
+  p.heartbeat(pc, beat(PC, { idleSec: 1 }));
+  assert.strictEqual(p.atDesk(120), true);
+  c.add(31);
+  assert.strictEqual(p.atDesk(120), false); // heartbeat older than 30 s: the Deck is gone
+  p.heartbeat(pc, beat(PC, { idleSec: 1 }));
+  p.disconnect(pc);
+  assert.strictEqual(p.atDesk(120), false);
+});

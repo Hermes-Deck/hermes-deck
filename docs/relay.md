@@ -93,6 +93,7 @@ file named by `DECK_RELAY_ENV`); restart it to apply changes.
 | `DECK_UPDATE_REPO`, `DECK_RELAY_AUTO_UPDATE`, `DECK_RELAY_SERVICE` | Relay updates ([updating.md](updating.md)) |
 | `DECK_REMOTE_UPDATE` | Host update from the app (default on; [updating.md](updating.md#updating-from-the-app)) |
 | `DECK_MOBILE_DEVICES_FILE`, `DECK_MOBILE_BRIDGE_PYTHON`, `DECK_MOBILE_BRIDGE_STREAM` | iOS app: mobile token store, and Hermes' Python plus `stream.py` path for the mobile bridge (empty stream disables it) |
+| `DECK_PUSH_DESK_IDLE` | iOS push: no phone notifications while a desktop Deck on this relay had input within this many seconds (default `120`; `0` turns it off). Approvals and questions still open when the desk goes quiet are sent then |
 | `HERMES_PUSH_URL`, `HERMES_PUSH_SENDER_TOKEN` | iOS push: your push gateway's HTTPS origin and this relay's sender credential ([push gateway](https://github.com/Hermes-Deck/ios-app/tree/main/push) in the iOS app repository) |
 | `DECK_HOME`, `DECK_DRIVER_SOCK` | Plugin home (default `~/.hermes-deck`) and driver socket (default `<DECK_HOME>/driver.sock`). Must equal the plugin's |
 | `DECK_EVENTS_DIR`, `DECK_STATE_DIR` | Plugin event and state folders, default `~/.hermes-deck/events` and `~/.hermes-deck/state`. They do not follow `DECK_HOME`: if the plugin uses `DECK_HOME=X`, set `X/events` and `X/state`; if it uses `DECK_EVENTS_DIR=Y`, set `Y` and `Y/state` |
@@ -251,4 +252,4 @@ The iOS app pairs with the relay: on the relay host run `node tools/mobile-token
 valid for 5 minutes); `list` and `revoke <deviceId>` manage paired phones. The phone requires an HTTPS address, so
 publish the relay to it through a private HTTPS reverse proxy (for example on your tailnet), never on the public
 internet. Set `DECK_MOBILE_BRIDGE_STREAM` (and `DECK_MOBILE_BRIDGE_PYTHON`) for live Hermes sessions on the phone, and
-the `HERMES_PUSH_*` variables for push. Building the app: [iOS app repository](https://github.com/Hermes-Deck/ios-app).
+the `HERMES_PUSH_*` variables for push. Building the app: the [iOS app repository](https://github.com/Hermes-Deck/ios-app).

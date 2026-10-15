@@ -19,6 +19,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 import sqlite3
 from contextlib import contextmanager, ExitStack
@@ -665,6 +666,39 @@ class BridgeWireTests(unittest.TestCase):
 # ---------------------------------------------------------------------------- the real thing, end to end
 
 @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "needs Unix sockets (Linux/macOS)")
+class AnsweredRequestTests(unittest.TestCase):
+    """A request answered from one Deck is withdrawn from the others (Hermes cancels only on timeout/interrupt)."""
+
+    def server(self, emitted, open_ids=("R1",)):
+        table = types.SimpleNamespace(_lock=threading.Lock(), _open={
+            rid: types.SimpleNamespace(sid="rpc-1", method="clarify") for rid in open_ids})
+        return types.SimpleNamespace(_server_requests=table, _emit=lambda *a: emitted.append(a))
+
+    def test_only_a_settled_answer_is_withdrawn(self):
+        import observer
+        emitted = []
+        server = self.server(emitted)
+        opened = observer.open_request(server, "R1")
+        self.assertEqual(opened, ("rpc-1", "clarify"))
+        ok = {"jsonrpc": "2.0", "id": 7, "result": {"status": "ok"}}
+        self.assertTrue(observer.withdraw_answered(server, "R1", opened, ok))
+        self.assertEqual(emitted, [("request.cancel", "rpc-1", {"id": "R1", "method": "clarify", "reason": "answered"})])
+        # expired (settled elsewhere already, Hermes sent its own cancel), an error, or a request never seen open
+        for response in ({"id": 8, "result": {"status": "expired"}}, {"id": 9, "error": {"code": 4002}}, None):
+            self.assertFalse(observer.withdraw_answered(server, "R1", opened, response))
+        self.assertFalse(observer.withdraw_answered(server, "R2", observer.open_request(server, "R2"), ok))
+        self.assertEqual(len(emitted), 1)
+
+    def test_an_engine_without_the_table_or_a_failing_sink_changes_nothing(self):
+        import observer
+        self.assertIsNone(observer.open_request(types.SimpleNamespace(), "R1"))
+        self.assertIsNone(observer.open_request(self.server([]), 5))
+        def boom(*a):
+            raise RuntimeError("sink down")
+        server = types.SimpleNamespace(_server_requests=self.server([])._server_requests, _emit=boom)
+        self.assertFalse(observer.withdraw_answered(server, "R1", ("rpc-1", "clarify"), {"result": {"status": "ok"}}))
+
+
 class EndToEndTests(unittest.TestCase):
     """testhost.py: the real observer control socket and the real stream.py in one process, as Hermes runs
     them, spoken to over stdio with the requests app/main/bridge.js sends."""
@@ -676,7 +710,7 @@ class EndToEndTests(unittest.TestCase):
         self.proc = subprocess.Popen([sys.executable, str(HERE / "testhost.py"), str(self.home), "--log", str(self.log)],
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.addCleanup(self.stop)
-        self.frames = queue.Queue()
+        self.frames, self.seen = queue.Queue(), []  # seen: every frame, also those a call() skipped on its way
         threading.Thread(target=self.read, daemon=True).start()
         self.counter = 0
 
@@ -696,7 +730,9 @@ class EndToEndTests(unittest.TestCase):
     def read(self):
         for line in self.proc.stdout:
             try:
-                self.frames.put(json.loads(line))
+                frame = json.loads(line)
+                self.seen.append(frame)
+                self.frames.put(frame)
             except ValueError:
                 pass
 
@@ -773,6 +809,11 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(self.call("native.interrupt", {"session_id": "s-main", "turn_id": "t1", "owner_pid": owner})["result"],
                          {"status": "interrupted"})
         self.assertEqual(self.call("request.answer", {"id": "A1", "result": {"choice": "once"}})["result"], {"status": "ok"})
+        # answered here: every other attached Deck (the phone after the desktop answered) is told to drop the card
+        cancels = [f["params"] for f in self.seen if f.get("method") == "event" and f["params"]["type"] == "request.cancel"]
+        self.assertEqual([(c["session_id"], c["payload"]) for c in cancels],
+                         [("rpc-s-main", {"id": "A1", "method": "approval", "reason": "answered"})])
+        self.assertEqual(self.call("request.answer", {"id": "A1", "result": {"choice": "once"}})["result"], {"status": "expired"})
         self.assertEqual(self.call("config.set", {"session_id": rpc, "key": "model",
                                                   "value": "model-b --provider prov --session"})["result"], {"deferred": True})
         # refused on the host whatever the client sends

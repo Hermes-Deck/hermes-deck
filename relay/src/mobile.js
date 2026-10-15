@@ -124,8 +124,12 @@ const OPS = {
   answerApproval: ['id', 'profile', 'choice'], answerQuestion: ['id', 'profile', 'answers'], transcribe: ['upload', 'mime', 'language'],
 };
 class MobileRelay {
-  constructor({ tokensFile, bridgeConfig, bridgeOptions = {}, capabilities = {}, push = null, settleMs = SETTLE_MS, uploads = null, downloads = null }) {
+  constructor({ tokensFile, bridgeConfig, bridgeOptions = {}, capabilities = {}, push = null, settleMs = SETTLE_MS, uploads = null, downloads = null, atDesk = null }) {
     Object.assign(this, { tokensFile, bridgeConfig, bridgeOptions, push, settleMs });
+    // () => boolean: the user is working at a Deck computer right now (presence.atDesk). While true, phone pushes are
+    // not sent: replies and finished turns are dropped, open approvals/questions are offered again once the desk goes quiet.
+    this.atDesk = typeof atDesk === 'function' ? atDesk : () => false;
+    this.wasAtDesk = false;
     // Uploads live on disk (uploads.js), shared with the desktop routes; index.js passes the relay's spool.
     this.uploads = uploads || new UploadSpool({ dir: path.join(path.dirname(path.resolve(tokensFile)), 'uploads') });
     this.ownSpool = !uploads;
@@ -333,6 +337,7 @@ class MobileRelay {
         .map(node => ({ sid: node.sid, profile: node.profile, kind: { finished: 'done', error: 'error' }[node.state], timestamp: node.terminalAt ? Math.trunc(node.terminalAt < 1e12 ? node.terminalAt * 1000 : node.terminalAt) : undefined, key: node.turnId ? JSON.stringify(['terminal', node.profile, node.sid, node.turnId, { finished: 'done', error: 'error' }[node.state]]) : null }));
     }
     this.prune(device);
+    if (items.length && this.atDesk()) { admission.atDesk = items.length; return admission; }
     for (const item of items) {
       if (!item.key || !item.sid || typeof item.profile !== 'string' || !PROFILE_NAME.test(item.profile) || !['reply', 'done', 'approval', 'question', 'error'].includes(item.kind)) { admission.skipped++; continue; }
       const nonce = crypto.createHash('sha256').update(`${device.id}:${item.key}`).digest('hex').slice(0, 48);
@@ -384,6 +389,15 @@ class MobileRelay {
       this.emit(device, { t: 'bridge', event: 'notificationAdmission', data: { ...admission, capacity: NOTIFICATION_CAPACITY } });
     }
     return admission;
+  }
+  /** The user left the desk (idle, locked, asleep or gone): approvals and questions still open now reach the phone. */
+  deskCheck() {
+    const at = this.atDesk();
+    if (this.wasAtDesk && !at) for (const device of this.devices.values()) {
+      if (!device.bridge || typeof device.bridge.listRequests !== 'function') continue;
+      try { this.notify(device, 'requests', device.bridge.listRequests()); } catch {}
+    }
+    this.wasAtDesk = at;
   }
   kindEnabled(device, kind) { return !Array.isArray(device.pushKinds) || device.pushKinds.includes(kind); }
   /** Keeps a turn's reply text under every id the session is known by (stored sid and runtime id), so a done event can find it. */
@@ -713,6 +727,7 @@ class MobileRelay {
   sweep() {
     this.ticks++;
     this.flushPush().catch(() => {});
+    this.deskCheck();
     for (const device of this.devices.values()) {
       if (!tokens.stillValid(this.tokensFile, device.id, device.hash)) { if (!this.meta.revocations[device.id]) this.revoke(device).catch(() => {}); continue; }
       this.prune(device);

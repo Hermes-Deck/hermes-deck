@@ -43,12 +43,8 @@ Thumbs.db
 tmp/
 .tmp/
 
-# Native generated binaries, private signing/app credentials and local proof
+# local proof and scratch output
 work/
-*.xcuserstate
-xcuserdata/
-
-# Local Firebase client configuration
 
 # written by scripts/build-info.js for packaged builds
 app/main/build-info.json

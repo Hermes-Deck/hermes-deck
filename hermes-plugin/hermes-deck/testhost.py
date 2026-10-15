@@ -96,6 +96,14 @@ def install_fake_hermes(home: Path, log=None):
             return all([p.write(obj) for p in peers])
 
     state = {"asked": False}
+    # Hermes' open server-request table (tui_gateway.server_requests) and its event sink: request.answer settles
+    # A1 once; _emit reaches every attached Deck through the process-wide fanout the observer registers.
+    open_requests = types.SimpleNamespace(_lock=threading.Lock(), _open={})
+    live = []
+
+    def emit(event_type, sid, payload):
+        frame = {"jsonrpc": "2.0", "method": "event", "params": {"type": event_type, "session_id": sid, "payload": payload}}
+        return all([t.write(frame) for t in list(live)])
     # Hermes' runtime session table: like _init_session, a resumed session keeps the transport that resumed it
     # (the control socket's fanout), which deck.reasoning_view checks before it flips show_reasoning.
     sessions, sessions_lock = {}, threading.Lock()
@@ -111,6 +119,8 @@ def install_fake_hermes(home: Path, log=None):
                                      {"id": "s-idle", "title": "", "message_count": 1, "source": "cli"}]})
             if not state["asked"]:
                 state["asked"] = True
+                with open_requests._lock:
+                    open_requests._open["A1"] = types.SimpleNamespace(id="A1", sid="rpc-s-main", method="approval")
                 threading.Timer(0.05, transport.write, args=({"jsonrpc": "2.0", "id": "A1", "method": "approval",
                     "params": {"session_id": "rpc-s-main", "command": "rm -rf build", "description": "Komut onayı",
                                "choices": ["once", "deny"]}},)).start()
@@ -128,7 +138,9 @@ def install_fake_hermes(home: Path, log=None):
             threading.Timer(0.05, stream_reply).start()
             return ok({"status": "streaming"})
         if method == "request.answer":
-            return ok({"status": "ok"})
+            with open_requests._lock:
+                settled = open_requests._open.pop(str(p.get("id")), None)
+            return ok({"status": "ok" if settled else "expired"})
         if method == "session.interrupt":
             return ok({"status": "interrupted"})
         if method == "model.options":
@@ -180,8 +192,9 @@ def install_fake_hermes(home: Path, log=None):
 
     module("tui_gateway")
     sessions["rpc-tui"] = {"transport": object(), "show_reasoning": False}  # a session another surface owns
-    module("tui_gateway.server", dispatch=dispatch, register_live_transport=lambda t: None,
-           unregister_live_transport=lambda t: None, _sessions=sessions, _sessions_lock=sessions_lock)
+    module("tui_gateway.server", dispatch=dispatch, register_live_transport=live.append,
+           unregister_live_transport=lambda t: t in live and live.remove(t), _sessions=sessions,
+           _sessions_lock=sessions_lock, _server_requests=open_requests, _emit=emit)
     module("tui_gateway.transport", FanoutTransport=FanoutTransport, bind_transport=lambda t: object(),
            reset_transport=lambda token: None)
 
