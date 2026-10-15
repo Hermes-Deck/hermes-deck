@@ -1,11 +1,30 @@
 # Hermes Deck
 
+<p align="center">
+  <img src="docs/media/hero-work-pane.webp" alt="Hermes Deck: a chat with a running agent next to the Work pane's live tool calls" width="100%">
+</p>
+
 Hermes Deck is a desktop app for [Hermes Agent](https://github.com/NousResearch/hermes-agent). It lets you chat with
 your Hermes agents, see what they are doing right now (thinking, tools, sub-agents), steer or stop them, and keep an
 eye on usage and subscription limits, all from one window on your Windows or macOS computer. It connects to the
 Hermes instance you already run, over SSH, WSL or locally, through a small Hermes plugin. An optional relay on the
 Hermes host adds a live view of every agent, host-wide usage, and letting agents use a browser or one window on your
 computer, both off until you allow them. Telegram is optional.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/media/needs-you.webp" alt="Needs you inbox with a command approval and a question"><br><b>Needs you</b>: approvals and questions from every agent in one inbox</td>
+    <td width="50%"><img src="docs/media/bot-chat.webp" alt="Bot Chat with one chat per Hermes profile"><br><b>Bot Chat</b>: every profile has its own chat and personality</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/media/telegram.webp" alt="Telegram mode showing a forum topic with media"><br><b>Telegram mode</b>: your account, your bots, your group topics</td>
+    <td width="50%"><img src="docs/media/agent-screen.webp" alt="Screen tab with an agent working in a spreadsheet window"><br><b>Desktop control</b>: watch an agent work in one window, take control any time</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/media/agent-browser.webp" alt="Browser tab showing an agent's live browser"><br><b>Agent browsers</b>: the agent's own browser tab, live on your device</td>
+    <td width="50%"><img src="docs/media/themes.webp" alt="Desktop settings with the light Marble theme"><br><b>Themes</b>: dark, light and OLED themes, wallpapers, reading preferences</td>
+  </tr>
+</table>
 
 ## Features
 
