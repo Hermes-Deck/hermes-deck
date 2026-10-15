@@ -21,7 +21,7 @@
   },
   "dependencies": {
     "libsodium-wrappers": "0.8.4",
-    "teleproto": "1.229.1",
+    "teleproto": "1.230.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
