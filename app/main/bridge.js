@@ -14,6 +14,7 @@ const { EventEmitter } = require("events");
 const os = require("os");
 const path = require("path");
 const { HERMES_ATTACH, sniffImage } = require("./media");
+const groupRpc = require("./group-rpc");
 
 const SCHEMA = "hermes-deck.v1";
 
@@ -91,12 +92,15 @@ const TIMING = {
 // live transcript tail) and deck.plan (a stored session's latest plan, rebuilt read-only from state.db by the plugin);
 // and two click-driven writes on one child: subagent.steer and subagent.interrupt. Hermes checks that the child belongs
 // to the session this connection addresses; the plugin checks the shapes again (observer.py subagent_params_ok).
-const READS = ["deck.drafts_list", "deck.draft_get", "deck.version", "session.list", "deck.session_index", "session.messages", "session.usage", "model.options", "profiles.list", "profiles.get_asset", "deck.transcribe", "deck.file_read", "deck.file_grant", "subagent.list", "subagent.tail", "deck.plan", "commands.catalog"];
+// Group Chat (renderer/group-chat.js) adds the gateway's hosted rooms (groups.*, see group-rpc.js): reads of the room list,
+// one room's state and its log, and click-driven writes (create, send, rename, stop, approve, retry, disband), each in the
+// exact shape group-rpc.js validGroupRequest allows. A host plugin without them answers -32601: no group surface shows.
+const READS = ["deck.drafts_list", "deck.draft_get", "deck.version", "session.list", "deck.session_index", "session.messages", "session.usage", "model.options", "profiles.list", "profiles.get_asset", "deck.transcribe", "deck.file_read", "deck.file_grant", "subagent.list", "subagent.tail", "deck.plan", "commands.catalog", "groups.capabilities", "groups.list", "groups.state", "groups.log"];
 // commands.catalog (Hermes' own slash-command palette: registry, quick commands, plugin commands, skills) feeds the
 // composer's "/" suggestions; the Deck asks it for one profile only, never with a session (no resume as a side effect).
 // deck.reasoning_view ("Show thinking") flips the in-memory show_reasoning flag of one runtime session this Deck created
 // or resumed (the plugin checks the session's transport is its own socket); it writes no file and no other session.
-const MUTATIONS = ["deck.draft_edit", "deck.draft_sender", "deck.draft_prepare", "deck.draft_commit", "session.create", "session.resume", "deck.takeover", "prompt.submit", "deck.attach_submit", "deck.attach_staged", "native.steer", "native.redirect", "native.interrupt", "session.interrupt", "config.set", "request.answer", "session.title", "session.delete", "session.close", "deck.session_update", "session.archive", "session.branch_stored", "deck.reasoning_view", "subagent.steer", "subagent.interrupt"];
+const MUTATIONS = ["deck.draft_edit", "deck.draft_sender", "deck.draft_prepare", "deck.draft_commit", "session.create", "session.resume", "deck.takeover", "prompt.submit", "deck.attach_submit", "deck.attach_staged", "native.steer", "native.redirect", "native.interrupt", "session.interrupt", "config.set", "request.answer", "session.title", "session.delete", "session.close", "deck.session_update", "session.archive", "session.branch_stored", "deck.reasoning_view", "subagent.steer", "subagent.interrupt", "groups.create", "groups.send", "groups.rename", "groups.stop", "groups.approve", "groups.retry", "groups.disband"];
 const METHODS = new Set([...READS, ...MUTATIONS]);
 // Hermes Desktop's canonical per-bot chat: its identity is this exact title in the profile's state.db
 // (desktop plugin hermes-bots/canonical-chat.ts), never a stored id pointer.
@@ -460,6 +464,7 @@ function checkRequest(method, params) {
   if (method.startsWith("subagent.") && !validSubagent(method, params)) throw new Error(i18nText("U0047"));
   if (method === "deck.plan" && !validPlanRead(params)) throw new Error(i18nText("U0047"));
   if (method === "commands.catalog" && !validCatalogRead(params)) throw new Error(i18nText("U0047"));
+  if (method.startsWith("groups.") && !groupRpc.validGroupRequest(method, params)) throw new Error(i18nText("groups.invalid"));
 }
 
 /** A reply: string id, no method, exactly one of result / error{message} (hermes.rs:192-204). */
@@ -2045,6 +2050,77 @@ class BridgeClient extends EventEmitter {
   async avatar(name) {
     if (typeof name !== "string" || !PROFILE_RE.test(name)) throw new Error(i18nText("U0081"));
     return projectAvatar(await this.request("profiles.get_asset", { name, asset: "avatar" }));
+  }
+
+  // ------------------------------------------------------------ Group Chat (hosted rooms, groups.*)
+
+  /** groups.capabilities -> {supported, methods, maxLog}; a host without it rejects (-32601) and the caller hides rooms. */
+  async groupCapabilities() {
+    return groupRpc.projectCapabilities(await this.request("groups.capabilities", {}));
+  }
+
+  /** The rooms this gateway hosts (newest change first). */
+  async groupRooms() {
+    return groupRpc.projectRooms(await this.request("groups.list", { limit: 100 }));
+  }
+
+  /** One room's state: room row, whether its driver works, and the approvals/retries waiting for the user. */
+  async groupState(roomId) {
+    return groupRpc.projectState(await this.request("groups.state", { room_id: roomId }));
+  }
+
+  /** One page of a room's log after `since` (the cursor of the previous page). */
+  async groupLog(roomId, since = 0, limit = groupRpc.LOG_PAGE) {
+    return groupRpc.projectLog(await this.request("groups.log", { room_id: roomId, since_seq: since, limit }));
+  }
+
+  /** Create a room of 2-6 local bots ({profile, name}); the room id is minted here. Never replayed. */
+  async groupCreate({ name, members } = {}) {
+    let list;
+    try {
+      list = groupRpc.roomMembers(members);
+    } catch {
+      throw new Error(i18nText("groups.pickRange", { min: groupRpc.MIN_MEMBERS, max: groupRpc.MAX_MEMBERS }));
+    }
+    const params = { room_id: `deck-${require("crypto").randomUUID()}`, name: String(name || "").trim(), members: list };
+    const r = await this.request("groups.create", params);
+    const room = groupRpc.projectRoom(r && r.room);
+    if (!room) throw new Error(i18nText("U0056"));
+    return room;
+  }
+
+  /** Send the user's message to a room (thread "main"); resolves with the appended event. */
+  async groupSend(roomId, text) {
+    const params = { room_id: roomId, event_id: `deck-${require("crypto").randomUUID()}`, payload: { text: String(text || ""), thread_id: groupRpc.MAIN_THREAD } };
+    const r = await this.request("groups.send", params);
+    return { event: groupRpc.projectEvent(r && r.event), accepted: !!(r && r.accepted) };
+  }
+
+  async groupRename(roomId, name) {
+    const r = await this.request("groups.rename", { room_id: roomId, event_id: `deck-${require("crypto").randomUUID()}`, name: String(name || "").trim() });
+    return groupRpc.projectRoom(r && r.room);
+  }
+
+  /** Stop: cancel the room's queued and running turns. */
+  async groupStop(roomId) {
+    const r = await this.request("groups.stop", { room_id: roomId });
+    return { cancelled: Number.isInteger(r && r.cancelled) ? r.cancelled : 0 };
+  }
+
+  async groupDisband(roomId) {
+    await this.request("groups.disband", { room_id: roomId });
+    return { disbanded: true };
+  }
+
+  async groupRetry(roomId, taskId) {
+    await this.request("groups.retry", { room_id: roomId, task_id: taskId });
+    return { retried: true };
+  }
+
+  /** Answer one member's approval in a room ({memberId, taskId, generation, requestId, choice}). */
+  async groupApprove(roomId, a = {}) {
+    await this.request("groups.approve", { room_id: roomId, member_id: a.memberId, task_id: a.taskId, execution_generation: a.generation, request_id: a.requestId, choice: a.choice });
+    return { approved: true };
   }
 
   /**

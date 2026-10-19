@@ -9,7 +9,8 @@ test_stream.py can drive it as a subprocess:
 
 HOME is an empty directory used as HERMES_HOME. Sessions: s-main (live, controllable, turn t1, owner = this
 process) and s-idle (persisted only). --log appends every request the gateway saw as a JSON line. The first
-session.list asks one approval (A1); prompt.submit streams message.start/delta/complete events.
+session.list asks one approval (A1); prompt.submit streams message.start/delta/complete events. groups.* serves
+in-memory hosted rooms (Group Chat).
 """
 import json
 import os
@@ -193,7 +194,100 @@ def install_fake_hermes(home: Path, log=None):
             return ok({"status": "queued", "subagent_id": p.get("subagent_id"), "text": p.get("text")})
         if method == "subagent.interrupt":
             return ok({"found": True, "subagent_id": p.get("subagent_id")})
+        if str(method).startswith("groups."):
+            # Hosted rooms are long handlers in Hermes (methods_groups.LONG_HANDLERS): dispatch returns None and a
+            # pool worker writes the reply later through the transport bound to the request.
+            reply = groups(method, p, rid)
+            threading.Timer(0.02, transport.write, args=(reply,)).start()
+            return None
         return {"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": f"fake gateway: {method}"}}
+
+    # Group Chat: a small in-memory stand-in for Hermes' hosted rooms (gateway/hosted_rooms.py shapes). A user
+    # message gets one reply from the first member; one containing "rm " first asks that member's approval.
+    rooms, pending = {}, {}
+
+    def append(room, kind, actor, payload):
+        room["events"].append({"room_id": room["room_id"], "seq": len(room["events"]) + 1,
+                               "event_id": f"e{len(room['events']) + 1}", "kind": kind, "actor": actor,
+                               "authority_epoch": 1, "payload": payload, "created_at": time.time(), "idempotent": False})
+        return room["events"][-1]
+
+    def room_row(room):
+        return {k: room[k] for k in ("room_id", "name", "members", "created_at")} | {
+            "authority_gateway_id": "gw-test", "authority_epoch": 1, "revision": 1, "updated_at": time.time(),
+            "latest_seq": len(room["events"]), "idempotent": False}
+
+    def reply_turn(room, discussion, member):
+        coords = {"discussion_event_id": discussion["event_id"], "member_id": member["member_id"], "member_index": 0,
+                  "round_index": 0, "task_id": "dtask:1", "thread_id": discussion["payload"]["thread_id"],
+                  "turn_id": "d1.r0.p0.s1.m0"}
+        actor = {"kind": "member", "id": member["member_id"], "profile": member["profile"]}
+        message = append(room, "message.member", actor, {**coords, "text": "Done. @user please check."})
+        append(room, "turn.settled", {"kind": "gateway", "id": "gw-test"},
+               {**coords, "seen_through_seq": discussion["seq"], "message_event_id": message["event_id"], "passed": False})
+        append(room, "room.activity", {"kind": "gateway", "id": "gw-test"},
+               {"status": "settled", "reason_code": "silent_round", "thread_id": coords["thread_id"],
+                "discussion_event_id": discussion["event_id"]})
+
+    def groups(method, p, rid):
+        ok = lambda result: {"jsonrpc": "2.0", "id": rid, "result": result}
+        err = lambda code, text: {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": text}}
+        if method == "groups.capabilities":
+            return ok({"protocol_version": 1, "driver": True, "max_log_limit": 500, "methods": [
+                "groups.capabilities", "groups.list", "groups.create", "groups.state", "groups.send", "groups.rename",
+                "groups.log", "groups.disband", "groups.stop", "groups.retry", "groups.approve"]})
+        if method == "groups.list":
+            return ok({"rooms": [room_row(r) for r in rooms.values()], "next_offset": None})
+        if method == "groups.create":
+            rooms[p["room_id"]] = {"room_id": p["room_id"], "name": p["name"], "members": p["members"],
+                                   "created_at": time.time(), "events": []}
+            return ok({"room": room_row(rooms[p["room_id"]])})
+        room = rooms.get(p.get("room_id"))
+        if room is None:
+            return err(4114, "hosted room not found")
+        if method == "groups.state":
+            actions = [dict(a) for (room_id, _), a in pending.items() if room_id == room["room_id"]]
+            return ok({"room": room_row(room), "driver_status": {
+                "running": True, "working": bool(actions), "blocked": False, "counts": {}, "pending_actions": actions}})
+        if method == "groups.log":
+            since, limit = p["since_seq"], p["limit"]
+            events = [e for e in room["events"] if e["seq"] > since][:limit]
+            cursor = events[-1]["seq"] if events else since
+            return ok({"events": events, "cursor": cursor, "latest_seq": len(room["events"]),
+                       "has_more": cursor < len(room["events"]), "authority": {"gateway_id": "gw-test", "epoch": 1}})
+        if method == "groups.send":
+            event = append(room, "message.user", {"kind": "user", "id": "desktop"}, p["payload"])
+            member = room["members"][0]
+            if "rm " in p["payload"]["text"]:
+                pending[(room["room_id"], member["member_id"])] = {
+                    "kind": "approval", "member_id": member["member_id"], "task_id": "dtask:1", "execution_generation": 1,
+                    "request_id": "req-1", "session_id": "room-session", "run_id": None,
+                    "approval": {"request_id": "req-1", "command": "rm -rf build", "description": "Delete the build",
+                                 "choices": ["once", "deny"]}, "discussion": event}
+            else:
+                reply_turn(room, event, member)
+            return ok({"event": event, "client_event_id": p["event_id"], "accepted": True, "driver_started": True})
+        if method == "groups.approve":
+            action = pending.pop((room["room_id"], p["member_id"]), None)
+            if action is None or action["request_id"] != p["request_id"]:
+                return err(5119, "room approval is no longer pending")
+            member = next(m for m in room["members"] if m["member_id"] == p["member_id"])
+            reply_turn(room, action["discussion"], member)
+            return ok({"approved": True, "result": {"status": "ok"}})
+        if method == "groups.rename":
+            room["name"] = p["name"]
+            event = append(room, "room.renamed", {"kind": "system", "id": "room-control"}, {"name": p["name"]})
+            return ok({"room": {**room_row(room), "event": event}})
+        if method == "groups.stop":
+            cancelled = sum(1 for key in list(pending) if key[0] == room["room_id"] and pending.pop(key))
+            append(room, "room.stop_requested", {"kind": "gateway", "id": "gw-test"}, {"cancel_id": "desktop-stop"})
+            return ok({"cancelled": cancelled})
+        if method == "groups.retry":
+            return ok({"retried": True, "task": {"room_id": room["room_id"], "task_id": p["task_id"], "status": "queued"}})
+        if method == "groups.disband":
+            del rooms[room["room_id"]]
+            return ok({"tombstone": {"room_id": room["room_id"], "disbanded_at": time.time()}})
+        return err(-32601, f"fake gateway: {method}")
 
     module("tui_gateway")
     sessions["rpc-tui"] = {"transport": object(), "show_reasoning": False}  # a session another surface owns

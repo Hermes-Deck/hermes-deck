@@ -1003,6 +1003,58 @@ test("BridgeClient against the real hermes-deck stream.py and plugin control soc
   assert.equal(probed.sessions, 2);
 });
 
+// ---------------------------------------------------------------- Group Chat (groups.*) through the real plugin
+
+test("Group Chat against the real stream.py and plugin control socket: create, send, log, approve, rename, stop, disband", async (t) => {
+  if (process.platform === "win32" && !HOST_WRAPPER) return t.skip("needs Unix sockets (Linux/macOS)");
+  if (spawnSync(HOST_PY, ["--version"]).status !== 0) return t.skip("no python");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "hd-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const log = path.join(home, "requests.log");
+  const launch = { file: HOST_PY, args: [...(HOST_WRAPPER ? [HOST_WRAPPER] : []), HOST, home, "--log", log] };
+  const timing = { ...FAST, handshake: 10000, request: 5000, heartbeat: 12000 };
+  const c = new BridgeClient(CFG, { launch, timing });
+  t.after(() => c.stop());
+  const snap = next(c, "snapshot", (s) => s.nodes.length > 0, 15000);
+  c.start();
+  await snap;
+  assert.equal((await c.groupCapabilities()).supported, true);
+  assert.deepEqual(await c.groupRooms(), []);
+  await assert.rejects(c.groupCreate({ name: "Solo", members: [{ profile: "atlas", name: "Atlas" }] }), /2/);
+  const room = await c.groupCreate({ name: "Planning", members: [{ profile: "atlas", name: "Atlas" }, { profile: "default", name: "Hermes" }] });
+  assert.match(room.id, /^deck-[0-9a-f-]{36}$/);
+  assert.deepEqual(room.members.map((m) => [m.id, m.handle, m.name]), [["atlas", "atlas", "Atlas"], ["default", "hermes", "Hermes"]]);
+  const [created] = calls(log, "groups.create");
+  assert.deepEqual(created.params.members, [
+    { member_id: "atlas", profile: "atlas", handle: "atlas", display_name: "Atlas" },
+    { member_id: "default", profile: "default", handle: "hermes", display_name: "Hermes" },
+  ]);
+  assert.deepEqual((await c.groupRooms()).map((r) => r.name), ["Planning"]);
+  // a plain message: the first member answers and @mentions the user
+  const sent = await c.groupSend(room.id, "@atlas plan the week");
+  assert.deepEqual([sent.accepted, sent.event.kind, sent.event.text, sent.event.thread], [true, "message.user", "@atlas plan the week", "main"]);
+  assert.deepEqual(calls(log, "groups.send")[0].params.payload, { text: "@atlas plan the week", thread_id: "main" });
+  let page = await c.groupLog(room.id, 0);
+  assert.deepEqual(page.events.map((e) => e.kind), ["message.user", "message.member", "turn.settled", "room.activity"]);
+  assert.equal(page.events[1].text, "Done. @user please check.");
+  assert.deepEqual([page.cursor, page.latestSeq, page.hasMore], [4, 4, false]);
+  // a message that needs a command approval: the state carries it, the answer goes back as groups.approve
+  await c.groupSend(room.id, "rm the build folder");
+  const st = await c.groupState(room.id);
+  assert.equal(st.working, true);
+  assert.deepEqual(st.approvals.map((a) => [a.memberId, a.requestId, a.command, a.choices]), [["atlas", "req-1", "rm -rf build", ["once", "deny"]]]);
+  assert.deepEqual(await c.groupApprove(room.id, { ...st.approvals[0], choice: "once" }), { approved: true });
+  assert.deepEqual(calls(log, "groups.approve")[0].params, { room_id: room.id, member_id: "atlas", task_id: "dtask:1", execution_generation: 1, request_id: "req-1", choice: "once" });
+  await assert.rejects(c.groupApprove(room.id, { ...st.approvals[0], choice: "once" }), /no longer pending/);
+  page = await c.groupLog(room.id, page.cursor);
+  assert.deepEqual(page.events.map((e) => e.kind), ["message.user", "message.member", "turn.settled", "room.activity"]);
+  assert.equal((await c.groupRename(room.id, "Launch")).name, "Launch");
+  assert.deepEqual(await c.groupStop(room.id), { cancelled: 0 });
+  assert.deepEqual(await c.groupDisband(room.id), { disbanded: true });
+  assert.deepEqual(await c.groupRooms(), []);
+  await assert.rejects(c.groupState(room.id), /not found/);
+});
+
 // ---------------------------------------------------------------- session browser (all sessions, every profile)
 
 test("session browser request shapes: paged index, rename/pin, archive and branch are strict", () => {

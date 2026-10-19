@@ -182,6 +182,20 @@ contextBridge.exposeInMainWorld("deck", {
     avatar: (name) => ipcRenderer.invoke("bridge:avatar", name),
     botChat: (name, opts) => ipcRenderer.invoke("bridge:bot-chat", name, opts),
     botChatCreate: (name, opts) => ipcRenderer.invoke("bridge:bot-chat-create", name, opts),
+    // Group Chat: the gateway's hosted rooms (reads; create/send/rename/stop/approve/retry/disband on a click or a send)
+    groups: {
+      capabilities: () => ipcRenderer.invoke("bridge:groups-capabilities"),
+      list: () => ipcRenderer.invoke("bridge:groups-list"),
+      state: (room) => ipcRenderer.invoke("bridge:groups-state", room),
+      log: (room, since) => ipcRenderer.invoke("bridge:groups-log", room, since),
+      create: (opts) => ipcRenderer.invoke("bridge:groups-create", opts),
+      send: (room, text) => ipcRenderer.invoke("bridge:groups-send", room, text),
+      rename: (room, name) => ipcRenderer.invoke("bridge:groups-rename", room, name),
+      stop: (room) => ipcRenderer.invoke("bridge:groups-stop", room),
+      disband: (room) => ipcRenderer.invoke("bridge:groups-disband", room),
+      retry: (room, task) => ipcRenderer.invoke("bridge:groups-retry", room, task),
+      approve: (room, answer) => ipcRenderer.invoke("bridge:groups-approve", room, answer),
+    },
     // dictation: the recorded clip (Uint8Array) is transcribed on the Hermes host and comes back as text
     transcribe: (bytes, mime) => ipcRenderer.invoke("bridge:transcribe", bytes, mime),
     // files the agent offered in a session: addressed by the opaque ref main issued, never by a path

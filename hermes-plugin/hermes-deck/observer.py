@@ -68,7 +68,12 @@ DECK_METHODS = {"session.create", "session.list", "session.resume", "session.int
                 "subagent.list", "subagent.tail", "subagent.steer", "subagent.interrupt",
                 # The composer's "/" suggestions: Hermes' own slash-command palette for one profile (a read; the
                 # Deck never passes a session, so no runtime session is resumed for it). allowed_request checks it.
-                "commands.catalog"}
+                "commands.catalog",
+                # Group Chat (Bot Mode rooms the gateway hosts, tui_gateway/methods_groups.py): reads of the room list,
+                # one room's state and its log, and the click-driven writes create / send / rename / stop / approve /
+                # retry / disband. allowed_request checks every shape (group_params_ok); Hermes checks the rest.
+                "groups.capabilities", "groups.list", "groups.state", "groups.log", "groups.create", "groups.send",
+                "groups.rename", "groups.stop", "groups.approve", "groups.retry", "groups.disband"}
 # Also allowed so an existing Hermes Desk install keeps working against this plugin until Desk is retired.
 DESK_METHODS = {"session.active_list", "session.close", "session.steer", "session.redirect",
                 "session.events.since", "subagent.list", "subagent.interrupt", "subagent.steer", "subagent.tail",
@@ -1890,6 +1895,84 @@ def reasoning_reply(request, owner, server=None):
         return {"jsonrpc": "2.0", "id": rid, "error": {"code": 5000, "message": "Hermes reasoning view unavailable"}}
 
 
+# Group Chat (tui_gateway/methods_groups.py). (required keys, optional keys) per method; no other key passes, and
+# group_params_ok checks the values. The Deck seats local profiles only (no peer `target`), sends to the room as the user only (Hermes
+# sets the actor), and answers one exact approval; Hermes validates authority, rosters and payloads again.
+GROUP_SHAPES = {
+    "groups.capabilities": ((), ()),
+    "groups.list": ((), ("limit", "offset")),
+    "groups.state": (("room_id",), ()),
+    "groups.log": (("room_id", "since_seq", "limit"), ()),
+    "groups.create": (("room_id", "name", "members"), ()),
+    "groups.send": (("room_id", "event_id", "payload"), ()),
+    "groups.rename": (("room_id", "event_id", "name"), ()),
+    "groups.stop": (("room_id",), ()),
+    "groups.disband": (("room_id",), ()),
+    "groups.retry": (("room_id", "task_id"), ()),
+    "groups.approve": (("room_id", "member_id", "task_id", "execution_generation", "request_id", "choice"), ()),
+}
+GROUP_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")      # hosted_rooms_common.IDENTIFIER_RE, 128 chars
+GROUP_CHOICES = frozenset({"once", "session", "always", "deny"})
+GROUP_TEXT_MAX = 64 * 1024                                       # hosted_room_discussion.MAX_USER_TEXT_BYTES
+GROUP_NAME_MAX = 200                                             # hosted_rooms.MAX_ROOM_NAME_CHARS
+
+
+def _group_int(value, low, high):
+    return type(value) is int and low <= value <= high
+
+
+def _group_id(value):
+    return isinstance(value, str) and bool(GROUP_ID.fullmatch(value))
+
+
+def _group_name(value):
+    return isinstance(value, str) and bool(value.strip()) and len(value) <= GROUP_NAME_MAX
+
+
+def _group_member(member):
+    if not isinstance(member, dict) or not {"member_id", "profile", "handle"} <= set(member) <= {
+            "member_id", "profile", "handle", "display_name"}:
+        return False
+    name = member.get("display_name", "")
+    return (_group_id(member["member_id"]) and _group_id(member["handle"])
+            and isinstance(member["profile"], str) and bool(PROFILE_NAME.fullmatch(member["profile"]))
+            and isinstance(name, str) and len(name) <= GROUP_NAME_MAX)
+
+
+def group_params_ok(method, params):
+    """Shape check for the groups.* gateway methods the Deck sends (Group Chat)."""
+    shape = GROUP_SHAPES.get(method)
+    if shape is None or not isinstance(params, dict):
+        return False
+    required, optional = shape
+    if not set(required) <= set(params) <= set(required) | set(optional):
+        return False
+    if "room_id" in params and not _group_id(params["room_id"]):
+        return False
+    if method == "groups.list":
+        return (_group_int(params.get("limit", 1), 1, 500) and _group_int(params.get("offset", 0), 0, 1_000_000))
+    if method == "groups.log":
+        return _group_int(params["since_seq"], 0, 2 ** 53) and _group_int(params["limit"], 1, 500)
+    if method == "groups.create":
+        members = params["members"]
+        return (_group_name(params["name"]) and isinstance(members, list) and 2 <= len(members) <= 6
+                and all(_group_member(m) for m in members))
+    if method == "groups.send":
+        payload = params["payload"]
+        return (_group_id(params["event_id"]) and isinstance(payload, dict) and set(payload) == {"text", "thread_id"}
+                and isinstance(payload["text"], str) and bool(payload["text"].strip())
+                and len(payload["text"].encode("utf-8")) <= GROUP_TEXT_MAX and _group_id(payload["thread_id"]))
+    if method == "groups.rename":
+        return _group_id(params["event_id"]) and _group_name(params["name"])
+    if method == "groups.retry":
+        return _group_id(params["task_id"])
+    if method == "groups.approve":
+        return (_group_id(params["member_id"]) and _group_id(params["task_id"])
+                and _group_int(params["execution_generation"], 1, 2 ** 53) and _sid_ok(params["request_id"])
+                and params["choice"] in GROUP_CHOICES)
+    return True
+
+
 def allowed_request(method, params, created=()):
     """Whether a gateway request may be dispatched. `created`: the runtime session ids session.create returned
     on this control connection; session.title may only name one of those "Bot Chat"."""
@@ -1921,6 +2004,8 @@ def allowed_request(method, params, created=()):
                 and bool(PROFILE_NAME.fullmatch(params["profile"])))
     if method in SUBAGENT_METHODS:              # one session's children: strict shape, Hermes checks the owner
         return subagent_params_ok(method, params)
+    if method in GROUP_SHAPES:                  # Group Chat rooms: strict shapes, Hermes checks room authority
+        return group_params_ok(method, params)
     if method != "config.set":
         return method in ALLOWED_METHODS
     if params.get("key") == "reasoning":         # one session's effort level: no scope (global writes config.yaml),

@@ -763,7 +763,7 @@ class ProtocolTests(unittest.TestCase):
                   "subagent.tail": {"session_id": "rpc-1", "subagent_id": "sa-0-abc"},
                   "subagent.interrupt": {"session_id": "rpc-1", "subagent_id": "sa-0-abc"},
                   "subagent.steer": {"session_id": "rpc-1", "subagent_id": "sa-0-abc", "text": "Focus"},
-                  "commands.catalog": {"profile": "default"}}
+                  "commands.catalog": {"profile": "default"}, **GROUP_SAMPLES}
         methods = self.methods()
         self.assertGreaterEqual(len(methods), 10)
         for method in methods:
@@ -783,10 +783,83 @@ class ProtocolTests(unittest.TestCase):
             "subagent.list", "subagent.interrupt", "subagent.steer", "subagent.tail", "approval.respond",
             "request.answer", "model.options", "session.usage",
             "profiles.list", "profiles.get_asset", "session.title", "session.delete",
-            "session.archive", "session.branch_stored", "commands.catalog"})
+            "session.archive", "session.branch_stored", "commands.catalog", *observer.GROUP_SHAPES})
         for method in ("profiles.configure", "profiles.create", "profiles.set_asset", "profiles.delete",
                        "cron.manage", "bot_relay.deliver", "session.set_hidden", "session.archive", "session.branch_stored"):
             self.assertFalse(observer.allowed_request(method, {"name": "default"}, {"rpc-1"}), method)
+
+
+GROUP_MEMBERS = [{"member_id": "atlas", "profile": "atlas", "handle": "atlas", "display_name": "Atlas"},
+                 {"member_id": "default", "profile": "default", "handle": "hermes"}]
+# One valid request per groups.* method, the shapes app/main/bridge.js sends.
+GROUP_SAMPLES = {
+    "groups.capabilities": {},
+    "groups.list": {"limit": 100},
+    "groups.state": {"room_id": "deck-0f1e"},
+    "groups.log": {"room_id": "deck-0f1e", "since_seq": 0, "limit": 200},
+    "groups.create": {"room_id": "deck-0f1e", "name": "Planning", "members": GROUP_MEMBERS},
+    "groups.send": {"room_id": "deck-0f1e", "event_id": "deck-1", "payload": {"text": "@atlas hi", "thread_id": "main"}},
+    "groups.rename": {"room_id": "deck-0f1e", "event_id": "deck-2", "name": "Launch"},
+    "groups.stop": {"room_id": "deck-0f1e"},
+    "groups.disband": {"room_id": "deck-0f1e"},
+    "groups.retry": {"room_id": "deck-0f1e", "task_id": "dtask:ab12"},
+    "groups.approve": {"room_id": "deck-0f1e", "member_id": "atlas", "task_id": "dtask:ab12", "execution_generation": 1,
+                       "request_id": "req-1", "choice": "once"},
+}
+
+
+class GroupShapeTests(unittest.TestCase):
+    """groups.* (Group Chat): exactly the shapes the Deck sends; everything else is refused before Hermes sees it."""
+
+    def test_every_sample_passes(self):
+        self.assertEqual(set(GROUP_SAMPLES), set(observer.GROUP_SHAPES))
+        for method, params in GROUP_SAMPLES.items():
+            with self.subTest(method=method):
+                self.assertTrue(observer.allowed_request(method, params), method)
+                self.assertIn(method, observer.DECK_METHODS)
+
+    def test_unknown_keys_and_methods_are_refused(self):
+        for method, params in GROUP_SAMPLES.items():
+            with self.subTest(method=method):
+                self.assertFalse(observer.allowed_request(method, {**params, "profile": "other"}))
+        for method in ("groups.replicate", "groups.promote", "groups.demote", "groups.peer.invite", "groups.peer.register",
+                       "groups.peer.revoke", "groups.replica_state"):
+            self.assertFalse(observer.allowed_request(method, {"room_id": "deck-0f1e"}), method)
+
+    def test_values_are_checked(self):
+        ok = observer.allowed_request
+        bad = [
+            ("groups.list", {"limit": 0}), ("groups.list", {"limit": 501}), ("groups.list", {"offset": -1}),
+            ("groups.list", {"limit": True}),
+            ("groups.state", {"room_id": "../x"}), ("groups.state", {"room_id": ""}), ("groups.state", {"room_id": "a" * 129}),
+            ("groups.log", {"room_id": "r", "since_seq": -1, "limit": 10}), ("groups.log", {"room_id": "r", "since_seq": 0, "limit": 501}),
+            ("groups.log", {"room_id": "r", "since_seq": "0", "limit": 10}),
+            ("groups.create", {"room_id": "r", "name": " ", "members": GROUP_MEMBERS}),
+            ("groups.create", {"room_id": "r", "name": "x" * 201, "members": GROUP_MEMBERS}),
+            ("groups.create", {"room_id": "r", "name": "Room", "members": GROUP_MEMBERS[:1]}),
+            ("groups.create", {"room_id": "r", "name": "Room", "members": GROUP_MEMBERS * 4}),
+            ("groups.create", {"room_id": "r", "name": "Room", "members": [
+                {**GROUP_MEMBERS[0], "target": {"kind": "peer"}}, GROUP_MEMBERS[1]]}),
+            ("groups.create", {"room_id": "r", "name": "Room", "members": [
+                {**GROUP_MEMBERS[0], "profile": "../etc"}, GROUP_MEMBERS[1]]}),
+            ("groups.create", {"room_id": "r", "name": "Room", "members": [
+                {**GROUP_MEMBERS[0], "handle": "@atlas"}, GROUP_MEMBERS[1]]}),
+            ("groups.send", {"room_id": "r", "event_id": "e", "payload": {"text": "  ", "thread_id": "main"}}),
+            ("groups.send", {"room_id": "r", "event_id": "e", "payload": {"text": "hi"}}),
+            ("groups.send", {"room_id": "r", "event_id": "e", "payload": {"text": "hi", "thread_id": "main", "actor": "x"}}),
+            ("groups.send", {"room_id": "r", "event_id": "e", "payload": {"text": "x" * (64 * 1024 + 1), "thread_id": "main"}}),
+            ("groups.send", {"room_id": "r", "event_id": "bad id", "payload": {"text": "hi", "thread_id": "main"}}),
+            ("groups.rename", {"room_id": "r", "event_id": "e", "name": ""}),
+            ("groups.retry", {"room_id": "r", "task_id": ""}),
+            ("groups.approve", {**GROUP_SAMPLES["groups.approve"], "choice": "all"}),
+            ("groups.approve", {**GROUP_SAMPLES["groups.approve"], "execution_generation": 0}),
+            ("groups.approve", {**GROUP_SAMPLES["groups.approve"], "request_id": "has space"}),
+        ]
+        for method, params in bad:
+            with self.subTest(method=method, params=str(params)[:80]):
+                self.assertFalse(ok(method, params))
+        for choice in ("once", "session", "always", "deny"):
+            self.assertTrue(ok("groups.approve", {**GROUP_SAMPLES["groups.approve"], "choice": choice}))
 
 
 class CommandCatalogTests(unittest.TestCase):

@@ -679,6 +679,28 @@ ipc.handle("bridge:commands", (_e, profile) => needBridge().commandCatalog(bName
 ipc.handle("bridge:avatar", (_e, name) => needBridge().avatar(bName(name)));
 ipc.handle("bridge:bot-chat", (_e, name, o) => needBridge().botChat(bName(name), { expect: bObj(o).expect === true }));
 ipc.handle("bridge:bot-chat-create", (_e, name, o) => needBridge().createBotChat(bName(name), { expect: bObj(o).expect === true }));
+// Group Chat (renderer/group-chat.js): the gateway's hosted rooms. Reads (capabilities, list, state, log) and the writes a
+// click or a send triggers (create, send, rename, stop, approve, retry, disband); bridge.js checks every shape.
+const bRoom = (v) => String(v ?? "").slice(0, 128);
+const bSeq = (v) => (Number.isInteger(v) && v >= 0 ? v : 0);
+ipc.handle("bridge:groups-capabilities", () => needBridge().groupCapabilities());
+ipc.handle("bridge:groups-list", () => needBridge().groupRooms());
+ipc.handle("bridge:groups-state", (_e, room) => needBridge().groupState(bRoom(room)));
+ipc.handle("bridge:groups-log", (_e, room, since) => needBridge().groupLog(bRoom(room), bSeq(since)));
+ipc.handle("bridge:groups-create", (_e, o) => {
+  const x = bObj(o);
+  const members = (Array.isArray(x.members) ? x.members : []).slice(0, 8).map((m) => ({ profile: bName(bObj(m).profile), name: String(bObj(m).name ?? "").slice(0, 200) }));
+  return trackMutation(() => needBridge().groupCreate({ name: String(x.name ?? "").slice(0, 200), members }));
+});
+ipc.handle("bridge:groups-send", (_e, room, text) => trackMutation(() => needBridge().groupSend(bRoom(room), String(text ?? "").slice(0, 32000))));
+ipc.handle("bridge:groups-rename", (_e, room, name) => trackMutation(() => needBridge().groupRename(bRoom(room), String(name ?? "").slice(0, 200))));
+ipc.handle("bridge:groups-stop", (_e, room) => trackMutation(() => needBridge().groupStop(bRoom(room))));
+ipc.handle("bridge:groups-disband", (_e, room) => trackMutation(() => needBridge().groupDisband(bRoom(room))));
+ipc.handle("bridge:groups-retry", (_e, room, task) => trackMutation(() => needBridge().groupRetry(bRoom(room), bRoom(task))));
+ipc.handle("bridge:groups-approve", (_e, room, a) => {
+  const x = bObj(a);
+  return trackMutation(() => needBridge().groupApprove(bRoom(room), { memberId: bRoom(x.memberId), taskId: bRoom(x.taskId), generation: Number.isInteger(x.generation) ? x.generation : 0, requestId: String(x.requestId ?? "").slice(0, 512), choice: String(x.choice ?? "") }));
+});
 ipc.handle("bridge:test", (_e, cfg) => probeBridge(normalizeBridgeConfig(bObj(cfg))));
 
 // --- telegram ---------------------------------------------------------------------------------
