@@ -419,6 +419,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     }
 
     async function tick() {
+      clearTimeout(G.timer); // one loop: a tick started by hand replaces the armed one
       G.timer = 0;
       const id = openId();
       if (!id || !d.bridgeOpen() || !d.hermesMode()) return;
@@ -537,18 +538,25 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       }, 0);
     }
 
+    /** The rename box gives up the focus first, or the header keeps holding it (app.js holdRegion). */
+    function endRename() {
+      G.renaming = null;
+      const a = typeof document === "object" ? document.activeElement : null;
+      if (a && a.closest && a.closest(".grp-rename") && a.blur) a.blur();
+    }
+
     async function saveRename(id, value) {
       const name = String(value || "").trim();
       const room = roomOf(id);
       if (!room || !name || name === room.name) {
-        G.renaming = null;
+        endRename();
         mark("head", true);
         return;
       }
       try {
         const r = await api().rename(id, name);
         G.rooms.set(id, { ...room, ...(r || {}), name: (r && r.name) || name });
-        G.renaming = null;
+        endRename();
         await pull(id);
       } catch (e) {
         d.note(i18nText("groups.renameFailed", { error: d.cleanErr(e) }), true);
@@ -618,7 +626,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
             save();
           } else if (e.key === "Escape") {
             e.preventDefault();
-            G.renaming = null;
+            endRename();
             mark("head", true);
           }
         });
@@ -882,6 +890,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       refresh,
       railRows,
       head,
+      title: (sid) => (sid === NEW ? i18nText("groups.new") : (roomOf(roomIdOf(sid)) || {}).name || ""),
       view,
       strip,
       pane,

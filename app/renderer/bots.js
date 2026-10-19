@@ -460,7 +460,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
 
     // ------------------------------------------------------------ chat column, strip, right panel
     function headFor(sid) {
-      if (isRoom(sid)) return { nodes: GC.head(sid) };
+      if (isRoom(sid)) return { title: GC.title(sid), get nodes() { return GC.head(sid); } };
       const name = botNameForSid(sid);
       if (!name) return null;
       const bot = byName(name) || stub(name);
