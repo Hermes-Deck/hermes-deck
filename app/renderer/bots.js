@@ -15,6 +15,8 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
 //   session.create     + session.title: the Bot Chat, created only when a first message is sent to a bot
 //                      that has none (bridge.createBotChat; never on a click, never with a kickoff prompt)
 // A host without profiles.list still gets a roster: the profiles seen in the snapshot, with generated faces.
+// Group Chat rooms (group-chat.js, `d.groups`) sit above the bots in the same view: a "room:<id>" selection is this
+// module's too (owns / isDraft), and the chat column, header, strip and right panel for it come from group-chat.js.
 // The pure helpers at the top (roster, names, state, avatar choice) are exported for test/bots.test.js.
 (() => {
   const BOT_CHAT = "Bot Chat";
@@ -178,7 +180,8 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   /**
    * d: h, svg, deck, store, mark, H (getter), bridgeOpen, hermesMode, statusText, nodeLive, ago, hm, cleanErr,
    * hermesSelect, hermesOpen, hermesRow, newSessionRow (app's "+ New session" row for a profile), reselect
-   * (app's hermesAutoSelect), renderNote, fleet (relay fleet), compact (rail folded to coins).
+   * (app's hermesAutoSelect), renderNote, fleet (relay fleet), compact (rail folded to coins), groups (group-chat.js
+   * instance, or null).
    */
   function create(d) {
     const { h, deck, store, mark } = d;
@@ -197,11 +200,15 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       fold: false, // "Other sessions" under the open bot
     };
     const H = () => d.H();
+    const GC = d.groups || null;
+    const isRoom = (sid) => !!GC && GC.owns(sid);
 
     const roster = () => (B.roster ? buildRoster(B.roster) : B.supported === false ? buildRoster(fallbackProfiles([...H().nodes.values()])) : []);
     const byName = (name) => roster().find((b) => b.name === name) || null;
     const stub = (name) => buildRoster([{ name }])[0];
-    const isDraft = (sid) => typeof sid === "string" && sid.startsWith(DRAFT);
+    const isBotDraft = (sid) => typeof sid === "string" && sid.startsWith(DRAFT);
+    // a room selection is a draft too: nothing of it is a Hermes session the app may read, resume or send to
+    const isDraft = (sid) => isBotDraft(sid) || isRoom(sid);
     const chatSidOf = (bot) => {
       const e = B.chats.get(bot.name);
       if (e && e.checked) return e.sid || null;
@@ -211,12 +218,13 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     /** The bot whose draft or Bot Chat this session is, by name. */
     function botNameForSid(sid) {
       if (!sid) return null;
-      if (isDraft(sid)) return sid.slice(DRAFT.length);
+      if (isBotDraft(sid)) return sid.slice(DRAFT.length);
+      if (isRoom(sid)) return null;
       for (const [name, e] of B.chats) if (e.sid === sid) return name;
       const hit = roster().find((b) => b.canonical && (b.canonical.resolvedId === sid || b.canonical.id === sid));
       return hit ? hit.name : null;
     }
-    const owns = (sid) => !!botNameForSid(sid);
+    const owns = (sid) => isRoom(sid) || !!botNameForSid(sid);
     const stateOf = (bot) => botState(bot, { nodes: [...H().nodes.values()], requests: H().requests, chatSid: chatSidOf(bot), nodeLive: d.nodeLive });
 
     // ------------------------------------------------------------ roster and avatars
@@ -228,6 +236,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
         B.supported = true;
         B.error = null;
         fetchAvatars();
+        if (GC) GC.refresh(); // group rooms: their own capability check, list and row previews
       } catch (e) {
         const m = d.cleanErr(e);
         // a host without the extension answers -32601 ("Unsupported Hermes Deck control")
@@ -314,6 +323,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
 
     function renderRail(kids) {
       const list = roster();
+      if (GC) GC.railRows(kids); // Group Chat rooms first: fewer, and each holds several bots
       kids.push(h("div", { class: "eyebrow bots-head" }, h("span", null, i18nNode("A0313")), h("span", null, list.length ? String(list.length) : "")));
       if (!d.bridgeOpen()) kids.push(h("p", { class: "rail-note" }, d.statusText()));
       else if (B.supported === false) kids.push(h("p", { class: "rail-note" }, i18nNode("U0701")));
@@ -423,7 +433,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
         // identity is settled either way; the chat column only follows when the user is still on this bot
         if (d.hermesMode() && B.view === "bots" && H().sel === from && B.want === name) {
           if (chat && chat.sid !== from) d.hermesOpen(chat.sid, name);
-          else if (!chat && !isDraft(from)) d.hermesSelect(DRAFT + name);
+          else if (!chat && !isBotDraft(from)) d.hermesSelect(DRAFT + name);
         }
       } catch (err) {
         e.error = d.cleanErr(err);
@@ -439,6 +449,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
      * fails closed), then hand its id to the normal send path.
      */
     async function materialize(sid) {
+      if (isRoom(sid)) throw new Error(i18nText("groups.invalid")); // a room is sent to through group-chat.js
       const name = sid.slice(DRAFT.length);
       const bot = byName(name);
       const chat = await deck.bridge.botChatCreate(name, { expect: !!(bot && bot.canonical) });
@@ -449,6 +460,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
 
     // ------------------------------------------------------------ chat column, strip, right panel
     function headFor(sid) {
+      if (isRoom(sid)) return { nodes: GC.head(sid) };
       const name = botNameForSid(sid);
       if (!name) return null;
       const bot = byName(name) || stub(name);
@@ -459,6 +471,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
 
     /** The chat column for a bot that has no Bot Chat yet (or whose lookup failed). */
     function draftView(sid) {
+      if (isRoom(sid)) return GC.view(sid);
       const name = sid.slice(DRAFT.length);
       const bot = byName(name) || stub(name);
       const e = B.chats.get(name) || {};
@@ -477,6 +490,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
 
     /** Strip parts for a draft, or a Bot Chat outside the snapshot; null leaves the normal strip. */
     function strip(sid) {
+      if (isRoom(sid)) return GC.strip(sid);
       const name = botNameForSid(sid);
       if (!name) return null;
       const bot = byName(name) || stub(name);
@@ -486,7 +500,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
         parts.push(h("span", { class: "bad" }, i18nNode("U0709", { error: e.error })));
         parts.push(h("button", { class: "btn small", type: "button", dataset: { fk: `botretry-strip:${name}` }, onclick: () => lookup(name) }, i18nNode("A0221")));
       }
-      else if (isDraft(sid)) parts.push(h("span", { class: "quiet" }, e.loading ? i18nNode("U0707") : i18nNode("U0710")));
+      else if (isBotDraft(sid)) parts.push(h("span", { class: "quiet" }, e.loading ? i18nNode("U0707") : i18nNode("U0710")));
       else {
         const st = stateOf(bot);
         parts.push(h("span", { class: st.kind === "live" ? "now" : st.kind === "ask" ? "warn" : "quiet" }, `${BOT_CHAT} · ${stateText(st, d.ago)}`));
@@ -499,14 +513,18 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
      * the snapshot or the relay shows keeps the normal session card, then Rutinler (app.js).
      */
     function pane(kids, sid) {
+      if (isRoom(sid)) {
+        GC.pane(kids, sid);
+        return true;
+      }
       const name = botNameForSid(sid);
       if (!name) return false;
-      if (!isDraft(sid) && (H().nodes.has(sid) || d.relayHas(sid))) return false;
+      if (!isBotDraft(sid) && (H().nodes.has(sid) || d.relayHas(sid))) return false;
       const bot = byName(name) || stub(name);
       const st = stateOf(bot);
       kids.push(h("p", { class: "pane-title" }, h("b", null, bot.title), ` · @${bot.handle}`));
       const ref = bot.canonical && (bot.canonical.resolvedId === sid || bot.canonical.id === sid) ? bot.canonical : null;
-      const facts = isDraft(sid)
+      const facts = isBotDraft(sid)
         ? i18nText("U0711")
         : [ref && ref.messageCount ? i18nText("bots.messages", { messageCount: ref.messageCount }) : null, st.lastActive ? i18nText("A0317", { lastActive: d.ago(st.lastActive) }) : null].filter(Boolean).join(" · ") || i18nText("U0712");
       const desc = bot.meta.description || bot.description;
@@ -555,6 +573,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
 
     // ------------------------------------------------------------ lifecycle
     function onStatus(status, was) {
+      if (GC) GC.onStatus(status, was);
       if (status === "open" && was !== "open") {
         B.avatars.clear(); // pictures may have changed while away
         if (B.view === "bots") refresh().then(schedule);
@@ -567,7 +586,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     /** Screenshot runs: --hermes-view=bots|sessions and --select=bot:<name>. */
     function applyUi(ui) {
       const u = ui || {};
-      if (typeof u.select === "string" && u.select.startsWith(DRAFT)) {
+      if (typeof u.select === "string" && isBotDraft(u.select)) {
         B.want = u.select.slice(DRAFT.length);
         store.set("deck.hbot", B.want);
       }
@@ -590,6 +609,11 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       isDraft,
       materialize,
       headFor,
+      // for group-chat.js: a bot's face and title by profile name, and the roster for the create picker
+      face: (name, opts) => faceEl(byName(name) || stub(name), opts),
+      title: (name) => (byName(name) || stub(name)).title,
+      known: (name) => !!byName(name),
+      list: () => roster(),
       draftView,
       strip,
       pane,

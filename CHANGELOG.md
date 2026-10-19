@@ -29,15 +29,17 @@ The desktop app, relay and Hermes plugin share one version number.
 - Notifications follow the conversation actually displayed, not a hidden selection in another mode or behind Settings, Usage or a workspace pane. Notification clicks return to their source conversation.
 - Secret-free preference changes no longer query the macOS Keychain. Inactive-host secrets remain encrypted, and unreadable ciphertext survives unrelated saves.
 
+- Group Chat in the Bots view: rooms of 2 to 6 bots hosted by the Hermes gateway (the same rooms Hermes Desktop
+  shows, running while Deck is closed). **Group chats** rows with the latest message, unread and needs-you badges;
+  **New group chat** (name and bots); one transcript with each speaker's face and name; `@` suggestions for the
+  members and `@all`; one "… is thinking" line and Stop; command approvals as cards in the room; rename and disband.
+  Needs the updated Hermes plugin (it now passes the gateway's `groups.*` calls) and a gateway restart after
+  installing it; older gateways simply show no Group Chat.
 - Status pet has a persistent **Always on top** checkbox. It changes only the pet window, immediately and without taking focus.
 - Session filter counts use the same saved source choices, source chip and profile as the session list. Running and Waiting no longer advertise sessions hidden by those filters.
-
 - Updates offers Stable (main) and Test channels for the desktop app. Published test packages use the same checksum verification as stable releases. Channel selection never installs anything; installation confirms the exact target, including returning to an older stable build. Isolated Windows copies cannot overwrite the normal installation.
-
 - Agents and New session use the connected host's profile catalog, including profiles with no recent sessions. Inactive profiles no longer imply a live agent.
-
 - Pin and rename requests use the native session owner when available, retain the native store policy on older engines, and report interrupted updates without automatic retries. Native restrictions on legacy cron sessions still apply.
-
 - Direct connections restore still-open native approval and question cards after reconnecting, without resuming sessions or replaying answers. Restored cards also disappear when their requests end on another transport.
 - Needs you counts in the sidebar and fleet header include inactive hosts' approvals and questions and refresh when requests change. Empty session sidebars and collapsed agent groups no longer show literal `null` text.
 - Settings keep a list of Hermes hosts. The existing connection becomes the first host; a copy of the old settings file is kept as `settings.json.pre-hosts`.

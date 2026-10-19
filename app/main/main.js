@@ -686,7 +686,7 @@ const bSeq = (v) => (Number.isInteger(v) && v >= 0 ? v : 0);
 ipc.handle("bridge:groups-capabilities", () => needBridge().groupCapabilities());
 ipc.handle("bridge:groups-list", () => needBridge().groupRooms());
 ipc.handle("bridge:groups-state", (_e, room) => needBridge().groupState(bRoom(room)));
-ipc.handle("bridge:groups-log", (_e, room, since) => needBridge().groupLog(bRoom(room), bSeq(since)));
+ipc.handle("bridge:groups-log", (_e, room, since, limit) => needBridge().groupLog(bRoom(room), bSeq(since), Number.isInteger(limit) && limit >= 1 && limit <= 500 ? limit : 200));
 ipc.handle("bridge:groups-create", (_e, o) => {
   const x = bObj(o);
   const members = (Array.isArray(x.members) ? x.members : []).slice(0, 8).map((m) => ({ profile: bName(bObj(m).profile), name: String(bObj(m).name ?? "").slice(0, 200) }));

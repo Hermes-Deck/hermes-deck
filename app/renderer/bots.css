@@ -60,3 +60,43 @@ body.rail-compact .bot-fold { display: none; }
 /* Rutinler (right panel) */
 .card.routine .ask { font-size: 12.5px; }
 .card.routine .nums.err { color: var(--amphora); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Group Chat (renderer/group-chat.js): rooms the gateway hosts, as rows above the bots, and the room in the chat
+   column. Static only: the one live row says who works now; nothing pulses. */
+.groups-head { display: flex; align-items: center; justify-content: space-between; }
+.groups-new {
+  border: 1px solid var(--vein); border-radius: 6px; background: none; color: var(--vein-text);
+  font: 13px/1 var(--mono); width: 20px; height: 20px; padding: 0; cursor: pointer; -webkit-app-region: no-drag;
+}
+.groups-new:hover, .groups-new[aria-current="true"] { color: var(--marble); background: var(--slate-2); }
+.groups-new:focus-visible { outline: 2px solid var(--patina); outline-offset: 1px; }
+.grp-glyph { position: relative; display: block; width: var(--s, 36px); height: var(--s, 36px); flex: none; }
+.grp-glyph > .botav { position: absolute; }
+.grp-glyph > .botav:first-child { left: 0; top: 0; }
+.grp-glyph > .botav:nth-child(2) { right: 0; bottom: 0; }
+.chat-head .grp-glyph { margin-right: 2px; }
+.chat-head .grp-menu { margin-left: auto; font-size: 16px; line-height: 1; }
+.grp-rename { display: flex; align-items: center; gap: 6px; }
+.grp-rename .input { min-width: 0; width: 22ch; }
+.grp-row > .botav { align-self: flex-start; margin-top: 2px; }
+.grp-thread { margin-left: 6px; color: var(--t3); font: 10.5px var(--mono); }
+.grp-note { align-self: center; color: var(--t3); font-size: 12.5px; }
+.grp-note.bad { color: var(--amphora); }
+.grp-live { display: flex; align-items: center; gap: 8px; padding: 2px 0 6px; color: var(--marble-dim); font-size: 13px; }
+.grp-ask { align-self: stretch; max-width: 640px; padding: 10px 12px; }
+.grp-ask-head { display: flex; align-items: center; gap: 8px; }
+.grp-ask-desc { margin: 6px 0 0; }
+.grp-ask-cmd { margin: 6px 0 0; padding: 6px 8px; border-radius: 6px; background: var(--slate); font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 12em; overflow: auto; }
+.grp-ask .form-actions { margin-top: 8px; flex-wrap: wrap; }
+.grp-form { display: flex; flex-direction: column; gap: 12px; width: min(520px, 100%); margin: 24px auto; }
+.grp-form h2 { margin: 0; font-size: 18px; }
+.grp-field { display: flex; flex-direction: column; gap: 6px; }
+.grp-field > span { color: var(--marble-dim); font-size: 12.5px; }
+.grp-count { color: var(--t3); font: 11px var(--mono); }
+.grp-picks { display: flex; flex-direction: column; gap: 2px; max-height: 50vh; overflow: auto; }
+.grp-pick, .grp-member { display: flex; align-items: center; gap: 10px; padding: 5px 8px; border-radius: 8px; cursor: pointer; }
+.grp-pick:hover { background: var(--slate); }
+.grp-pick input { margin: 0; }
+.grp-pick .who, .grp-member .who { display: flex; flex-direction: column; min-width: 0; }
+.grp-pick .sub, .grp-member .sub { color: var(--t3); font: 11px var(--mono); }
+.grp-member { cursor: default; padding-left: 0; }

@@ -53,6 +53,7 @@ and a main area that shows the chat or the [inbox](#inbox-and-fleet). The right 
 |---|---|---|---|---|
 | [Sessions](#sessions) | yes | no | no | no |
 | [Bots and Bot Chat](#bots-and-bot-chat) | yes | routines only | no | no |
+| [Group Chat](#group-chat) | yes (and a gateway with hosted rooms) | no | no | no |
 | [Telegram mode](#telegram-mode) | no | for live activity | yes | no |
 | [Live activity and controls](#live-activity-and-controls) | yes | for the fleet-wide view | no | no |
 | [Work pane](#work-pane) | yes | for stored plans and relay tool calls | no | no |
@@ -141,6 +142,40 @@ reference), `profiles.get_asset` (avatar), `session.list` (exact-title lookup) a
 when you send the first message to a bot that has no Bot Chat yet. Routines come from the relay's fleet snapshot.
 
 **Needs.** Plugin and direct connection. Routines need the relay.
+
+### Group Chat
+
+**What it is.** Rooms where 2 to 6 bots and you talk in one transcript. They sit at the top of the Bots view under
+**Group chats**, one row each: the members' faces, the room name, the latest message, its time, and a badge for unread
+replies, or **@** when a member hands something to you (`@user`) or a number when approvals wait. **+** opens **New
+group chat** in the chat column: a name and the bots to seat (2 to 6), then **Create** opens the room.
+
+In the room, every message shows its speaker's face, name and time, with Markdown like other chats; your own
+messages read as yours. Without an `@mention` every member may answer; `@name` (the composer's `@` list offers the
+members and `@all`) asks just those bots. While members work, one line at the end of the transcript says who is
+thinking; **Send** turns into **Stop** when the box is empty, which cancels the round. A command approval a member
+asks for shows as a card in the room with the answers the gateway offers (**Allow once**, **Deny**). The header's
+**⋯** menu (or a right-click on the row) has **Rename** (the title becomes a text box; Enter saves, Escape cancels)
+and **Disband…** (asks first; removes the room for good on every device). The right panel lists the members.
+Messages another app posted in a different thread of the room show in place with a **↳ thread** mark.
+
+**How it works.** The rooms are the gateway's own hosted rooms, so a room made in Deck is the same room Hermes
+Desktop shows, and it keeps running when Deck is closed. Over the direct connection Deck asks
+`groups.capabilities` once per connection and shows nothing of Group Chat unless the gateway reports a running room
+driver. Rows come from `groups.list` and a read of each changed room's newest log page (`groups.log`). The open
+room reads its log forward from a cursor and its driver status (`groups.state`: working, approvals waiting) every
+1.5 s while members work, every 5 s otherwise and every 30 s while the window is hidden; the transcript, the live
+line and Stop all follow that one read. Messages go to the room with `groups.send`, always in its main thread, and
+the gateway decides who answers (the same rules Hermes Desktop rooms follow). Stop is `groups.stop`, approvals
+`groups.approve`, rename `groups.rename`, disband `groups.disband`. The member named in the live line is the one the
+gateway's own turn order runs next, worked out from the log.
+
+**Needs.** Plugin and direct connection, and a Hermes gateway with hosted rooms (`groups.capabilities` reporting a
+running driver). After updating the plugin, restart the gateway so it loads the new allowlist.
+
+**Limits.** Members are fixed when the room is created: the gateway has no call to change them, so **Manage
+members** is not offered. Only bots on this gateway can be seated, and only text can be sent. Replies in a thread,
+room pictures, pinning and ordering rooms, and per-member history compression are not in Deck yet.
 
 ### Telegram mode
 

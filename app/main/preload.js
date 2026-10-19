@@ -187,7 +187,7 @@ contextBridge.exposeInMainWorld("deck", {
       capabilities: () => ipcRenderer.invoke("bridge:groups-capabilities"),
       list: () => ipcRenderer.invoke("bridge:groups-list"),
       state: (room) => ipcRenderer.invoke("bridge:groups-state", room),
-      log: (room, since) => ipcRenderer.invoke("bridge:groups-log", room, since),
+      log: (room, since, limit) => ipcRenderer.invoke("bridge:groups-log", room, since, limit),
       create: (opts) => ipcRenderer.invoke("bridge:groups-create", opts),
       send: (room, text) => ipcRenderer.invoke("bridge:groups-send", room, text),
       rename: (room, name) => ipcRenderer.invoke("bridge:groups-rename", room, name),

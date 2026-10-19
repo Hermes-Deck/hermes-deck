@@ -1814,7 +1814,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       i18nBind(els.send, "title", kind === "stop" ? "live.stopTip" : kind === "queue" ? "live.btn.queueTip" : kind === "steer" ? "live.btn.steerTip" : "composer.sendHelp");
     }
     if (kind === "stop") els.send.disabled = !!H.stopping;
-    else els.send.disabled = empty || (hermesMode() ? H.sending || H.steering || !H.sel || !bridgeOpen() : S.sending || !S.sel || S.tg.status !== "open");
+    else els.send.disabled = empty || (hermesMode() ? H.sending || H.steering || !H.sel || !bridgeOpen() || (!!GC && GC.owns(H.sel) && (GC.isNew(H.sel) || GC.busy())) : S.sending || !S.sel || S.tg.status !== "open");
     if (PK) PK.sync();
   }
 
@@ -1823,6 +1823,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
    * stopped), else it names what Enter does (Queue / Steer); the hint names the Ctrl/Cmd+Enter choice. null when idle.
    */
   function hermesComposerState(empty) {
+    if (GC && GC.owns(H.sel)) return empty && bridgeOpen() && GC.working(H.sel) ? { button: "stop", hint: null } : null; // Group Chat
     const n = H.sel ? H.nodes.get(H.sel) : null;
     const live = nodeLive(n);
     if (!H.sel || !bridgeOpen() || (!live && !OB.pending(H.sel))) return null;
@@ -1851,6 +1852,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       } catch (e) { S.note = cleanErr(e); S.noteBad = true; renderNote(); }
       return;
     }
+    if (hermesMode() && GC && GC.owns(H.sel)) return groupSend(); // Group Chat: text to the room, never a Hermes session
     if (!fromPicker && AT.pending()) return AT.send(); // staged files go first, the text as their caption (A7)
     if (hermesMode()) return hermesSend([], [], { alt });
     const stop = !fromPicker && telegramComposerState(!els.input.value.trim());
@@ -2365,11 +2367,29 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   const hStateClass = (n) => (nodeLive(n) ? "running" : n.state === "error" ? "failed" : n.state === "finished" ? "done" : "idle");
   const profileLabel = (p) => (p === "default" ? i18nText("U0570") : i18nText("common.profile", { p: p }));
   const fragment = () => document.createDocumentFragment();
+  // Group Chat (group-chat.js): the gateway's Bot Mode rooms, shown in the Bots view above the bots. A "room:<id>"
+  // selection belongs to it (through bots.js); hooks below are marked "Group Chat".
+  const GC = window.DeckGroups && deck.bridge && deck.bridge.groups
+    ? window.DeckGroups.create({
+        h, deck, store, mark, hm, cleanErr, bridgeOpen, hermesMode, renderNote, hermesSelect,
+        H: () => H,
+        bots: () => BT,
+        leave: () => hermesLeave(),
+        note: (text, bad) => {
+          S.note = text;
+          S.noteBad = !!bad;
+          renderNote();
+        },
+        menu: (items, anchor, pos, label) => MV.openMenu(items, anchor, pos, label),
+        toast: (text, bad) => MV.toast(text, bad),
+      })
+    : null;
   // Botlar (bots.js, botface.js): the Hermes rail's bot mode, as in Hermes Desktop; one row per profile and
   // its one "Bot Chat", independent of Telegram. Hooks below are marked "Botlar".
   const BT = window.DeckBots
     ? window.DeckBots.create({
         h, svg, deck, store, mark, ago, hm, cleanErr, nodeLive, bridgeOpen, hermesMode, renderNote, hermesSelect, hermesOpen, hermesRow, newSessionRow,
+        groups: GC,
         H: () => H,
         statusText: () => hermesStatusText(),
         reselect: () => hermesAutoSelect(),
@@ -2481,6 +2501,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   }
   /** The names to tag with "@": Telegram usernames (agents, bots, seen group members) or Hermes profile names. */
   async function mentionItems() {
+    if (hermesMode() && GC && GC.owns(H.sel)) return GC.mentionItems(H.sel); // Group Chat: the room's members and @all
     if (!hermesMode()) {
       if (!S.sel) return [];
       const items = [];
@@ -2510,6 +2531,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   }
   /** The slash commands of the chat on screen: the Telegram bot's registered commands, or Hermes' palette. */
   async function commandItems() {
+    if (hermesMode() && GC && GC.owns(H.sel)) return []; // Group Chat: a room has no slash commands
     if (!hermesMode()) {
       if (!S.sel || S.tg.status !== "open" || !deck.botCommands) return [];
       const list = await cachedList(`tg:${S.sel}`, 60000, () => deck.botCommands(S.sel).catch(() => [])); // no commands to offer beats an error on every "/"
@@ -3059,6 +3081,19 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     renderNote();
     hermesLoadHistory(sid);
     hermesPoll();
+    if (GC) GC.onSelect(); // Group Chat: the open room's own poll starts or stops
+  }
+
+  /** Group Chat: leave a room (disbanded, or the create form cancelled); the Bots view then opens its remembered bot. */
+  function hermesLeave() {
+    if (H.sel) RG.leave(H.sel);
+    H.sel = null;
+    store.set("deck.hsel", "");
+    DR.sync();
+    if (GC) GC.onSelect();
+    mark("rail", "head", "msgs", "strip", "panel", true);
+    renderNote();
+    hermesAutoSelect();
   }
 
   /** Open a session the snapshot may not list (a bot's Bot Chat): its history is read from `profile`. */
@@ -3242,6 +3277,10 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       return;
     }
     const bot = BT && BT.headFor(H.sel); // Botlar: a bot's Bot Chat (or its draft) shows the bot, not the session
+    if (bot && bot.nodes) {
+      if (!holdRegion(els.head)) els.head.replaceChildren(...bot.nodes); // Group Chat: a room's head (a rename input holds it)
+      return;
+    }
     if (bot) {
       els.head.replaceChildren(
         bot.face,
@@ -3601,7 +3640,30 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   }
 
   /** Composer Stop (replaces Send while the session works and the box is empty): one click, the row goes at once. */
+  /** Group Chat: the composer's text goes to the open room (text only; Enter while members work queues it there). */
+  async function groupSend() {
+    const sel = H.sel;
+    const text = els.input.value.trim();
+    if (!text || GC.isNew(sel) || GC.busy() || !bridgeOpen()) return false;
+    if (AT.pending()) {
+      S.note = i18nText("groups.noFiles");
+      S.noteBad = true;
+      renderNote();
+      return false;
+    }
+    const key = AT.key();
+    S.note = null;
+    const ok = await GC.send(sel, text);
+    if (ok) {
+      DR.sent(key, text);
+      scrollToEnd = true;
+      mark("msgs", true);
+    }
+    return ok;
+  }
+
   async function hermesStopNow(n = H.nodes.get(H.sel)) {
+    if (GC && GC.owns(H.sel)) return GC.stop(H.sel); // Group Chat: Stop cancels the room's active round
     if (!n || H.stopping) return;
     H.stopping = n.sid;
     renderNote();

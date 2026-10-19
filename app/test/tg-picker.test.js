@@ -332,6 +332,7 @@ function composerWorld() {
     i18nBind: (el, field, key) => { el[field] = key; },
     workspace: null, mark() {}, ctlTurnGone: () => false, CTL_TR: {},
     hermesComposerState: () => null,
+    GC: null, // Group Chat: no room open in a Telegram chat
   });
   w.ctx.LA.end = (sid) => calls.push(["end", sid]);
   w.ctx.deck.bridge.interrupt = async (sid, opts) => { calls.push(["interrupt", sid, opts.turnId]); return { status: "interrupted" }; };
