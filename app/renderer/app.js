@@ -3639,7 +3639,6 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     return "steerFailed";
   }
 
-  /** Composer Stop (replaces Send while the session works and the box is empty): one click, the row goes at once. */
   /** Group Chat: the composer's text goes to the open room (text only; Enter while members work queues it there). */
   async function groupSend() {
     const sel = H.sel;
@@ -3662,6 +3661,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     return ok;
   }
 
+  /** Composer Stop (replaces Send while the session works and the box is empty): one click, the row goes at once. */
   async function hermesStopNow(n = H.nodes.get(H.sel)) {
     if (GC && GC.owns(H.sel)) return GC.stop(H.sel); // Group Chat: Stop cancels the room's active round
     if (!n || H.stopping) return;
