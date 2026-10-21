@@ -1,5 +1,6 @@
 "use strict";
 const fs = require("fs");
+const net = require("net");
 const os = require("os");
 const path = require("path");
 const { loadEnvFile, home, readJson, atomicWriteJson, normUsage } = require("./util");
@@ -68,10 +69,56 @@ function desktopsConfig(env = process.env, mem = os.totalmem()) {
   };
 }
 
+/**
+ * Optional extra listen addresses (DECK_RELAY_HOST after the first). Each hands its connections to the main HTTP
+ * server, so routes, auth and WebSocket upgrades are the same on every address. An address this machine does not have
+ * right now (a laptop on another network, Wi-Fi not up yet at login) is skipped with one warning and retried every
+ * `retryMs`; the relay listens there only while the address exists.
+ */
+function extraListeners(server, hosts, port, { retryMs = 30000, log = console } = {}) {
+  const open = new Map(); // host -> net.Server
+  const trying = new Set();
+  const warned = new Set();
+  let stopped = false;
+  const tryOne = (h) =>
+    new Promise((resolve) => {
+      trying.add(h);
+      const s = net.createServer((sock) => server.emit("connection", sock));
+      s.once("error", (e) => {
+        trying.delete(h);
+        if (!warned.has(h)) log.warn(`deck-relay: not listening on ${h}:${port} (${e.code || e.message}); retrying every ${Math.round(retryMs / 1000)} s`);
+        warned.add(h);
+        resolve(false);
+      });
+      s.listen(port, h, () => {
+        trying.delete(h);
+        if (stopped) return s.close(), resolve(false);
+        open.set(h, s);
+        warned.delete(h);
+        log.log(`deck-relay: also listening on ${h}:${port}`);
+        resolve(true);
+      });
+    });
+  const attempt = () => Promise.all(hosts.filter((h) => !open.has(h) && !trying.has(h)).map(tryOne));
+  const timer = hosts.length ? setInterval(attempt, retryMs) : null;
+  if (timer) timer.unref();
+  return {
+    ready: attempt(),
+    addresses: () => [...open.keys()],
+    close: () => {
+      stopped = true;
+      if (timer) clearInterval(timer);
+      return Promise.all([...open.values()].map((s) => new Promise((r) => s.close(() => r()))));
+    },
+  };
+}
+
 /** All settings come from the environment (see .env.example); nothing here is specific to one install. */
 function config(env = process.env, mem = os.totalmem()) {
   return {
-    host: env.DECK_RELAY_HOST || "127.0.0.1",
+    // DECK_RELAY_HOST may list several addresses (comma-separated): the first must bind, the others are optional
+    host: list(env.DECK_RELAY_HOST)[0] || "127.0.0.1",
+    extraHosts: list(env.DECK_RELAY_HOST).slice(1),
     port: Number(env.DECK_RELAY_PORT || 9330),
     token: env.DECK_RELAY_TOKEN || "",
     mobileDevicesFile: env.DECK_MOBILE_DEVICES_FILE || home(".hermes-deck", "mobile-devices.json"),
@@ -537,6 +584,7 @@ async function start(cfg) {
 
   let cdpSrv = null;
   let driverUp = false;
+  let extras = null; // extra listen addresses, set once the main listener is up
   const stop = () =>
     new Promise((resolve) => {
       for (const t of timers) clearInterval(t);
@@ -555,6 +603,7 @@ async function start(cfg) {
       const closing = [mobile.stop(), driver ? driver.stop() : Promise.resolve()]; // ends driver sessions before their decks go
       if (fallback) closing.push(fallback.stopAll()); // resolves once its browsers have exited
       for (const ws of srv.clients) ws.terminate();
+      if (extras) closing.push(extras.close());
       closing.push(new Promise((r) => srv.server.close(() => r())));
       if (cdpSrv) closing.push(cdpSrv.close());
       Promise.all(closing).then(() => resolve());
@@ -564,6 +613,9 @@ async function start(cfg) {
     srv.server.once("error", reject);
     srv.server.listen(cfg.port, cfg.host, resolve);
   });
+  // Extra addresses use the port the main listener got (port 0 in tests) and never take the relay down.
+  extras = extraListeners(srv.server, cfg.extraHosts || [], srv.server.address().port);
+  await extras.ready;
   // The CDP endpoint is loopback only, and optional: a busy port must not take the relay down.
   let cdpPort = null;
   if (gateway) {
@@ -587,7 +639,7 @@ async function start(cfg) {
     }
   }
   mobile.available.desktop = driverUp;
-  return { setQuit: (fn) => { quitRelay = fn; }, hermesConfig, server: srv.server, port: srv.server.address().port, cdpPort, model, fleet, usage, presence, gateway, workspace, fallback, bundles, transfers, driver: driverUp ? driver : null, desktops, spaceTunnel, uploads, downloads, mobile, stop };
+  return { setQuit: (fn) => { quitRelay = fn; }, hermesConfig, server: srv.server, port: srv.server.address().port, listening: () => [cfg.host, ...extras.addresses()], cdpPort, model, fleet, usage, presence, gateway, workspace, fallback, bundles, transfers, driver: driverUp ? driver : null, desktops, spaceTunnel, uploads, downloads, mobile, stop };
 }
 
 /**
@@ -634,8 +686,8 @@ if (require.main === module && process.argv.includes("--self-check")) {
   loadEnvFile(process.env.DECK_RELAY_ENV || path.join(__dirname, "..", ".env"));
   const cfg = config();
   start(cfg)
-    .then(({ port, cdpPort, driver, stop, model, setQuit }) => {
-      console.log(`deck-relay ${VERSION} listening on ${cfg.host}:${port} (${model.sessions.size} sessions loaded)`);
+    .then(({ port, cdpPort, driver, stop, model, setQuit, listening }) => {
+      console.log(`deck-relay ${VERSION} listening on ${listening().join(", ")} port ${port} (${model.sessions.size} sessions loaded)`);
       if (cdpPort) console.log(`deck-relay: agent browsers at http://127.0.0.1:${cdpPort}/agent/<profile> (headless fallback browser ${cfg.cdp.fallback ? "on" : "off"}; external browser ${cfg.cdp.externalCdp ? `attached for ${cfg.cdp.externalAgent}` : "off"}; default ${cfg.cdp.browserDefault})`);
       if (driver) console.log(`deck-relay: bot screen driver socket ${cfg.driver.sockPath} (agent host as fallback: ${cfg.driver.desktopHost ? "on" : "off"})`);
       if (cfg.spaces) console.log(`deck-relay: agent spaces ${cfg.spaces.mode}; agent desktops on this machine ${cfg.desktops.host ? `on (limit ${cfg.desktops.limit}, idle ${cfg.desktops.idleMin} min)` : "off"}; shared fallback ${cfg.desktops.sharedFallback ? "on" : "off"}`);
@@ -650,4 +702,4 @@ if (require.main === module && process.argv.includes("--self-check")) {
     });
 }
 
-module.exports = { config, desktopsConfig, start, deckHooks, selfCheck, VERSION };
+module.exports = { config, desktopsConfig, start, deckHooks, selfCheck, extraListeners, VERSION };

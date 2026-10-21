@@ -29,6 +29,7 @@ The desktop app, relay and Hermes plugin share one version number.
 - Notifications follow the conversation actually displayed, not a hidden selection in another mode or behind Settings, Usage or a workspace pane. Notification clicks return to their source conversation.
 - Secret-free preference changes no longer query the macOS Keychain. Inactive-host secrets remain encrypted, and unreadable ciphertext survives unrelated saves.
 
+- Relay: `DECK_RELAY_HOST` accepts several comma-separated addresses, for example loopback plus a home LAN address. Only the first must bind; the others are skipped while the machine does not have them and retried every 30 seconds.
 - Usage shows spend allowances next to the quota windows: Claude extra usage (used / limit in dollars, monthly) and Codex workspace credits and balance. An account that reports only a spend allowance is no longer shown as having no quota windows. Quota providers are found again on Hermes builds that ship only `ruamel.yaml`. Needs the updated Hermes plugin.
 - Group Chat in the Bots view: rooms of 2 to 6 bots hosted by the Hermes gateway (the same rooms Hermes Desktop
   shows, running while Deck is closed). **Group chats** rows with the latest message, unread and needs-you badges;

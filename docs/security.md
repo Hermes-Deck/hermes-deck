@@ -12,7 +12,8 @@ How Hermes Deck handles credentials, data and device permissions. To report a vu
   falls back to plain storage with a warning when it is not; Linux's `basic_text` backend is also flagged as weak.
   The renderer only learns whether each secret is set.
 - The relay's shared token grants fleet, session and history access for every agent, not just one. Bind
-  `DECK_RELAY_HOST` to loopback or a private network; never expose the relay publicly. `/health` is unauthenticated
+  `DECK_RELAY_HOST` to loopback or a private network (a trusted LAN address only next to loopback, see
+  [relay.md](relay.md#more-than-one-address)); never expose the relay publicly. `/health` is unauthenticated
   and returns only version, uptime and counts. Data routes and the Deck WebSocket require the token; URL-token
   support is opt-in (`DECK_RELAY_QUERY_TOKEN`) and should stay off.
 - Device keys are separate from the shared relay token. The relay stores only their hashes (`relay/devices.json` by

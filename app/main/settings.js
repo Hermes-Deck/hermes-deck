@@ -603,7 +603,7 @@ class Settings {
     for (const k of ["DECK_RELAY_HOST", "DECK_RELAY_PORT", "DECK_RELAY_TOKEN", "TG_API_ID", "TG_API_HASH"]) env[k] = process.env[k];
     for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]; // do not leak into the app env
     if (env.DECK_RELAY_HOST && env.DECK_RELAY_TOKEN) {
-      d.relay.url = normalizeRelayUrl(`${env.DECK_RELAY_HOST}:${env.DECK_RELAY_PORT || 9330}`);
+      d.relay.url = normalizeRelayUrl(`${env.DECK_RELAY_HOST.split(",")[0].trim()}:${env.DECK_RELAY_PORT || 9330}`); // the first address
       d.relay.token = env.DECK_RELAY_TOKEN;
     }
     if (env.TG_API_ID && env.TG_API_HASH) d.telegram = { apiId: String(env.TG_API_ID), apiHash: env.TG_API_HASH };

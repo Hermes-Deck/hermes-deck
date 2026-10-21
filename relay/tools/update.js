@@ -169,9 +169,9 @@ function withToken(deps, env) {
   return token ? { ...deps, env: { ...deps.env, GH_TOKEN: token } } : deps;
 }
 
-/** http://<host>:<port>/health of the relay configured in `env` (a wildcard bind is asked on loopback). */
+/** http://<host>:<port>/health of the relay configured in `env` (its first address; a wildcard bind is asked on loopback). */
 function healthUrl(env) {
-  let host = env.DECK_RELAY_HOST || "127.0.0.1";
+  let host = String(env.DECK_RELAY_HOST || "").split(",")[0].trim() || "127.0.0.1";
   if (host === "0.0.0.0" || host === "::") host = "127.0.0.1";
   if (host.includes(":") && !host.startsWith("[")) host = `[${host}]`;
   return `http://${host}:${Number(env.DECK_RELAY_PORT || 9330)}/health`;

@@ -60,6 +60,19 @@ curl http://<relay-host>:9330/health
 
 `node tools/watch.js` in `relay/` prints the live event stream in a terminal.
 
+### More than one address
+
+`DECK_RELAY_HOST` takes a comma-separated list, for example `127.0.0.1,<lan-address>` to keep a Deck on the relay host
+on loopback and let a second computer on a trusted home network connect. The first address must bind or the relay
+does not start. Every other address is optional: one this machine does not have right now (a laptop on another
+network, Wi-Fi not up yet at login) is skipped with one warning in the log and retried every 30 seconds, so the relay
+listens there only while the address exists. All addresses serve the same routes with the same token. `/health` checks
+from `deck-relay-update` use the first address.
+
+The relay speaks plain `ws://` and `http://`: on a LAN anyone who can read the traffic can read the token. Add a LAN
+address only on a network whose devices you trust, give the relay host a fixed address there (a DHCP reservation, and
+on macOS a fixed private Wi-Fi address for that network) and prefer Tailscale or WireGuard everywhere else.
+
 ### Updating
 
 Keep the relay at the same version as the app and plugin. How to check and apply updates on the host:
@@ -72,7 +85,7 @@ file named by `DECK_RELAY_ENV`); restart it to apply changes.
 
 | Variable | Purpose |
 |---|---|
-| `DECK_RELAY_HOST`, `DECK_RELAY_PORT`, `DECK_RELAY_TOKEN` | Private bind address (default `127.0.0.1`), port (default 9330), shared client token |
+| `DECK_RELAY_HOST`, `DECK_RELAY_PORT`, `DECK_RELAY_TOKEN` | Private bind address (default `127.0.0.1`), port (default 9330), shared client token. `DECK_RELAY_HOST` takes a comma-separated list ([More than one address](#more-than-one-address)) |
 | `DECK_RELAY_QUERY_TOKEN` | `1` also accepts the token as `?token=` on the WebSocket; default off, leave it off |
 | `HERMES_ROOT` | Hermes root containing `state.db` and `profiles/<name>/`; default `~/.hermes` |
 | `DECK_HISTORY` | `0` disables message-history routes, not usage accounting |

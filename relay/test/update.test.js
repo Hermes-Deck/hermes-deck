@@ -278,6 +278,7 @@ test("versions, repo and the source archive name", () => {
   assert.strictEqual(U.repoOf({}, require("../package.json")).split("/").length, 2, "relay/package.json names the repository");
   assert.strictEqual(U.healthUrl({ DECK_RELAY_HOST: "0.0.0.0", DECK_RELAY_PORT: "9555" }), "http://127.0.0.1:9555/health");
   assert.strictEqual(U.healthUrl({ DECK_RELAY_HOST: "fd7a::1" }), "http://[fd7a::1]:9330/health");
+  assert.strictEqual(U.healthUrl({ DECK_RELAY_HOST: " 127.0.0.1, 192.0.2.20" }), "http://127.0.0.1:9330/health"); // the first address
   assert.deepStrictEqual(U.restartCommand({ platform: "darwin", uid: 501 }, {}), ["launchctl", ["kickstart", "-k", "gui/501/com.hermes-deck.relay"]]);
   assert.deepStrictEqual(U.restartCommand({ platform: "linux" }, { DECK_RELAY_SERVICE: "my-relay" }), ["systemctl", ["--user", "restart", "my-relay"]]);
 });

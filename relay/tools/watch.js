@@ -13,7 +13,7 @@ const WebSocket = require("ws");
 const { loadEnvFile } = require("../src/util");
 
 loadEnvFile(process.env.DECK_RELAY_ENV || path.join(os.homedir(), ".hermes-deck", "relay.env"));
-const host = process.env.DECK_RELAY_HOST || "127.0.0.1";
+const host = String(process.env.DECK_RELAY_HOST || "").split(",")[0].trim() || "127.0.0.1"; // the first address
 const port = process.env.DECK_RELAY_PORT || "9330";
 const token = process.env.DECK_RELAY_TOKEN;
 if (!token) {
