@@ -229,3 +229,24 @@ test("quota refresh button: busy state, throttled and failed notes, one run per 
   const tr = load("tr");
   assert.match(text(tr.refreshButton(h, { busy: false }, run, () => {})), /Yenile/);
 });
+
+test("spend allowances render as credit rows: dollars, credits, what is left and the reset", () => {
+  const now = Date.parse("2030-01-01T10:00:00Z");
+  const claude = { provider: "claude", ok: true, windows: [],
+    credits: [{ unit: "USD", used: 15.91, limit: 10000, remaining: 9984.09, usedPercent: 0.1591, resetsAt: null, period: "month" }] };
+  const codex = { provider: "codex", ok: true, windows: [{ minutes: 300, used: 5 }],
+    credits: [{ unit: "credit", used: 500, limit: 142000, remaining: 141500, usedPercent: 0.35, resetsAt: "2030-01-03T10:00:00Z" },
+      { unit: "USD", used: null, limit: null, remaining: 12.5, usedPercent: null, resetsAt: null, period: "balance" },
+      { unit: "USD", remaining: "bad" }] };
+  const [c, x] = load("en").quotaRows(h, { quotas: { claude, codex } }, { now });
+  assert.ok(c.attrs.class.split(" ").includes("has-model"), "credit labels get the wide column");
+  assert.ok(!text(c).includes("No quota windows"), "a credit-only account is not empty");
+  assert.match(text(c), /\$15\.91 \/ \$10,000\.00 · \$9,984\.09 left · monthly/);
+  assert.equal(cls(c, "pct")[0].children[0], "1%", "a small non-zero spend never reads as 0%");
+  assert.deepEqual(cls(x, "q-win").map(l => l.children[0]), ["5h", "Credit", "Credit"], "malformed credits are dropped");
+  assert.match(text(x), /500 credits \/ 142,000 credits · 141,500 credits left · resets in 2d 0h/);
+  assert.match(text(x), /Balance \$12\.50/);
+  const [tr] = load("tr").quotaRows(h, { quotas: { claude } }, { now });
+  assert.match(text(tr), /kaldı · aylık/);
+  assert.equal(cls(tr, "q-win")[0].children[0], "Kredi");
+});

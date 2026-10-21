@@ -303,6 +303,62 @@ class UsageTests(unittest.TestCase):
         self.assertFalse(any(c.args == ("cost",) for c in emit.call_args_list))
 
 
+class CreditTests(unittest.TestCase):
+    CLAUDE = {"five_hour": None, "seven_day": None, "email": "private@example.invalid",
+              "extra_usage": {"is_enabled": True, "used_credits": 1591.0, "monthly_limit": 1000000, "decimal_places": 2,
+                              "currency": "USD"},
+              "spend": {"enabled": True, "used": {"amount_minor": 1591, "currency": "USD", "exponent": 2},
+                        "limit": {"amount_minor": 1000000, "currency": "USD", "exponent": 2}}}
+
+    def _stub(self, raw=None, windows=()):
+        stub = ModuleType("agent.account_usage")
+        stub.fetch_account_usage = lambda provider: SimpleNamespace(
+            windows=windows, raw=raw, unavailable_reason=None, fetched_at=datetime(2030, 1, 1, tzinfo=timezone.utc))
+        return stub
+
+    def test_claude_spend_only_account_reports_its_credit_in_dollars(self):
+        # A usage-based account has no session/week windows; its extra usage is still a quota.
+        with patch.dict("sys.modules", {"agent.account_usage": self._stub()}):
+            q = events._fetch_quota("claude", body_reader=lambda: self.CLAUDE)
+        self.assertTrue(q["ok"])
+        self.assertEqual(q["windows"], [])
+        self.assertEqual(q["credits"], [{"unit": "USD", "used": 15.91, "limit": 10000.0, "remaining": 9984.09,
+                                         "usedPercent": 0.1591, "resetsAt": None, "period": "month"}])
+        self.assertNotIn("private", json.dumps(q))
+
+    def test_claude_extra_usage_minor_units_without_spend_block(self):
+        body = {k: v for k, v in self.CLAUDE.items() if k != "spend"}
+        self.assertEqual(events._credits("claude", body)[0]["used"], 15.91)
+
+    def test_claude_disabled_extra_usage_is_not_a_credit(self):
+        body = {"extra_usage": {"is_enabled": False, "used_credits": 5, "monthly_limit": 10}, "spend": {"enabled": False}}
+        self.assertEqual(events._credits("claude", body), [])
+        with patch.dict("sys.modules", {"agent.account_usage": self._stub()}):
+            q = events._fetch_quota("claude", body_reader=lambda: body)
+        self.assertFalse(q["ok"])
+
+    def test_codex_workspace_spend_control_and_balance(self):
+        raw = {"email": "private@example.invalid", "account_id": "acct-private",
+               "spend_control": {"individual_limit": {"unit": "credit", "limit": "142000", "used": "500.5",
+                                                      "remaining": "141499.5", "reset_at": 1893456000}},
+               "credits": {"has_credits": True, "balance": "12.50"}}
+        window = SimpleNamespace(label="Current session", used_percent=3, reset_at=None)
+        with patch.dict("sys.modules", {"agent.account_usage": self._stub(raw, (window,))}):
+            q = events._fetch_quota("codex")
+        self.assertTrue(q["ok"])
+        self.assertEqual(len(q["windows"]), 1)
+        credit, balance = q["credits"]
+        self.assertEqual((credit["unit"], credit["used"], credit["limit"], credit["remaining"]), ("credit", 500.5, 142000.0, 141499.5))
+        self.assertEqual(credit["resetsAt"], "2030-01-01T00:00:00+00:00")
+        self.assertEqual((balance["unit"], balance["remaining"], balance["period"]), ("USD", 12.5, "balance"))
+        self.assertNotIn("private", json.dumps(q))
+
+    def test_malformed_amounts_are_dropped(self):
+        self.assertEqual(events._credits("codex", {"spend_control": {"individual_limit": {"used": "x", "limit": "-1"}}}), [])
+        self.assertEqual(events._credits("claude", {"spend": {"enabled": True, "used": {"amount_minor": True, "exponent": 2}}}), [])
+        self.assertEqual(events._credits("codex", None), [])
+
+
 class QuotaRefreshTests(unittest.TestCase):
     def setUp(self):
         for d in (events._quota_cache, events._quota_jobs, events._quota_due, events._quota_failures, events._quota_settled):

@@ -935,8 +935,14 @@ _QUOTA_PROVIDERS = {"claude": "anthropic", "codex": "openai-codex"}
 def _configured_quota_providers(home: Path):
     """Read provider names only; never publish config or account identities."""
     try:
-        import yaml
-        config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) or {}
+        text = (home / "config.yaml").read_text(encoding="utf-8")
+        try:
+            import yaml
+            config = yaml.safe_load(text) or {}
+        except ImportError:
+            # Hermes 0.22+ ships ruamel.yaml only; without this fallback no quota provider is ever found.
+            from ruamel.yaml import YAML
+            config = YAML(typ="safe", pure=True).load(text) or {}
         found = set()
         def visit(value):
             if isinstance(value, dict):
@@ -1059,6 +1065,80 @@ def _model_windows(snapshot=None, body: "dict | None" = None) -> list:
     return sorted(found.values(), key=lambda w: (w["model"].lower(), w["minutes"]))
 
 
+def _finite(value) -> "float | None":
+    """A finite, non-negative number from a number or numeric string, else None."""
+    if isinstance(value, bool):
+        return None
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return None
+    return n if math.isfinite(n) and n >= 0 else None
+
+
+def _money(value) -> "float | None":
+    """{amount_minor, exponent} (Claude's spend amounts) as major units: 1591 with exponent 2 is 15.91."""
+    if not isinstance(value, dict):
+        return None
+    minor, exponent = _finite(value.get("amount_minor")), value.get("exponent")
+    if minor is None or isinstance(exponent, bool) or not isinstance(exponent, int) or not 0 <= exponent <= 6:
+        return None
+    return round(minor / 10 ** exponent, exponent)
+
+
+def _obj(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _credit(unit: str, used, limit, remaining=None, resets_at=None) -> "dict | None":
+    """One spend/credit allowance in the safe shape the Deck renders: amounts, unit, percent and reset only."""
+    used, limit, remaining = _finite(used), _finite(limit), _finite(remaining)
+    if used is None or (limit is None and remaining is None):
+        return None
+    if remaining is None and limit is not None:
+        remaining = max(0.0, limit - used)
+    return {"unit": unit, "used": used, "limit": limit, "remaining": remaining,
+            "usedPercent": max(0.0, min(100.0, used / limit * 100)) if limit else None,
+            "resetsAt": resets_at if isinstance(resets_at, str) else None}
+
+
+def _credits(provider: str, body) -> list:
+    """Spend allowances next to the rate-limit windows: Claude extra usage (money) and the Codex workspace spend
+    control (credits). Only amounts leave here, never the account, workspace or e-mail fields of the body."""
+    from datetime import datetime, timezone
+    body = _obj(body)
+    out = []
+    if provider == "claude":
+        spend, extra = _obj(body.get("spend")), _obj(body.get("extra_usage"))
+        if not (spend.get("enabled") or extra.get("is_enabled")):
+            return []
+        used, limit = _money(spend.get("used")), _money(spend.get("limit"))
+        if used is None:
+            # extra_usage counts minor units as well (decimal_places), not whole dollars
+            places = extra.get("decimal_places")
+            scale = 10 ** (places if isinstance(places, int) and 0 <= places <= 6 else 2)
+            used, limit = _finite(extra.get("used_credits")), _finite(extra.get("monthly_limit"))
+            used = None if used is None else used / scale
+            limit = None if limit is None else limit / scale
+        currency = _obj(spend.get("used")).get("currency") or extra.get("currency") or "USD"
+        item = _credit(str(currency).upper()[:8], used, limit)
+        if item:
+            out.append({**item, "period": "month"})
+    elif provider == "codex":
+        limit = _obj(_obj(body.get("spend_control")).get("individual_limit"))
+        reset = _finite(limit.get("reset_at"))
+        item = _credit("credit", limit.get("used"), limit.get("limit"), limit.get("remaining"),
+                       datetime.fromtimestamp(reset, timezone.utc).isoformat() if reset else None)
+        if item:
+            out.append(item)
+        credits = _obj(body.get("credits"))
+        balance = _finite(credits.get("balance"))
+        if credits.get("has_credits") and balance is not None:
+            out.append({"unit": "USD", "used": None, "limit": None, "remaining": balance, "usedPercent": None,
+                        "resetsAt": None, "period": "balance"})
+    return out
+
+
 def _snapshot_windows(snapshot) -> list:
     out = []
     for window in snapshot.windows:
@@ -1104,8 +1184,14 @@ def _fetch_quota(provider: str, home: "Path | None" = None, body_reader=None) ->
                 q["windows"] = _claude_account_windows(raw)
             q["windows"] = q["windows"] or _snapshot_windows(snapshot)
             fetched = snapshot.fetched_at
-        if not q["windows"]:
+        try:
+            credits = _credits(provider, body if provider == "claude" else getattr(snapshot, "raw", None))
+        except Exception:
+            credits = []                  # a credit problem never hides the account windows
+        if not q["windows"] and not credits:
             raise ValueError("no windows")
+        if credits:
+            q["credits"] = credits
         q.update(ok=True, fetched_at=fetched.timestamp(), updatedAt=fetched.isoformat())
         try:
             models = _model_windows(snapshot, body if provider == "claude" else None)

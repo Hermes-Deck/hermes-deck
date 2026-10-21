@@ -99,6 +99,43 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       h("span", { class: `q-reset${known ? "" : " unknown"}`, title: absolute }, resetText));
   }
 
+  /** "$15.91" or "142,000 credits": an allowance amount in the UI language's own number format. */
+  const amountFormats = new Map();
+  function amountText(value, unit) {
+    const locale = i18nLocale();
+    const money = /^[A-Z]{3}$/.test(unit || "");
+    const key = `${locale}\t${money ? unit : ""}`;
+    if (!amountFormats.has(key)) {
+      let f = null;
+      try { f = money ? new Intl.NumberFormat(locale, { style: "currency", currency: unit, maximumFractionDigits: 2 }) : null; } catch { f = null; }
+      amountFormats.set(key, f || new Intl.NumberFormat(locale, { maximumFractionDigits: money ? 2 : 0 }));
+    }
+    const text = amountFormats.get(key).format(num(value));
+    return money ? text : i18nText("usage.creditUnits", { v: text });
+  }
+
+  /** A spend allowance (Claude extra usage, Codex workspace credits): used / limit, what is left, and its reset. */
+  function creditRow(h, name, c, now) {
+    const hasPct = typeof c.usedPercent === "number" && Number.isFinite(c.usedPercent);
+    const used = hasPct ? Math.min(100, Math.max(0, c.usedPercent)) : 0;
+    const p = Math.round(used);
+    const amounts = typeof c.used === "number" && typeof c.limit === "number"
+      ? i18nText("usage.creditUsed", { u: amountText(c.used, c.unit), l: amountText(c.limit, c.unit), r: amountText(c.remaining, c.unit) })
+      : i18nText("usage.creditBalance", { r: amountText(c.remaining, c.unit) });
+    const reset = c.resetsAt ? new Date(c.resetsAt) : null;
+    const left = reset && Number.isFinite(reset.getTime()) ? reset.getTime() - now : null;
+    const when = left == null ? (c.period === "month" ? i18nText("usage.creditMonthly") : null)
+      : left <= 0 ? i18nText("usage.resetDue") : i18nText("usage.resetsIn", { v: untilText(left) });
+    const text = when ? `${amounts} · ${when}` : amounts;
+    const long = i18nText("usage.creditLong");
+    return h("div", { class: "quota q-credit" },
+      h("span", { class: "q-win", title: long }, i18nText("usage.credit")),
+      hasPct ? h("span", { class: "bar", role: "progressbar", "aria-label": `${name} · ${long}`, "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": p },
+        h("i", { class: used > WARN_AT ? "warn" : "", style: { width: `${Math.max(p, used > 0 ? 1 : 0)}%` } })) : h("span", { class: "bar" }),
+      h("span", { class: `pct${used > WARN_AT ? " warn" : ""}` }, hasPct ? pct(used < 1 && used > 0 ? 1 : p) : ""),
+      h("span", { class: "q-reset", title: text }, text));
+  }
+
   /** One block per provider account: name + profile tag, then its windows. Percentages of distinct accounts are never summed. */
   function quotaRows(h, fleet, opts = {}) {
     const now = opts.now || Date.now();
@@ -124,9 +161,12 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       const windows = (q.windows || []).filter(valid);
       // Model-family limits (Claude Max: Fable) come after the account windows, only when the account reports one.
       const models = (Array.isArray(q.modelWindows) ? q.modelWindows : []).filter(w => valid(w) && modelName(w));
+      // Spend allowances (Claude extra usage, Codex workspace credits) come last; an account may report only these.
+      const credits = (Array.isArray(q.credits) ? q.credits : []).filter(c => c && typeof c.remaining === "number" && Number.isFinite(c.remaining));
       const stale = q.stale || q.error;
-      return h("section", { class: `qblock${stale ? " is-stale" : ""}${models.length ? " has-model" : ""}`, "aria-label": name }, head,
-        windows.length ? [...windows, ...models].map(w => windowRow(h, name, w, now)) : h("p", { class: "muted small" }, i18nNode("usage.noWindows")),
+      return h("section", { class: `qblock${stale ? " is-stale" : ""}${models.length || credits.length ? " has-model" : ""}`, "aria-label": name }, head,
+        windows.length || credits.length ? [...[...windows, ...models].map(w => windowRow(h, name, w, now)), ...credits.map(c => creditRow(h, name, c, now))]
+          : h("p", { class: "muted small" }, i18nNode("usage.noWindows")),
         stale ? status(h, "warn", i18nText("usage.staleShort"), stamp ? i18nText("usage.updatedAgo", { v: agoText(stamp, now) }) : null, i18nText("usage.stale")) : null);
     });
   }
@@ -220,7 +260,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       },
     }, h("span", { class: "quota-refresh-ic", "aria-hidden": "true" }, "↻"), h("span", { class: "quota-refresh-t" }, label));
   }
-  const api = { refreshButton, totals, costText, costWhy, quotaRows, summary, failureStatuses, modelTable, pct, plural, agoText, untilText, windowLabel, status };
+  const api = { refreshButton, totals, costText, costWhy, quotaRows, amountText, summary, failureStatuses, modelTable, pct, plural, agoText, untilText, windowLabel, status };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.DeckUsage = api;
 })(typeof window !== "undefined" ? window : globalThis);
