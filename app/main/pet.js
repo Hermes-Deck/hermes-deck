@@ -100,6 +100,8 @@ class Pet {
 
   /** Skin, motion, bubbles or size changed in Settings: the page follows; a new size re-anchors the window. */
   refresh() {
+    const top = this._options().alwaysOnTop;
+    if (this.visible && !this.shot && this.win.isAlwaysOnTop() !== top) this.win.setAlwaysOnTop(top, "screen-saver");
     const k = this._options().size;
     if (k !== this.k && this.visible && !this.shot && this.box) {
       const box = M.resize(this.box, this.side, this.k, k);
@@ -127,7 +129,7 @@ class Pet {
 
   _options() {
     const o = (this.shot ? this.shot.options : this.options()) || {};
-    return { skin: SKINS.includes(o.skin) ? o.skin : "character", motion: o.motion !== false, bubbles: o.bubbles !== false, size: M.SIZES.includes(o.size) ? o.size : 1 };
+    return { skin: SKINS.includes(o.skin) ? o.skin : "character", motion: o.motion !== false, bubbles: o.bubbles !== false, size: M.SIZES.includes(o.size) ? o.size : 1, alwaysOnTop: o.alwaysOnTop !== false };
   }
 
   _send() {
@@ -170,7 +172,7 @@ class Pet {
       maximizable: false,
       fullscreenable: false,
       skipTaskbar: true,
-      alwaysOnTop: true,
+      alwaysOnTop: this._options().alwaysOnTop,
       focusable: false, // never takes focus from what the user is typing in
       title: i18nText("A0158"),
       // backgroundThrottling stays on for the real pet: covered, hidden or on a locked screen, its page counts
@@ -192,7 +194,7 @@ class Pet {
     for (const ev of ["hide", "minimize"]) win.on(ev, seen(false));
     for (const ev of ["show", "restore"]) win.on(ev, seen(true));
     if (!shot) {
-      win.setAlwaysOnTop(true, "screen-saver");
+      win.setAlwaysOnTop(this._options().alwaysOnTop, "screen-saver");
       if (process.platform === "darwin") win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
       win.setIgnoreMouseEvents(true, { forward: true }); // transparent parts pass clicks through
       win.once("ready-to-show", () => win.showInactive());

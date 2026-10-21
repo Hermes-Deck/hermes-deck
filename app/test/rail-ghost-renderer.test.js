@@ -112,7 +112,7 @@ test("host resumes close and reload as distinct unload actions", () => {
   const end = main.indexOf('\nipc.handle("bridge:unload-done"', start);
   for (const windowClosing of [true, false]) {
     const calls = [];
-    const ctx = { windowClosing, win: { isDestroyed: () => false, close: () => calls.push("close"), webContents: { reload: () => calls.push("reload") } } };
+    const ctx = { windowClosing, appUrl: () => "deck://app/index.html?host=h1", win: { isDestroyed: () => false, close: () => calls.push("close"), loadURL: () => { calls.push("reload"); return Promise.resolve(); } } };
     vm.runInNewContext(main.slice(start, end) + "\nresumeRailUnload();", ctx);
     assert.deepEqual(calls, [windowClosing ? "close" : "reload"]);
   }

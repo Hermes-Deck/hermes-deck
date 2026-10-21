@@ -420,7 +420,7 @@ test("sidebar filters keep a parent of a matching sub-agent, survive parent cycl
     window: { DeckSessions: require("../renderer/sessions-browser") }, sidebarSources: null,
     rail: { view: "all", source: "all", agent: null } };
   vm.createContext(ctx);
-  vm.runInContext(appFn("railFilter"), ctx);
+  vm.runInContext(appFn("railScope") + "\n" + appFn("railFilter"), ctx);
   const facts = new Map(nodes.map((n) => [n.sid, { live: n.sid === "kid", needs: 0, profile: n.profile, source: n.source }]));
   assert.equal(ctx.railFilter(facts), null, "no filter: the list is not walked at all");
   ctx.rail.view = "running";

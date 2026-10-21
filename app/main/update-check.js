@@ -2,8 +2,8 @@
 // Update check (Settings > General > Updates): how far the repository's main branch has moved since the commit this
 // app was built from, and whether a newer release exists; then one button to get there.
 //
-//   check()    GitHub compare <built commit>...main (commits ahead) + the latest release; no download.
-//   install()  a newer release with an installer for this OS: download, verify against its SHA256SUMS.txt, run it
+//   check()    Stable: compare <built commit>...main + latest release; Test: published test prerelease. No download.
+//   install(target)  the explicitly confirmed release for this OS: download, verify its SHA256SUMS.txt, run it
 //              silently and quit (Windows: NSIS /S --force-run starts the new version). SHA256SUMS.txt is required.
 //              Otherwise, only with the opt-in developer setting (updates.fromSource) and when main is ahead and
 //              this machine has git and npm: build main in <userData>/update-src (its own clone, never the user's
@@ -25,7 +25,15 @@ const { newer } = require("./updates");
 const API = "https://api.github.com";
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
 const SHA_RE = /^[0-9a-f]{40}$/;
-const BRANCH_RE = /^[\w./-]{1,100}$/;
+const CANONICAL_REPO = "Hermes-Deck/hermes-deck";
+const VERSION = "(0|[1-9]\\d{0,4})\\.(0|[1-9]\\d{0,4})\\.(0|[1-9]\\d{0,4})";
+const STABLE_TAG = new RegExp(`^v${VERSION}$`);
+const TEST_TAG = new RegExp(`^v${VERSION}-test\\.[1-9]\\d{0,8}$`);
+const channelOf = (s) => s && s.channel === "test" ? "test" : "stable";
+const validRelease = (r, channel) => !!r && r.draft === false && r.prerelease === (channel === "test") &&
+  (channel === "test" ? TEST_TAG : STABLE_TAG).test(r.tag_name) && Number.isSafeInteger(r.id) && r.id > 0;
+const safeAsset = (a) => !!a && /^[A-Za-z0-9][A-Za-z0-9._-]{0,180}$/.test(a.name) && Number.isSafeInteger(a.id) && a.id > 0;
+const assetKey = (a) => a ? [a.id, a.name, a.size, a.updated_at, a.digest] : null;
 const MAX_COMMITS = 20;
 const APP_NAME = "Hermes Deck.app";
 const BUNDLE_ID = "io.github.hermes-deck"; // electron-builder.yml appId
@@ -67,14 +75,16 @@ function buildInfo({ dir, readFile = fs.readFileSync, git = () => "" }) {
     repo: REPO_RE.test(info.repo || "") ? info.repo : "",
     dirty: !!info.dirty,
     dev: !!info.dev,
+    channel: channelOf(info),
+    releaseTag: (TEST_TAG.test(info.releaseTag) || STABLE_TAG.test(info.releaseTag)) ? info.releaseTag : "",
   };
 }
 
 /** The installer asset for this platform in a release's asset list, or null. */
 function installerAsset(assets, platform, arch = "x64") {
-  const list = Array.isArray(assets) ? assets : [];
-  if (platform === "win32") return list.find((a) => /-Setup\.exe$/i.test(a.name)) || null;
-  if (platform === "darwin") return list.find((a) => new RegExp(`-mac-${arch === "arm64" ? "arm64" : "x64"}\\.zip$`, "i").test(a.name)) || null;
+  const list = (Array.isArray(assets) ? assets : []).filter(a => /^[A-Za-z0-9][A-Za-z0-9._-]{0,180}$/.test(a.name));
+  if (platform === "win32" && arch === "x64") return list.find((a) => /-Setup\.exe$/i.test(a.name)) || null;
+  if (platform === "darwin" && ["arm64", "x64"].includes(arch)) return list.find((a) => new RegExp(`-mac-${arch === "arm64" ? "arm64" : "x64"}\\.zip$`, "i").test(a.name)) || null;
   return null;
 }
 
@@ -92,7 +102,7 @@ class UpdateChecker {
    * @param {object} o
    * @param {string} o.version       app.getVersion()
    * @param {object} o.info          buildInfo() result
-   * @param {() => object} o.settings  {repo?, branch?} overrides from Settings (updates)
+   * @param {() => object} o.settings  {channel?, fromSource?} from Settings (updates)
    * @param {() => Promise<string>} o.token  a GitHub token or "" (see the header)
    * @param {(url: string, opts: object) => Promise<Response>} o.fetch
    * @param {string} o.platform      process.platform
@@ -108,8 +118,8 @@ class UpdateChecker {
   }
 
   _repo() {
-    const s = this.settings() || {};
-    return REPO_RE.test(s.repo || "") ? s.repo : this.info.repo;
+    // Legacy repo overrides remain stored, but never select executable code.
+    return CANONICAL_REPO;
   }
 
   _fromSource() {
@@ -118,13 +128,34 @@ class UpdateChecker {
   }
 
   _branch() {
-    const s = this.settings() || {};
-    return BRANCH_RE.test(s.branch || "") ? s.branch : "main";
+    return this._channel() === "stable" ? "main" : "test";
+  }
+
+  _channel() { return channelOf(this.settings()); }
+
+  async _release(channel) {
+    if (channel === "stable") {
+      const r = await (await this._get(`${API}/repos/${this._repo()}/releases/latest`)).json();
+      return validRelease(r, channel) ? r : null;
+    }
+    // ponytail: bounded to 100 recent releases; publish a fresh Test release if it ages out.
+    const list = await (await this._get(`${API}/repos/${this._repo()}/releases?per_page=100`)).json();
+    if (!Array.isArray(list)) throw new Error("updates.failed");
+    return list.filter(r => validRelease(r, channel)).sort((a, b) => (Date.parse(b.published_at) || 0) - (Date.parse(a.published_at) || 0) || b.id - a.id)[0] || null;
+  }
+
+  _releaseView(rel, channel) {
+    const asset = installerAsset(rel.assets, this.platform, this.arch);
+    const sums = (Array.isArray(rel.assets) ? rel.assets : []).find(a => a.name === "SHA256SUMS.txt");
+    return { id: rel.id, tag: rel.tag_name, url: `https://github.com/${this._repo()}/releases/tag/${rel.tag_name}`,
+      newer: channel === "test" ? rel.tag_name !== this.info.releaseTag : newer(rel.tag_name, this.version),
+      asset: safeAsset(asset) ? asset.name : "", sums: safeAsset(sums),
+      fingerprint: JSON.stringify([rel.id, rel.tag_name, assetKey(asset), assetKey(sums)]) };
   }
 
   async _get(url, accept = "application/vnd.github+json") {
     const token = await this.token();
-    const res = await this.fetch(url, { headers: { Accept: accept, "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "hermes-deck", ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
+    const res = await this.fetch(url, { signal: AbortSignal.timeout(30_000), headers: { Accept: accept, "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "hermes-deck", ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
     if (res.status === 404 && !token) throw new Error("updates.noAccess");
     if (res.status === 401 || res.status === 403 || res.status === 404) throw new Error(token ? "updates.noAccess" : "updates.needToken");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -133,15 +164,15 @@ class UpdateChecker {
 
   /** What this build is, before any check: version, commit, the branch it was built from, the repo and branch compared. */
   base() {
-    return { version: this.version, commit: this.info.commit, built: this.info.branch, dirty: this.info.dirty, dev: this.info.dev, repo: this._repo(), branch: this._branch() };
+    return { channel: this._channel(), installedChannel: channelOf(this.info), releaseTag: this.info.releaseTag || "", version: this.version, commit: this.info.commit, built: this.info.branch, dirty: this.info.dirty, dev: this.info.dev, repo: this._repo(), branch: this._branch() };
   }
 
-  /** Compare the built commit with the branch and look at the latest release. Never throws; errors land in status. */
+  /** Check the selected channel; network errors land in status, concurrent calls are refused. */
   async check() {
+    if (this.busy) throw new Error("updates.busy");
     const repo = this._repo();
     const branch = this._branch();
     const base = { ...this.base(), checkedAt: Date.now() };
-    if (!repo) return (this.status = { ...base, error: "updates.noRepo" });
     this.busy = "check";
     try {
       const out = { ...base, behind: 0, commits: [], head: "", release: null };
@@ -149,7 +180,7 @@ class UpdateChecker {
       // local build) gets a 404/422 here, and that must never hide a newer release, so its failure only drops the
       // commit list. The release lookup below decides whether the check as a whole failed.
       let cmp = null, cmpError = null;
-      if (this.info.commit) {
+      if (this.info.commit && base.channel === "stable") {
         try {
           cmp = await (await this._get(`${API}/repos/${repo}/compare/${this.info.commit}...${encodeURIComponent(branch)}`)).json();
         } catch (e) {
@@ -168,20 +199,34 @@ class UpdateChecker {
         out.head = commits.length ? String(commits[commits.length - 1].sha || "") : this.info.commit;
       }
       try {
-        const rel = await (await this._get(`${API}/repos/${repo}/releases/latest`)).json();
-        const asset = installerAsset(rel.assets, this.platform, this.arch);
-        out.release = { tag: String(rel.tag_name || ""), url: String(rel.html_url || ""), newer: newer(String(rel.tag_name || ""), this.version), asset: asset ? asset.name : "" };
+        const rel = await this._release(base.channel);
+        out.release = rel ? this._releaseView(rel, base.channel) : null;
       } catch (e) {
         // no release yet, or no access to releases: the commit count still stands; with neither, the check failed
         out.release = null;
-        if (cmpError) throw cmpError;
+        if (base.channel === "test" || cmpError) throw e;
       }
       if (cmpError) out.compare = "unavailable"; // this build's commit is unknown to the repository
       // Building unreleased source runs npm install scripts and an unreviewed branch on this computer: only on the
       // opt-in developer setting (Settings > Updates > Advanced). Never "update" to a branch that lacks this build's
       // own commits (a feature branch build): that would undo them.
-      out.canBuild = (this.platform === "win32" || (this.platform === "darwin" && !!this.appBundle)) && this._fromSource() && out.behind > 0 && !out.ahead && (await this.has("git")) && (await this.has("npm"));
-      out.action = out.release && out.release.newer && out.release.asset ? "release" : out.canBuild ? "build" : out.release && out.release.newer ? "download" : "none";
+      out.replaceBuild = base.channel === "stable" && channelOf(this.info) === "test";
+      const candidate = out.release && (out.release.newer || out.replaceBuild);
+      out.canBuild = base.channel === "stable" && !out.replaceBuild && !candidate && this.installSupported !== false &&
+        ((this.platform === "win32" && this.arch === "x64") || (this.platform === "darwin" && ["arm64", "x64"].includes(this.arch) && !!this.appBundle)) && this._fromSource() &&
+        SHA_RE.test(out.head) && out.behind > 0 && !out.ahead && (await this.has("git")) && (await this.has("npm"));
+      out.action = "none";
+      if (candidate) {
+        if (!out.release.asset) out.unavailable = "updates.noAsset";
+        else if (!out.release.sums) out.unavailable = "updates.noSum";
+        else if (this.installSupported === false) out.unavailable = "updates.isolatedInstall";
+        else out.action = "release";
+      } else if (base.channel === "test" && !out.release) out.unavailable = "updates.noTestRelease";
+      else if (out.canBuild) out.action = "build";
+      else if (!out.release) out.unavailable = "updates.noStableRelease";
+      out.target = out.action === "release" ? JSON.stringify([base.channel, out.release.fingerprint]) :
+        out.action === "build" ? JSON.stringify([base.channel, "build", out.head]) : "";
+      if (base.channel !== this._channel()) throw new Error("updates.changed");
       return (this.status = out);
     } catch (e) {
       return (this.status = { ...base, error: /^updates\./.test(e.message) ? e.message : "updates.failed", detail: /^updates\./.test(e.message) ? "" : e.message });
@@ -191,10 +236,12 @@ class UpdateChecker {
   }
 
   /** Get the newer version and start its installer (see the header). Resolves with the installer path it ran. */
-  async install() {
+  async install(confirmedTarget) {
     if (this.busy) throw new Error("updates.busy");
-    const st = this.status && !this.status.error ? this.status : await this.check();
-    if (st.error) throw new Error(st.error);
+    if (!confirmedTarget) throw new Error("updates.confirmRequired");
+    const st = this.status;
+    if (!st || st.error || st.target !== confirmedTarget || st.channel !== this._channel()) throw new Error("updates.changed");
+    if (st.action === "build" && !this._fromSource()) throw new Error("updates.changed");
     this.busy = "install";
     try {
       if (st.action === "release") return await this._installRelease(st);
@@ -208,7 +255,8 @@ class UpdateChecker {
   async _installRelease(st) {
     const repo = this._repo();
     this.progress({ phase: "download", text: st.release.asset });
-    const rel = await (await this._get(`${API}/repos/${repo}/releases/latest`)).json();
+    const rel = await (await this._get(`${API}/repos/${repo}/releases/${st.release.id}`)).json();
+    if (!validRelease(rel, st.channel) || this._releaseView(rel, st.channel).fingerprint !== st.release.fingerprint) throw new Error("updates.changed");
     const asset = installerAsset(rel.assets, this.platform, this.arch);
     const sums = (rel.assets || []).find((a) => a.name === "SHA256SUMS.txt");
     if (!asset) throw new Error("updates.nothing");
@@ -222,13 +270,13 @@ class UpdateChecker {
     const want = sumFor(text, asset.name);
     const got = crypto.createHash("sha256").update(buf).digest("hex");
     if (!want || want !== got) throw new Error("updates.badSum");
+    if (st.channel !== this._channel()) throw new Error("updates.changed");
     fs.writeFileSync(file, buf);
     return this._launch(file);
   }
 
   async _installBuild(st) {
     const repo = this._repo();
-    const branch = this._branch();
     const src = path.join(this.workDir, "update-src");
     const step = async (phase, cmd, args, cwd) => {
       this.progress({ phase, text: `${cmd} ${args.join(" ")}` });
@@ -236,13 +284,17 @@ class UpdateChecker {
       if (r.code !== 0) throw Object.assign(new Error("updates.buildFailed"), { detail: String(r.out || "").slice(-600) });
     };
     if (!fs.existsSync(path.join(src, ".git"))) await step("clone", "git", ["clone", "--filter=blob:none", `https://github.com/${repo}.git`, src], this.workDir);
-    await step("fetch", "git", ["fetch", "origin", branch], src);
-    await step("checkout", "git", ["checkout", "--detach", "--force", `origin/${branch}`], src);
+    const origin = await this.run("git", ["remote", "get-url", "origin"], { cwd: src });
+    if (origin.code !== 0 || String(origin.out).trim() !== `https://github.com/${repo}.git`) throw new Error("updates.badOrigin");
+    // Fetch the confirmed commit, not a moving branch; never run hooks from a foreign cached clone.
+    await step("fetch", "git", ["fetch", "origin", st.head], src);
+    await step("checkout", "git", ["-c", "core.hooksPath=/dev/null", "checkout", "--detach", "--force", st.head], src);
     const app = path.join(src, "app");
     await step("deps", "npm", ["ci", "--no-audit", "--no-fund"], app);
     const dist = path.join(app, "dist");
     fs.rmSync(dist, { recursive: true, force: true }); // never pick up an installer from an earlier build
     await step("build", "npm", ["run", this.platform === "win32" ? "dist:win" : "dist"], app);
+    if (st.channel !== this._channel() || !this._fromSource()) throw new Error("updates.changed");
     if (this.platform === "darwin") {
       // electron-builder: dist/mac (x64, the default arch) and dist/mac-arm64
       const built = path.join(dist, this.arch === "arm64" ? "mac-arm64" : "mac", APP_NAME);
@@ -260,7 +312,8 @@ class UpdateChecker {
     if (this.platform === "darwin") return this._macSwap(file);
     if (this.platform !== "win32") throw Object.assign(new Error("updates.manual"), { file });
     this.progress({ phase: "install", text: path.basename(file) });
-    await this.run(file, ["/S", "--force-run"], { detached: true });
+    const result = await this.run(file, ["/S", "--force-run"], { detached: true });
+    if (result.code !== 0) throw new Error("updates.failed");
     return file;
   }
 }
@@ -308,4 +361,4 @@ Object.assign(UpdateChecker.prototype, {
   },
 });
 
-module.exports = { UpdateChecker, SWAP_SH, BUNDLE_ID, buildInfo, installerAsset, sumFor, REPO_RE };
+module.exports = { UpdateChecker, SWAP_SH, BUNDLE_ID, buildInfo, installerAsset, sumFor, REPO_RE, CANONICAL_REPO, TEST_TAG, STABLE_TAG, channelOf };

@@ -25,6 +25,8 @@ and a main area that shows the chat or the [inbox](#inbox-and-fleet). The right 
   filters **Needs you** (opens the inbox), **All**, **Running**, **Waiting**, **Today** and **Pinned**, the **Agents**
   list (a click narrows the list to that profile), source chips, **All sessions** and the sessions by profile. The
   footer shows the connections, the fleet summary and the busiest quota window.
+  Session filter counts follow the selected profile, source chip and saved sidebar source choices. Agent live
+  badges remain profile-wide; **All sessions** still opens the complete stored-session browser.
 - **Top bar.** Breadcrumb (agent / title, with the parent for a sub-agent) and a channel chip (**Hermes**,
   **Telegram**, **<Source> · read-only**, **Bot Chat**, **Sub-agent**), the fleet capsule, search, and the Work pane
   and Settings buttons.
@@ -84,6 +86,10 @@ Sessions and Bots alone never start a Telegram client.
 read and continue them. **All sessions** opens a searchable list of every stored session of every platform and
 profile (Telegram, Discord, WebUI, TUI, CLI, Deck, iOS…), with filters for platform, profile and active/archived, and
 actions to open, rename, pin, archive, delete or copy the id, one session or several at once.
+
+**Agents** also lists profiles from the connected host's catalog when they have no recent sessions. Select a
+profile, then **New session** under its heading to start there. **No active session** means no live session was
+observed, not that the profile has a running agent. **Not connected** means the host connection is down.
 
 **How it works.** The app keeps one direct connection to the Hermes host: `stream.py --follow` runs there over SSH,
 WSL or a local process (`app/main/bridge.js`) and relays requests to a private Unix socket opened by the plugin inside
@@ -274,10 +280,12 @@ questions need the direct connection.
 
 ## Status pet, themes, wallpapers and languages
 
-- **Status pet.** A small always-on-top companion window that shows whether agents are idle, working, waiting for you
+- **Status pet.** A small companion window that shows whether agents are idle, working, waiting for you
   or offline, with a speech bubble for new replies and questions. **Settings → Desktop → Status pet**: **Pet look**
   (Character, Owl, Philosopher, Leo, Hasret, Hayat, Orb, Agent), **Pet size** (Small to Extra large) and **Pet
-  animations** (stills when off or when the system asks for reduced motion).
+  animations** (stills when off or when the system asks for reduced motion). **Always on top** starts on and remembers
+  your choice across restarts. It changes only the pet, without taking focus. Full-screen apps and secure system
+  screens (including UAC) can cover it; the pet does not bypass operating-system restrictions.
 - **Themes.** **Settings → Desktop → Appearance → Theme**: **OLED (black)** (default), **Marble (light)**, **Aegean
   (navy)** or **Match the system**.
 - **Chat backgrounds.** One background picture per chat mode, built in or your own (**Choose image…**), with

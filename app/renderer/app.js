@@ -105,17 +105,20 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   };
   let scrollToEnd = false;
 
+  // multi-host: drafts, outbox and selections are per host (the first host keeps the old, unprefixed keys)
+  const pageHost = new URLSearchParams(location.search).get("host") || "";
+  const hostKey = (key) => (pageHost && pageHost !== "h1" ? `${pageHost}/${key}` : key);
   const store = {
     get(key) {
       try {
-        return localStorage.getItem(key);
+        return localStorage.getItem(hostKey(key));
       } catch {
         return null;
       }
     },
     set(key, v) {
       try {
-        localStorage.setItem(key, v);
+        localStorage.setItem(hostKey(key), v);
       } catch {
         /* per-viewer convenience only */
       }
@@ -2019,10 +2022,11 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   let deskSent = "";
   let deskTimer = 0;
 
-  /** Approvals and questions waiting for the user: the bridge's open requests (H, further down). */
+  /** All hosts' open approvals and questions; use the active bridge until the inbox has booted. */
   function pendingCount() {
     try {
-      return H.requests.length;
+      const inbox = window.DeckInbox?.store;
+      return inbox ? inbox.items().filter(x => x.request).length : H.requests.length;
     } catch {
       return 0; // before the bridge section has run
     }
@@ -2107,6 +2111,9 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   const H = {
     status: { status: "off" },
     platform: "",
+    profiles: [], // host catalog, independent of recent/live sessions
+    profilesAt: 0,
+    profileRead: null,
     nodes: new Map(), // sid -> snapshot node
     rank: new Map(), // sid -> stable rail position (rows never jump while agents work)
     rankSeq: 0,
@@ -2471,6 +2478,8 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
    */
   function hermesGroups(now = Date.now() / 1000, keep = null) {
     const byProfile = new Map();
+    // Keep an empty profile selectable for New session, even when its sessions are filtered out.
+    for (const p of H.profiles) if (rail.agent ? rail.agent === p.name : rail.view === "all" && rail.source === "all") byProfile.set(p.name, []);
     for (const n of H.nodes.values()) {
       if (keep && !keep(n)) continue;
       if (!byProfile.has(n.profile)) byProfile.set(n.profile, []);
@@ -2553,10 +2562,9 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
    * The rail's keep(n) for the current filters, or null when nothing is filtered. A session stays when it passes, or
    * when one of its descendants does (tree context). Parent links can form a cycle: each sid is decided once.
    */
-  function railFilter(facts) {
-    if (rail.view === "all" && rail.source === "all" && !rail.agent && (!sidebarSources || !sidebarSources.chosen())) return null;
+  function railScope(facts) {
     const visible = sidebarSources ? window.DeckSessions.sidebarVisibility([...H.nodes.values()], sidebarSources, (n) => !!facts.get(n.sid)?.needs) : () => true;
-    const pass = (x) => {
+    return (x) => {
       const f = facts.get(x.sid);
       if (!f || !visible(x)) return false;
       // Source and smart filters never suppress a session waiting for an answer.
@@ -2564,8 +2572,13 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       if (rail.agent && f.profile !== rail.agent) return false;
       const source = window.DeckSessions ? window.DeckSessions.sidebarSourceKey(f.source) : f.source;
       if (rail.source !== "all" && !isSubagent(x) && source !== rail.source) return false;
-      return SH.matchFilter(rail.view, f);
+      return true;
     };
+  }
+  function railFilter(facts) {
+    if (rail.view === "all" && rail.source === "all" && !rail.agent && (!sidebarSources || !sidebarSources.chosen())) return null;
+    const scope = railScope(facts);
+    const pass = (x) => scope(x) && (facts.get(x.sid).needs || x.state === "approval" || x.state === "question" || SH.matchFilter(rail.view, facts.get(x.sid)));
     const kids = new Map();
     for (const c of H.nodes.values()) if (c.parent) (kids.get(c.parent) || kids.set(c.parent, []).get(c.parent)).push(c);
     const memo = new Map();
@@ -2585,8 +2598,9 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     mark("rail", true);
   }
   function smartFilters(facts) {
-    const all = [...facts.values()];
-    const count = { needs: H.requests.length, all: all.length };
+    // Count the same source/profile scope as the list, not sessions hidden by saved source choices.
+    const all = [...H.nodes.values()].filter(railScope(facts)).map((n) => facts.get(n.sid));
+    const count = { needs: pendingCount(), all: all.length };
     for (const v of ["running", "waiting", "today", "pinned"]) count[v] = all.filter((f) => SH.matchFilter(v, f)).length;
     const ICON = { needs: "inbox", all: "all", running: "running", waiting: "waiting", today: "today", pinned: "pin" };
     return h("div", { class: "sh-nav", role: "group", "aria-label": i18nText("shell.filters") },
@@ -2599,16 +2613,16 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   }
   /** Agents: one row per Hermes profile with its live state; a click narrows the list to that profile. */
   function agentsBlock() {
-    const by = new Map();
+    const by = new Map(H.profiles.map((p) => [p.name, { profile: p.name, live: 0, needs: 0 }]));
     for (const n of H.nodes.values()) {
       const p = n.profile || "default";
       if (!by.has(p)) by.set(p, { profile: p, live: 0, needs: 0 });
       const a = by.get(p);
-      if (nodeLive(n)) a.live++;
+      if (bridgeOpen() && nodeLive(n)) a.live++;
     }
     for (const r of H.requests) {
       const n = H.nodes.get(r.sid);
-      if (n && by.has(n.profile || "default")) by.get(n.profile || "default").needs++;
+      if (bridgeOpen() && n && by.has(n.profile || "default")) by.get(n.profile || "default").needs++;
     }
     if (!by.size) return [];
     const list = [...by.values()].sort((a, b) => (a.profile === "default" ? -1 : b.profile === "default" ? 1 : a.profile.localeCompare(b.profile)));
@@ -2619,7 +2633,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       sectionHead("h:agents", i18nText("A0217"), live ? i18nText("shell.agentsLive", { n: live }) : list.length),
       closed ? null : h("div", { class: "sh-agents" }, ...list.map((a) => {
         const st = a.needs ? "waiting" : a.live ? "running" : "idle";
-        const label = a.needs ? i18nText("shell.state.needs") : a.live ? (a.live > 1 ? i18nText("shell.state.runningN", { n: a.live }) : i18nText("shell.state.running")) : i18nText("shell.state.idle");
+        const label = !bridgeOpen() ? i18nText("shell.state.offline") : a.needs ? i18nText("shell.state.needs") : a.live ? (a.live > 1 ? i18nText("shell.state.runningN", { n: a.live }) : i18nText("shell.state.running")) : i18nText("shell.state.inactive");
         return h("button", { type: "button", class: `sh-arow${rail.agent === a.profile ? " on" : ""}`, "aria-pressed": rail.agent === a.profile ? "true" : "false", dataset: { fk: `agent:${a.profile}` },
           onclick: () => { rail.agent = rail.agent === a.profile ? null : a.profile; mark("rail", true); } },
           h("span", { class: `sh-av st-${st}`, "aria-hidden": "true" }, nameOf(a.profile).slice(0, 1).toUpperCase(), h("span", { class: `dot ${st}` })),
@@ -2660,9 +2674,10 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     }
     // Sessions: smart filters, the agents (profiles) with their live state, source chips, then the session list
     const facts = sessionFacts();
+    const sources = sourceChips(); // normalise an unavailable source before counting or filtering
     kids.push(smartFilters(facts));
     kids.push(...agentsBlock());
-    kids.push(sourceChips());
+    kids.push(sources);
     if (allSessions) kids.push(allSessions);
     const groups = hermesGroups(undefined, railFilter(facts));
     if (!groups.length) {
@@ -2677,7 +2692,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       if (!layout.closed.has(id) && !layout.compact && bridgeOpen()) kids.push(newSessionRow(g.profile));
       if (!layout.closed.has(id) || layout.compact) for (const r of g.rows) kids.push(r.fold ? hermesFoldRow(r.fold, r.depth) : hermesRow(r.node, r.depth));
     }
-    els.rail.replaceChildren(...kids);
+    els.rail.replaceChildren(...kids.filter(Boolean));
   }
 
   function hermesRow(n, depth) {
@@ -4061,14 +4076,34 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   }
 
   // ------------------------------------------------------------ bridge feed
+  async function refreshHermesProfiles() {
+    if (!bridgeOpen() || H.profileRead || Date.now() - H.profilesAt < 30000) return;
+    const read = {};
+    H.profileRead = read;
+    H.profilesAt = Date.now();
+    try {
+      const profiles = await deck.bridge.profiles();
+      if (H.profileRead !== read || !bridgeOpen()) return;
+      H.profiles = profiles;
+      mark("rail", true);
+    } catch (_) {
+      // Older hosts may not expose the catalog; snapshot-derived profiles remain usable.
+    } finally {
+      if (H.profileRead === read) H.profileRead = null;
+    }
+  }
+
   function applyBridgeStatus(s) {
     const was = H.status.status;
     H.status = { status: s.status, error: s.error || null, code: s.code || null, retryInMs: s.retryInMs || null };
     if (s.status !== "open") {
+      H.profileRead = null; // reject a late reply from the previous connection
+      H.profilesAt = 0;
       H.live.clear();
       LA.clear();
     }
     if (s.status === "off") {
+      H.profiles = [];
       H.nodes.clear();
       H.requests = [];
     }
@@ -4080,12 +4115,14 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       if (H.sel) hermesLoadHistory(H.sel);
       hermesPoll();
     }
+    if (s.status === "open") refreshHermesProfiles();
     if (BT) BT.onStatus(s.status, was); // Botlar: roster poll on (re)connect
     if (SB && s.status === "open") SB.onStatus(); // All sessions: reload an open browser on (re)connect
   }
 
   function applyBridgeSnapshot(snap) {
     if (!snap || !Array.isArray(snap.nodes)) return;
+    refreshHermesProfiles(); // refresh the catalog even on an empty host, with no selected session
     const nodes = snap.nodes
       .filter((n) => !H.deleted.has(n.sid))
       .map((n) => {
@@ -4369,6 +4406,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   SH.provide("chat", () => currentChat());
   SH.provide("openChat", (req) => openChatFor(req));
   SH.provide("triageData", () => triageData());
+  SH.provide("triageChanged", () => mark("top", "rail"));
   SH.provide("stopTurn", (req) => stopTurnFor(req));
   SH.provide("relaySession", (sid) => (typeof sid === "string" && S.relay.sessions.get(sid)) || null); // work-pane.js: a child's live metrics
   SH.provide("usageView", { open: () => UD.open(), close: () => UD.close(), toggle: () => UD.toggle(), isOpen: () => UD.isOpen() });

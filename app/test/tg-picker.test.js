@@ -409,7 +409,7 @@ test("bridge snapshots refresh Telegram Stop without requiring Hermes mode", () 
   const w = world();
   let notes = 0;
   Object.assign(w.ctx.H, { deleted: new Set(), gone: new Map(), ctl: new Map() });
-  Object.assign(w.ctx, { hermesRank() {}, hermesMergeNodes() {}, outboxDrain() {},
+  Object.assign(w.ctx, { refreshHermesProfiles() {}, hermesRank() {}, hermesMergeNodes() {}, outboxDrain() {},
     updateBridgeStatusLine() {}, mark() {}, liveRowRefresh() {}, renderNote: () => { notes++; } });
   vm.runInContext(fn("applyBridgeSnapshot"), w.ctx);
   vm.runInContext("applyBridgeSnapshot({nodes: []})", w.ctx);

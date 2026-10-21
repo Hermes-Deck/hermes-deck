@@ -27,6 +27,8 @@ function fromApp(e) {
  * ipcMain for main-window channels: `handle` rejects a foreign sender before the handler runs; `on`
  * (fire-and-forget, nobody to reject to) ignores it.
  */
+let hostGate = null; // (channel, e) => boolean, set by main.js once settings exist (multi-host)
+function setHostGate(fn) { hostGate = fn; }
 function appIpc(ipcMain) {
   const mark = (wrapper) => Object.defineProperty(wrapper, GUARDED, { value: true }); // tests check every channel
   return {
@@ -35,6 +37,7 @@ function appIpc(ipcMain) {
         channel,
         mark((e, ...args) => {
           fromApp(e);
+          if (hostGate && !hostGate(channel, e)) throw new Error(i18nText("hosts.stalePage"));
           return fn(e, ...args);
         })
       );
@@ -43,12 +46,21 @@ function appIpc(ipcMain) {
       ipcMain.on(
         channel,
         mark((e, ...args) => {
-          if (isApp(e)) fn(e, ...args);
+          if (isApp(e) && (!hostGate || hostGate(channel, e))) fn(e, ...args);
         })
       );
     },
   };
 }
 const GUARDED = Symbol.for("hermes-deck.ipc-guarded");
+/**
+ * Multi-host: the page is loaded as deck://app/index.html?host=<id>. A page made for another host (a switch in
+ * flight) may not act on the active host's connections. "" = a page from before any host existed: it belongs to
+ * whichever host became the first one.
+ */
+function pageHost(e) {
+  try { return new URL(String(e && e.senderFrame && e.senderFrame.url)).searchParams.get("host") || ""; } catch { return null; }
+}
+const samePage = (e, active) => { const p = pageHost(e); return p === "" || p === (active || ""); };
 
-module.exports = { isApp, fromApp, appIpc, APP_PAGE, get REFUSED() { return REFUSED(); }, GUARDED };
+module.exports = { isApp, fromApp, appIpc, pageHost, samePage, setHostGate, APP_PAGE, get REFUSED() { return REFUSED(); }, GUARDED };

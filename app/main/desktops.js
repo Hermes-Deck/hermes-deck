@@ -445,7 +445,9 @@ function initDesktops({ ipc, settings, presence, send = () => {}, dataDir, host 
   });
   ipc.handle("desktops:host", async (_e, on) => {
     if (shot) throw new Error("not in a screenshot run");
-    const want = on === true;
+    return setHost(on === true);
+  });
+  async function setHost(want) {
     settings.updateDesktopsHost(want);
     gen += 1; // a start in flight from before this switch is undone when it lands
     if (want) {
@@ -461,7 +463,7 @@ function initDesktops({ ipc, settings, presence, send = () => {}, dataDir, host 
     }
     changed();
     return { settings: settings.publicView(), state: state() };
-  });
+  }
   ipc.handle("desktops:stop", async (_e, profile) => {
     const p = needProfile(profile);
     await dh.stop(p);
@@ -509,6 +511,8 @@ function initDesktops({ ipc, settings, presence, send = () => {}, dataDir, host 
     quit,
     /** The generic settings save changed desktops.* (limit, memory ...): push the new state and heartbeat. */
     settingsChanged: () => changed(),
+    /** Multi-host: a host switch ends hosting (the consent was given to the old host). */
+    hostOff: () => (shot ? Promise.resolve() : setHost(false)),
     _test: { poll, state },
   };
 }

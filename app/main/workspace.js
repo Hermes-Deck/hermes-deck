@@ -456,7 +456,7 @@ function initWorkspace({ send, presence, settings = null, notify = null, shot = 
 
   if (demo) runDemo(demo, host, presence, (m) => onRelayMsg(m) || send("relay", m));
 
-  return { attachRelay, onRelayMsg, state, host };
+  return { attachRelay, onRelayMsg, state, host, forgetTransferConsent: () => transfer.forget() };
 }
 
 // ---- screenshot demo: a real headless browser on a temp profile ------------------------------------------------

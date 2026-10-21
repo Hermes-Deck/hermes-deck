@@ -86,6 +86,11 @@ class BrowserTransfer {
     this.consent = next;
     return this.state();
   }
+  /** Multi-host: consent was given while another host was active; the next host asks again. Local only. */
+  forget() {
+    this.consent = { allowed: false, autoTarget: null };
+    try { fs.writeFileSync(`${this.policyFile}.tmp`, JSON.stringify(this.consent), { mode: 0o600 }); fs.renameSync(`${this.policyFile}.tmp`, this.policyFile); } catch {}
+  }
   async disableAutomatic() {
     await this.request("transfer-policy", "default", { autoTarget: null });
     this.consent.autoTarget = null;

@@ -70,7 +70,7 @@ test("an idle snapshot row takes the stored last activity (not the lease's 'now'
 test("the rail orders idle sessions by last activity, running ones first", () => {
   const groups = fn("hermesGroups");
   const ctx = {
-    H: { nodes: new Map(), rank: new Map(), requests: [], sel: null, subOpen: new Set() },
+    H: { profiles: [], nodes: new Map(), rank: new Map(), requests: [], sel: null, subOpen: new Set() },
     nodeLive: (n) => n.state === "thinking", isSubagent: () => false, SUB_FOLD_AFTER_S: 600, Date, Math,
   };
   const add = (sid, updatedAt, state = "idle", rank = 0) => { ctx.H.nodes.set(sid, { sid, profile: "default", updatedAt, state, terminalAt: null }); ctx.H.rank.set(sid, rank); };

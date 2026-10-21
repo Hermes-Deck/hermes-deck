@@ -635,6 +635,7 @@ class ProtocolTests(unittest.TestCase):
                             first = register("rpc-alpha", 1780000000.000101, "alpha")
                             for _ in range(2):
                                 live, replay = receive()
+                                self.assertEqual(live["params"]["profile_name"], "alpha", "the owning profile rides the frame")
                                 self.assertEqual(live["request_created_at"], first.created_at)
                                 self.assertEqual(replay["result"]["open_requests"][0]["request_created_at"], first.created_at)
                             replacement = register("rpc-alpha", 1780000000.000202, "alpha")

@@ -21,8 +21,19 @@ function repoOf(url) {
   return m ? `${m[1]}/${m[2]}` : "";
 }
 
+function releaseInfo(env = process.env, version = require("../package.json").version) {
+  const { TEST_TAG, STABLE_TAG } = require("../main/update-check");
+  const releaseTag = env.DECK_RELEASE_TAG || "";
+  if (releaseTag && !((TEST_TAG.test(releaseTag) || STABLE_TAG.test(releaseTag)) && releaseTag.replace(/^v/, "").split("-test.")[0] === version)) throw new Error("DECK_RELEASE_TAG must match the package version (vX.Y.Z or vX.Y.Z-test.N)");
+  if (env.DECK_UPDATE_CHANNEL && !["stable", "test"].includes(env.DECK_UPDATE_CHANNEL)) throw new Error("Invalid DECK_UPDATE_CHANNEL");
+  const channel = releaseTag ? (TEST_TAG.test(releaseTag) ? "test" : "stable") : env.DECK_UPDATE_CHANNEL || "stable";
+  if (releaseTag && env.DECK_UPDATE_CHANNEL && channel !== env.DECK_UPDATE_CHANNEL) throw new Error("Release tag/channel mismatch");
+  return { channel, releaseTag };
+}
+
 function main() {
   const info = {
+    ...releaseInfo(),
     commit: git("rev-parse", "HEAD"),
     branch: git("rev-parse", "--abbrev-ref", "HEAD"),
     repo: repoOf(git("remote", "get-url", "origin")),
@@ -35,4 +46,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { repoOf };
+module.exports = { repoOf, releaseInfo };

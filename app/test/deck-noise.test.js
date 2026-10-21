@@ -29,7 +29,7 @@ const cls = (n) => (n.attrs && n.attrs.class) || "";
 // ================================================================ A. rail grouping
 function railWorld(nodes, { sel = null, requests = [] } = {}) {
   const ctx = {
-    H: { nodes: new Map(), rank: new Map(), sel, requests, subOpen: new Set() },
+    H: { profiles: [], nodes: new Map(), rank: new Map(), sel, requests, subOpen: new Set() },
     nodeLive: (n) => !!n && n.terminalAt === null && (n.active || n.state === "thinking" || n.state === "working"),
     h: element, i18nNode: (k, v) => ({ textContent: I18N.t(k, v) }), mark() {}, Math, Date, Set, Map,
   };

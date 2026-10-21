@@ -175,6 +175,26 @@ function mount(over = {}) {
   return { sv, saves, builds, store, ctx, root: () => doc.body.querySelector(".sv"), setSettings: (s) => { settings = s; } };
 }
 
+test("pet Always on top is a labelled checkbox and saves only its boolean in both languages", async () => {
+  for (const language of ["en", "tr"]) {
+    i18n.setLanguage(language);
+    const { sv, saves, root } = mount({ settings: () => ({ desktop: { pet: true, petAlwaysOnTop: true } }) });
+    window.PetCatalog = { SKINS: [] };
+    sv.open("desktop");
+    const checkbox = root().querySelector("#s-desk-petAlwaysOnTop");
+    assert.ok(checkbox);
+    assert.equal(checkbox.getAttribute("type"), "checkbox");
+    assert.ok(root().querySelector('[for="s-desk-petAlwaysOnTop"]'));
+    assert.match(checkbox.closest(".sv-row").text, language === "en" ? /Always on top/ : /Her zaman üstte/);
+    checkbox.checked = false;
+    checkbox.dispatch("change");
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(saves.at(-1), { desktop: { petAlwaysOnTop: false } });
+    sv.close();
+  }
+  i18n.setLanguage("en");
+});
+
 test("Appearance offers plain agent messages by default and saves bubble through ctx.save", async () => {
   i18n.extend(require("../renderer/i18n-b"));
   const { sv, saves, root } = mount();
@@ -865,6 +885,43 @@ test("Host version: a relay without host updates keeps only the command; a curre
   const b = mount({ deck, hostVersions: () => hostState({ remote: remoteOk, status: null, restarts: [], queueError: null }, { relay: { version: "1.3.0", older: false, mismatch: false }, plugins: [{ profile: "default", version: "1.3.0", older: false, source: "relay" }] }) });
   b.sv.open("relay");
   assert.equal(b.root().querySelector('[data-fk="hostupd:update"]'), null, "the host is current: nothing to press");
+});
+
+test("General Updates channel resets the target without installing; only the checked target is sent", async () => {
+  let status = { version: "1.0.0", channel: "stable", unchecked: true }, checks = 0;
+  const installs = [], selections = [];
+  const deck = { updates: {
+    status: async () => ({ status }), on() {}, open() {},
+    channel: async channel => { selections.push(channel); status = { version: "1.0.0", channel, unchecked: true }; return { status }; },
+    check: async () => { checks++; status = { ...status, unchecked: false, action: "release", target: "checked-test-target", release: { tag: "v1.0.0-test.2", newer: true } }; return { status }; },
+    install: async target => { installs.push(target); return { ok: true }; },
+  } };
+  const { sv, root, saves } = mount({ deck });
+  sv.open("general");
+  await new Promise(resolve => setImmediate(resolve));
+  let channel = root().querySelector("#s-upd-channel");
+  assert.deepEqual(channel.children.map(n => n.getAttribute("value")), ["stable", "test"]);
+  assert.equal(channel.children.find(n => n.getAttribute("selected") !== null).getAttribute("value"), "stable");
+  assert.match(root().text, /Only this desktop app/);
+  channel.value = "test";
+  channel.dispatch("change");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(selections, ["test"]);
+  assert.deepEqual(installs, []);
+  assert.deepEqual(saves, []);
+  assert.equal(checks, 0);
+  assert.equal(root().querySelector('[data-fk="upd:install"]'), null);
+  root().querySelector('[data-fk="upd:check"]').dispatch("click");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(root().text, /Target versionv1\.0\.0-test\.2/);
+  root().querySelector('[data-fk="upd:install"]').dispatch("click");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(installs, ["checked-test-target"], "main process provides native confirmation");
+  channel = root().querySelector("#s-upd-channel");
+  channel.value = "stable";
+  channel.dispatch("change");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(root().querySelector('[data-fk="upd:install"]'), null);
 });
 
 test("General › Updates: the host auto-update switch saves updates.host", async () => {

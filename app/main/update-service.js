@@ -2,12 +2,12 @@
 // Wires main/update-check.js into the app: real network/process access, the "updates:*" IPC channels for
 // Settings > General > Updates, a check on start and every 6 h (Settings: updates.auto), and one notification per
 // new main commit or release. Clicking it opens Settings at the Updates group.
-const { app, shell } = require("electron");
+const { app, shell, dialog } = require("electron");
 const { execFile, spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const { t: i18nText } = require("../renderer/i18n");
-const { UpdateChecker, buildInfo } = require("./update-check");
+const { UpdateChecker, buildInfo, CANONICAL_REPO } = require("./update-check");
 
 const EVERY_MS = 6 * 60 * 60 * 1000;
 const FIRST_MS = 20 * 1000;
@@ -57,8 +57,9 @@ function run(cmd, args, { cwd, detached = false } = {}) {
       return resolve({ code: 1, out: e.message });
     }
     if (detached) {
-      child.unref();
-      return resolve({ code: 0, out: "" });
+      child.once("error", (e) => resolve({ code: 1, out: e.message }));
+      child.once("spawn", () => { child.unref(); resolve({ code: 0, out: "" }); });
+      return;
     }
     let out = "";
     const keep = (d) => { out = (out + d).slice(-8000); };
@@ -67,6 +68,13 @@ function run(cmd, args, { cwd, detached = false } = {}) {
     child.on("error", (e) => resolve({ code: 1, out: e.message }));
     child.on("close", (code) => resolve({ code, out }));
   });
+}
+
+// NSIS targets the normal install and profile. A portable/isolated TEST must not replace them.
+function windowsInstallSupported(exe, userData, localAppData, appData) {
+  const same = (a, b) => path.win32.resolve(a).toLowerCase() === path.win32.resolve(b).toLowerCase();
+  return !!localAppData && !!appData && same(exe, path.win32.join(localAppData, "Programs", "hermes-deck", "Hermes Deck.exe")) &&
+    same(userData, path.win32.join(appData, "hermes-deck"));
 }
 
 const has = async (cmd) => !!(await execOut(process.platform === "win32" ? "where" : "which", [cmd]));
@@ -98,6 +106,7 @@ function initUpdates({ ipc, settings, send, notify, quit, openSettings = () => {
     platform: process.platform,
     arch: process.arch,
     pid: process.pid,
+    installSupported: process.platform !== "win32" || (app.isPackaged && windowsInstallSupported(process.execPath, app.getPath("userData"), process.env.LOCALAPPDATA, app.getPath("appData"))),
     // the running bundle (…/Hermes Deck.app/Contents/MacOS/…); a dev run (electron .) has none
     appBundle: process.platform === "darwin" && app.isPackaged ? ((/^(.+?\.app)\/Contents\/MacOS\//.exec(process.execPath) || [])[1] || "") : "",
     workDir: app.getPath("userData"),
@@ -105,7 +114,8 @@ function initUpdates({ ipc, settings, send, notify, quit, openSettings = () => {
     has,
     progress: (ev) => send("updates", { t: "progress", ...ev }),
   });
-  const view = () => ({ status: checker.status || { ...checker.base(), unchecked: true }, busy: checker.busy });
+  let confirming = false;
+  const view = () => ({ status: checker.status && checker.status.channel === checker.base().channel ? checker.status : { ...checker.base(), unchecked: true }, busy: confirming ? "confirm" : checker.busy });
   const announce = () => send("updates", { t: "status", ...view() });
 
   // one notification per new state: the branch head or the release tag we last told the user about
@@ -132,6 +142,7 @@ function initUpdates({ ipc, settings, send, notify, quit, openSettings = () => {
   }
 
   async function check() {
+    if (confirming || checker.busy) return checker.status;
     const st = await checker.check();
     announce();
     return st;
@@ -142,9 +153,27 @@ function initUpdates({ ipc, settings, send, notify, quit, openSettings = () => {
     await check();
     return view();
   });
-  ipc.handle("updates:install", async () => {
+  ipc.handle("updates:channel", (_e, channel) => {
+    if (checker.busy || confirming) return { ok: false, error: "updates.busy" };
+    if (!["stable", "test"].includes(channel)) return { ok: false, error: "updates.badChannel" };
+    settings.setUpdateChannel(channel);
+    checker.status = null;
+    announce(); // changing the channel only saves the choice; no network, build or install
+    return view();
+  });
+  ipc.handle("updates:install", async (_e, target) => {
+    if (checker.busy || confirming) return { ok: false, error: "updates.busy" };
     try {
-      const file = await checker.install();
+      const st = checker.status;
+      if (!st || !st.target || target !== st.target || st.channel !== checker.base().channel) throw new Error("updates.changed");
+      confirming = true;
+      announce();
+      const answer = await dialog.showMessageBox({ type: "warning", title: i18nText("updates.title"),
+        message: i18nText("updates.confirmTarget", { channel: i18nText(`updates.channel.${st.channel}`), target: st.action === "release" ? st.release.tag : st.head }),
+        detail: i18nText(st.replaceBuild ? "updates.confirmReturn" : st.action === "build" ? "updates.confirmSource" : "updates.confirmDesktop"),
+        buttons: [i18nText("updates.cancel"), i18nText("updates.install")], defaultId: 0, cancelId: 0, noLink: true });
+      if (answer.response !== 1) return { ok: true, cancelled: true };
+      const file = await checker.install(target);
       send("updates", { t: "progress", phase: "quit", text: path.basename(file) });
       setTimeout(quit, 800); // the installer waits for this process to end before it replaces the app
       return { ok: true };
@@ -153,12 +182,15 @@ function initUpdates({ ipc, settings, send, notify, quit, openSettings = () => {
       // macOS: the checksum-verified zip is downloaded; open its folder so the user can install it by hand
       if (/^updates\.manual(Downloaded|Built)$/.test(e.message) && e.file && fs.existsSync(e.file)) shell.showItemInFolder(e.file);
       return { ok: false, error: /^updates\./.test(e.message) ? e.message : "updates.failed", detail: e.detail || (/^updates\./.test(e.message) ? "" : e.message) };
+    } finally {
+      confirming = false;
+      announce();
     }
   });
   ipc.handle("updates:open", () => {
     const st = checker.status;
     const url = st && st.release && st.release.url;
-    if (url && /^https:\/\/github\.com\//.test(url)) shell.openExternal(url);
+    if (url && url.startsWith(`https://github.com/${CANONICAL_REPO}/releases/tag/`)) shell.openExternal(url);
   });
 
   if (shot) return { checker };
@@ -168,4 +200,4 @@ function initUpdates({ ipc, settings, send, notify, quit, openSettings = () => {
   return { checker, check };
 }
 
-module.exports = { initUpdates, tokenSource, run };
+module.exports = { initUpdates, tokenSource, run, windowsInstallSupported };

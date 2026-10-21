@@ -101,10 +101,19 @@ contextBridge.exposeInMainWorld("deck", {
   // settings (secrets go in, never come back out)
   settingsGet: () => ipcRenderer.invoke("settings:get"),
   settingsSave: (patch) => ipcRenderer.invoke("settings:save", patch),
+  hosts: {
+    add: (spec) => ipcRenderer.invoke("hosts:add", spec), // {name, relay: {url, token}, bridge}
+    remove: (id) => ipcRenderer.invoke("hosts:remove", id),
+    select: (id) => ipcRenderer.invoke("hosts:select", id),
+    requests: () => ipcRenderer.invoke("hosts:requests"),
+    answer: (hostId, kind, id, value, o) => ipcRenderer.invoke("hosts:answer", hostId, kind, id, value, o),
+    onEvent: listen("hosts"),
+  },
   updates: {
     status: () => ipcRenderer.invoke("updates:status"),
     check: () => ipcRenderer.invoke("updates:check"),
-    install: () => ipcRenderer.invoke("updates:install"),
+    install: (target) => ipcRenderer.invoke("updates:install", target),
+    channel: (channel) => ipcRenderer.invoke("updates:channel", channel),
     open: () => ipcRenderer.invoke("updates:open"),
     on: listen("updates"),
   },
@@ -161,8 +170,8 @@ contextBridge.exposeInMainWorld("deck", {
     modelOptions: (sid, opts) => ipcRenderer.invoke("bridge:model-options", sid, opts),
     setModel: (sid, choice) => ipcRenderer.invoke("bridge:set-model", sid, choice),
     setEffort: (sid, opts) => ipcRenderer.invoke("bridge:set-effort", sid, opts),
-    answerApproval: (id, choice) => ipcRenderer.invoke("bridge:answer-approval", id, choice),
-    answerQuestion: (id, answers) => ipcRenderer.invoke("bridge:answer-question", id, answers),
+    answerApproval: (id, choice, o) => ipcRenderer.invoke("bridge:answer-approval", id, choice, o),
+    answerQuestion: (id, answers, o) => ipcRenderer.invoke("bridge:answer-question", id, answers, o),
     // Botlar: profile roster + avatars, the read-only Bot Chat lookup, and its create (first message only)
     profiles: () => ipcRenderer.invoke("bridge:profiles"),
     commands: (profile) => ipcRenderer.invoke("bridge:commands", profile),

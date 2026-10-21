@@ -76,7 +76,7 @@
       close(false);
     }
     function redraw() {
-      const agents = derive(store.data), total = today(store.data), need = store.data.requests.length;
+      const agents = derive(store.data), total = today(store.data), need = store.items().filter(x => x.request).length;
       const running = agents.filter(a => a.state === "running").length;
       const tile = a => h("span", { class: `tf-avatar ${a.state}`, "aria-hidden": "true" }, String(a.name || "?").slice(0, 1));
       const cost = total ? usage.costText(total) : "–";

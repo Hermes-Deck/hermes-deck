@@ -350,6 +350,9 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
       if (UPD.busy === "check") return T("updates.checking");
       if (!s || s.unchecked) return T("updates.unknown");
       if (s.error) return T(s.error) + (s.detail ? ` (${s.detail})` : "");
+      if (s.unavailable) return T(s.unavailable);
+      if (s.replaceBuild && s.release) return T("updates.returnAvailable", { tag: s.release.tag });
+      if (s.channel === "test" && s.release && !s.release.newer) return T("updates.releaseCurrent");
       if (s.release && s.release.newer) return T("updates.newRelease", { tag: s.release.tag });
       if (s.behind > 0 && s.ahead > 0) return T("updates.diverged", { count: s.behind, branch: s.branch, own: s.ahead });
       if (s.behind > 0) return T("updates.behind", { count: s.behind, branch: s.branch });
@@ -369,7 +372,7 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
       const action = s && !s.error ? s.action : "none";
       const go = action === "release" || action === "build"
         ? h("button", { class: "btn mini primary", type: "button", disabled: working ? true : null, dataset: { fk: "upd:install" },
-          onclick: () => { if (window.confirm(T(action === "release" ? "updates.confirmRelease" : "updates.confirmBuild", { tag: s.release ? s.release.tag : "", count: s.behind, branch: s.branch }))) updatesCall(() => ctx.deck.updates.install()); } },
+          onclick: () => updatesCall(() => ctx.deck.updates.install(s.target)) },
           node(action === "release" ? "updates.installRelease" : "updates.buildMain"))
         : action === "download"
           ? h("button", { class: "btn mini", type: "button", dataset: { fk: "upd:open" }, onclick: () => ctx.deck.updates.open() }, node("updates.openRelease"))
@@ -379,16 +382,21 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
         ? h("div", { class: "sv-row sv-block" }, h("ul", { class: "upd-commits" }, ...s.commits.slice(0, 6).map((c) => h("li", null, h("code", null, c.sha), " ", c.title))),
           s.behind > 6 ? h("p", { class: "upd-more" }, T("updates.more", { count: s.behind - 6 })) : null)
         : null;
-      const repo = input("s-upd-repo", { value: u.repo, placeholder: (s && s.repo) || "owner/name" });
-      const branch = input("s-upd-branch", { value: u.branch || "main" });
+      const selectedChannel = (s && s.channel) || u.channel || "stable";
+      const channel = h("select", { id: "s-upd-channel", disabled: working ? true : null, dataset: { fk: "upd:channel" },
+        onchange: (event) => updatesCall(() => ctx.deck.updates.channel(event.target.value)) },
+        ...["stable", "test"].map(value => h("option", { value, selected: value === selectedChannel ? true : null }, T(`updates.channel.${value}`))));
       const token = input("s-upd-token", { type: "password", placeholder: u.hasToken ? T("U0485") : T("updates.tokenHint") });
-      const saveAdv = () => ctx.save({ updates: { repo: repo.value.trim(), branch: branch.value.trim() || "main", ...(token.value ? { token: token.value } : {}) } }, T("set.saved"));
+      const saveAdv = () => ctx.save({ updates: { ...(token.value ? { token: token.value } : {}) } }, T("set.saved"));
       const adv = h("details", { class: "sv-row sv-block upd-adv" }, h("summary", null, T("updates.advanced")),
-        row(node("updates.repo"), repo, { id: "s-upd-repo" }), row(node("updates.branch"), branch, { id: "s-upd-branch" }),
+        row(node("updates.repo"), h("span", { class: "sv-path" }, s && s.repo || "Hermes-Deck/hermes-deck")),
         row(node("updates.token"), token, { id: "s-upd-token", title: T("updates.tokenHelp") }),
         switchRow("s-upd-src", node("updates.fromSource"), u.fromSource === true, (on) => ctx.save({ updates: { fromSource: on } }, T("set.saved")), { fk: "upd:src" }),
         h("div", { class: "form-actions sv-actions" }, h("button", { class: "btn mini", type: "button", dataset: { fk: "upd:save" }, onclick: saveAdv }, node("A0151"))));
       return group(node("updates.group"),
+        row(node("updates.channel"), channel, { id: "s-upd-channel" }),
+        h("p", { class: "sv-row sv-block" }, T("updates.channelHelp")),
+        s && s.release ? row(node("updates.target"), h("span", { class: "sv-path" }, s.release.tag)) : null,
         build ? row(node("updates.thisBuild"), h("span", { class: "sv-path", title: s && s.repo ? s.repo : null }, build)) : null,
         row(node("updates.state"), h("span", { class: `upd-state${s && s.error ? " bad" : s && (s.behind > 0 || (s.release && s.release.newer)) ? " new" : ""}`, role: "status" }, updatesText(s))),
         commits,
@@ -406,8 +414,27 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
       for (const el of [url, token]) el.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); save(); } });
       kids.push(group(null, row(node("A0236"), url, { id: "s-relay-url" }), row("Token", token, { id: "s-relay-token" })),
         h("div", { class: "form-actions sv-actions" }, h("button", { class: "btn primary", type: "button", dataset: { fk: "relay:save" }, onclick: save }, node("U0487"))),
-        secretWarning(), hostGroup("relay"));
+        secretWarning(), hostGroup("relay"), hostsGroup());
     };
+
+    /** Saved Hermes hosts: switch, add (relay address + token), remove. A host's direct connection is set in the Hermes
+     * section while that host is active. Tokens go in and never come back (publicView shows hasToken only). */
+    function hostsGroup() {
+      const s = st(), hosts = Array.isArray(s.hosts) ? s.hosts : [], api = ctx.deck && ctx.deck.hosts;
+      if (!api) return null;
+      const rows = hosts.map((x) => h("div", { class: "sv-row" },
+        h("span", { class: "sv-label" }, x.name, x.id === s.activeHost ? h("small", null, ` · ${T("hosts.active")}`) : null),
+        h("div", { class: "sv-ctl" }, h("span", { class: "sv-path" }, x.relay.url || (x.bridge.mode !== "off" ? T("hosts.direct") : "")),
+          x.id === s.activeHost ? null : h("button", { class: "btn mini", type: "button", dataset: { fk: `hosts:use:${x.id}` }, onclick: () => ctx.saveCall(() => api.select(x.id), T("hosts.switched")) }, node("hosts.use")),
+          x.id === s.activeHost ? null : h("button", { class: "linkbtn sv-link", type: "button", dataset: { fk: `hosts:rm:${x.id}` }, onclick: () => ctx.saveCall(() => api.remove(x.id), T("set.saved")) }, node("hosts.remove")))));
+      const name = input("s-host-name", { placeholder: T("hosts.namePlaceholder"), maxlength: "40" });
+      const url = input("s-host-url", { placeholder: "ws://<relay-host>:9330" });
+      const token = input("s-host-token", { type: "password", placeholder: T("A0237") });
+      const add = () => ctx.saveCall(() => api.add({ name: name.value, relay: { url: url.value, token: token.value } }), T("hosts.added"));
+      return group(node("hosts.title"), ...rows,
+        row(node("hosts.name"), name, { id: "s-host-name" }), row(node("A0236"), url, { id: "s-host-url" }), row("Token", token, { id: "s-host-token" }),
+        h("div", { class: "form-actions sv-actions" }, h("button", { class: "btn mini", type: "button", dataset: { fk: "hosts:add" }, onclick: add }, node("hosts.add"))));
+    }
 
     BUILDERS.telegram = (kids) => {
       const s = st();
@@ -572,6 +599,7 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
       kids.push(soundsGroup(d));
       kids.push(group(node("A0183"),
         flag("pet", node("A0183")),
+        flag("petAlwaysOnTop", node("set.petAlwaysOnTop"), { off: !d.pet, title: T("set.petAlwaysOnTopHelp") }),
         row(node("U0333"), skin, { id: "s-desk-petSkin", cls: d.pet ? "" : "off" }),
         row(node("set.petSize"), size, { id: "s-desk-petSize", cls: d.pet ? "" : "off" }),
         flag("petMotion", node("U0551"), { off: !d.pet, title: T("U0552") })));

@@ -270,7 +270,7 @@ function setSkin(name) {
 /** What the pet page follows from Settings → Desktop. */
 function petOptions() {
   const f = flags();
-  return { skin: f.petSkin, motion: f.petMotion !== false, bubbles: !!f.notifications, size: f.petSize };
+  return { skin: f.petSkin, motion: f.petMotion !== false, bubbles: !!f.notifications, size: f.petSize, alwaysOnTop: f.petAlwaysOnTop !== false };
 }
 
 function applySettings() {

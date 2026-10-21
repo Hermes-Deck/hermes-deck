@@ -119,11 +119,16 @@ def install_fake_hermes(home: Path, log=None):
                                      {"id": "s-idle", "title": "", "message_count": 1, "source": "cli"}]})
             if not state["asked"]:
                 state["asked"] = True
+                # like tui_gateway.server_requests.ServerRequest: registered, with frame()/snapshot() and an owning session
+                params = {"command": "rm -rf build", "description": "Komut onayı", "choices": ["once", "deny"]}
+                frame = lambda: {"jsonrpc": "2.0", "id": "A1", "method": "approval", "params": {"session_id": "rpc-s-main", **params}}
+                req = types.SimpleNamespace(id="A1", sid="rpc-s-main", method="approval", params=params,
+                                            created_at=time.time(), frame=frame, snapshot=frame)
+                with sessions_lock:
+                    sessions.setdefault("rpc-s-main", {"transport": transport, "show_reasoning": False, "profile_home": None})
                 with open_requests._lock:
-                    open_requests._open["A1"] = types.SimpleNamespace(id="A1", sid="rpc-s-main", method="approval")
-                threading.Timer(0.05, transport.write, args=({"jsonrpc": "2.0", "id": "A1", "method": "approval",
-                    "params": {"session_id": "rpc-s-main", "command": "rm -rf build", "description": "Komut onayı",
-                               "choices": ["once", "deny"]}},)).start()
+                    open_requests._open["A1"] = req
+                threading.Timer(0.05, transport.write, args=(frame(),)).start()
             return reply
         if method == "session.resume":
             with sessions_lock:
@@ -194,7 +199,7 @@ def install_fake_hermes(home: Path, log=None):
     sessions["rpc-tui"] = {"transport": object(), "show_reasoning": False}  # a session another surface owns
     module("tui_gateway.server", dispatch=dispatch, register_live_transport=live.append,
            unregister_live_transport=lambda t: t in live and live.remove(t), _sessions=sessions,
-           _sessions_lock=sessions_lock, _server_requests=open_requests, _emit=emit)
+           _sessions_lock=sessions_lock, _server_requests=open_requests, _emit=emit, _launch_home=lambda: str(home))
     module("tui_gateway.transport", FanoutTransport=FanoutTransport, bind_transport=lambda t: object(),
            reset_transport=lambda token: None)
 

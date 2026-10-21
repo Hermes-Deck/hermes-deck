@@ -24,6 +24,12 @@
         title: text(s.title) || text(s.name) || text(r.command) || text(r.questions?.[0]?.question),
         detail: text(r.description), at: Number(r.at || 0), origin: "direct" };
     });
+    // other hosts' open requests (multi-host): keyed by host too, so equal ids on two machines never meet
+    for (const host of list(data.remote)) for (const r of list(host.requests)) {
+      if (!r || !r.id || !["approval", "question"].includes(r.kind)) continue;
+      out.push({ ...r, type: r.kind, key: `request:${JSON.stringify([host.id, r.profile || "default", r.id])}`, request: r, host: host.id, hostName: text(host.name),
+        title: text(r.command) || text(r.questions?.[0]?.question), detail: text(r.description), at: Number(r.at || 0), origin: "host" });
+    }
     for (const s of all) {
       if (s.parent || s.parentId) continue;
       const type = ["error", "failed"].includes(s.state) ? "failed" : ["finished", "done"].includes(s.state) || s.triageDoneAt ? "done" : null;
@@ -35,7 +41,7 @@
     return out.sort((a, b) => rank[a.type] - rank[b.type] || (rank[a.type] ? b.at - a.at : a.at - b.at));
   }
   function createStore(deck = {}, now = () => Date.now(), t = key => root.DeckI18n ? root.DeckI18n.t(key) : key) {
-    const data = { direct: [], relay: [], requests: [], agents: {}, fleet: null, tokens: [], bridgeStatus: "off", relayStatus: "unconfigured" };
+    const data = { direct: [], relay: [], requests: [], remote: [], agents: {}, fleet: null, tokens: [], bridgeStatus: "off", relayStatus: "unconfigured" };
     const listeners = new Set(), pending = new Set(), errors = new Map(), dismissed = new Set(), turns = new Map();
     let undoKey = null;
     const notify = () => { for (const fn of listeners) fn(data); };
@@ -92,9 +98,22 @@
       if (m.t === "status") data.relayStatus = m.status || "closed";
       notify();
     }
+    function feedHosts(m = {}) {
+      if (m.t !== "requests") return;
+      data.remote = list(m.hosts).filter(x => x && typeof x.id === "string");
+      notify();
+    }
+    /** Can this row be answered now? Its own host's connection decides, not the active one's. */
+    function live(row) {
+      if (!row.host) return data.bridgeStatus === "open" && data.requests.includes(row.request);
+      const host = list(data.remote).find(x => x.id === row.host);
+      return !!host && host.status === "open" && list(host.requests).some(x => x.id === row.request.id && (x.profile || "default") === (row.request.profile || "default"));
+    }
     async function answer(row, value) {
       const r = row.request;
-      // Capture the exact live request; duplicate ids across profiles are ambiguous in the existing preload API.
+      if (row.host) return answerRemote(row, value);
+      // Capture the exact live request. The host's request.answer carries only the id, so one id open in two
+      // profiles cannot be routed: refuse it (bridge.js refuses too). Ids on different hosts never meet here.
       if (!r || data.bridgeStatus !== "open" || pending.has(row.key) || !data.requests.includes(r)
         || data.requests.filter(x => x.id === r.id).length !== 1) return false;
       if (r.kind === "approval" && !list(r.choices).includes(value)) return false;
@@ -103,14 +122,30 @@
       if (typeof deck.bridge?.[method] !== "function") return false;
       pending.add(row.key); errors.delete(row.key); notify();
       try {
-        const result = await deck.bridge[method](r.id, value);
+        // an unknown profile stays unknown: the host resolves it, the Deck never guesses "default"
+        const result = await deck.bridge[method](r.id, value, r.profile ? { profile: r.profile } : {});
         if (result?.status !== "ok" && result?.status !== "expired") throw new Error(t("triage.notDelivered"));
         data.requests = data.requests.filter(x => x !== r);
         return true;
       } catch (e) { errors.set(row.key, String(e.message || e)); return false; }
       finally { pending.delete(row.key); notify(); }
     }
-    return { data, items, feedBridge, feedRelay, answer,
+    async function answerRemote(row, value) {
+      const r = row.request, host = list(data.remote).find(x => x.id === row.host);
+      if (!host || pending.has(row.key) || !live(row) || list(host.requests).filter(x => x.id === r.id).length !== 1) return false;
+      if (r.kind === "approval" && !list(r.choices).includes(value)) return false;
+      if (r.kind === "question" && (!value || typeof value !== "object" || !Object.values(value).some(v => typeof v === "string" && v.trim()))) return false;
+      if (typeof deck.hosts?.answer !== "function") return false;
+      pending.add(row.key); errors.delete(row.key); notify();
+      try {
+        const result = await deck.hosts.answer(row.host, r.kind, r.id, value, r.profile ? { profile: r.profile } : {});
+        if (result?.status !== "ok" && result?.status !== "expired") throw new Error(t("triage.notDelivered"));
+        host.requests = list(host.requests).filter(x => x !== r && !(x.id === r.id && (x.profile || "default") === (r.profile || "default")));
+        return true;
+      } catch (e) { errors.set(row.key, String(e.message || e)); return false; }
+      finally { pending.delete(row.key); notify(); }
+    }
+    return { data, items, feedBridge, feedRelay, feedHosts, answer, live,
       subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
       busy: key => pending.has(key), error: key => errors.get(key),
       dismiss(row) {
@@ -137,7 +172,7 @@
     const { h, store, t, forms, redraw } = ctx, r = row.request;
     let form = forms.get(row.key);
     if (!form) { form = { text: Object.create(null), pick: Object.create(null) }; forms.set(row.key, form); }
-    const disabled = store.busy(row.key) || store.data.bridgeStatus !== "open";
+    const disabled = store.busy(row.key) || !(store.live ? store.live(row) : store.data.bridgeStatus === "open");
     const button = (label, action, primary = false, extra = {}) => h("button", { type: "button", class: `te-btn${primary ? " primary" : ""}`, disabled,
       onclick: action, ...extra }, t(label));
     const kids = [];
@@ -227,9 +262,9 @@
               onclick: () => { selected = row.key; redraw(); } },
             h("span", { class: "te-kind", "aria-hidden": "true" }, shell.icon(row.type === "approval" ? "lock" : row.type === "question" ? "waiting" : row.type === "failed" ? "x" : "agent")),
             h("span", { class: "te-row-title" }, h("b", null, row.title || t(`triage.${row.type}`)), h("small", null, row.detail || t(`triage.${row.type}`))),
-            h("span", { class: "te-row-agent" }, row.agent || row.profile || ""),
+            h("span", { class: "te-row-agent" }, row.hostName ? `${row.agent || row.profile || ""} · ${t("triage.fromHost", { host: row.hostName })}` : row.agent || row.profile || ""),
             h("span", { class: "te-age" }, row.at ? root.DeckUsage.agoText(row.at / 1000) : "")),
-            active ? h("div", { class: "te-row-body" }, body, row.request ? button("triage.openChat", () => open(row)) : null) : null);
+            active ? h("div", { class: "te-row-body" }, body, row.request && !row.host ? button("triage.openChat", () => open(row)) : null) : null);
           rows.set(row.key, article); kids.push(article);
         }
       }
@@ -248,7 +283,7 @@
       if (intent === "next" || intent === "previous") {
         selected = items[moveIndex(index, intent === "next" ? 1 : -1, items.length)].key;
         redraw(); rows.get(selected)?.scrollIntoView({ block: "nearest" }); el.focus({ preventScroll: true });
-      } else if (intent === "open") open(row);
+      } else if (intent === "open") { if (!row.host) open(row); } // another host's chat is not on this screen
       else if (intent === "approve" && row.type === "approval") store.answer(row, "once");
       else if (intent === "dismiss") dismiss(row);
       else return;
@@ -263,17 +298,20 @@
     const seen = new Set();
     const offBridge = deck.bridge?.onEvent(m => { seen.add(m.t); store.feedBridge(m); });
     const offRelay = deck.onRelay?.(store.feedRelay);
+    const offHosts = deck.hosts?.onEvent?.(m => { seen.add("hosts"); store.feedHosts(m); });
+    deck.hosts?.requests?.().then(hosts => { if (!seen.has("hosts")) store.feedHosts({ t: "requests", hosts }); }).catch(() => {});
     const ready = deck.bridge?.status ? deck.bridge.status().then(st => {
       if (!seen.has("status")) store.feedBridge({ t: "status", ...(st.status || { status: "off" }) });
       if (!seen.has("snapshot") && st.snapshot) store.feedBridge({ t: "snapshot", snapshot: st.snapshot });
       if (!seen.has("requests") && !seen.has("status")) store.feedBridge({ t: "requests", list: st.requests });
     }).catch(() => {}) : Promise.resolve();
-    return { ready, stop() { offBridge?.(); offRelay?.(); } };
+    return { ready, stop() { offBridge?.(); offRelay?.(); offHosts?.(); } };
   }
   function boot() {
     const shell = root.DeckShell, deck = root.deck, doc = root.document, h = shell?.service("h");
     if (!h || !deck || api.store) return;
     const store = api.store = createStore(deck);
+    store.subscribe(() => shell.service("triageChanged")?.());
     // Services seed late-mounted views without another relay connection; older shells use ordinary pushes.
     const seed = () => { const get = shell.service("triageData"); if (get) store.seed(get()); };
     seed(); shell.on("service", seed);

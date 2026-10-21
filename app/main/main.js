@@ -46,8 +46,16 @@ const { initWorkspace } = require("./workspace");
 // Bot screen (E2–E6): an agent may use this computer's desktop in one handed-over window; consent, Stop
 const botscreen = require("./cua");
 // every main-window channel answers only the Deck's own page (security audit L4; main/ipc-guard.js)
-const { isApp, fromApp, appIpc } = require("./ipc-guard");
+const { isApp, fromApp, appIpc, samePage, setHostGate } = require("./ipc-guard");
+// every channel also checks the page is the active host's (multi-host: a stale page from before a switch is refused)
+// (presence.js and workspace.js register through appIpc too, so the same gate covers them; cua checks it itself)
+// bridge:unload-done only reloads the page to the active host, so a stale page may call it to finish a switch.
+const HOSTLESS = new Set(["settings:get", "hosts:add", "hosts:remove", "hosts:select", "bridge:unload-done"]);
+const activeOf = () => (settings ? settings.data.activeHost : "");
+setHostGate((ch, e) => HOSTLESS.has(ch) || samePage(e, activeOf()));
 const ipc = appIpc(ipcMain);
+let switchingHost = false; // a host switch navigates even past the rail's beforeunload hold
+const appUrl = () => `deck://app/index.html?host=${encodeURIComponent(activeOf() || "")}`;
 
 const RENDERER = path.join(__dirname, "..", "renderer");
 const IS_MAC = process.platform === "darwin";
@@ -159,6 +167,7 @@ const httpUrl = (u) => {
 // The relay's hello and the direct connection's deck.version tell which relay / plugin versions run on the host.
 // Drift is shown in Settings and told once; a protocol mismatch stops only that connection until settings change.
 let hostVersions = null;
+let presence = null; // this device's hosting switches (set in whenReady)
 let hostUpdater = null; // set once the device presence exists (whenReady)
 const hostState = () => (hostVersions ? hostVersions.state() : null);
 function initHostVersions() {
@@ -271,6 +280,47 @@ function startBridge() {
   }));
   b.start();
 }
+
+// --- shared approvals from the other hosts ----------------------------------------------------
+// One BridgeClient per saved, non-active host with a direct connection, used ONLY for its approval and question
+// list and for answering them. An answer goes to the host the request came from, never to the active one.
+// ponytail: relay-only hosts are not watched here (their approvals reach the Deck through the direct bridge only).
+const HOST_PROTOCOL = require("./host-versions").PROTOCOL;
+const watchers = new Map(); // hostId -> {client, name, status, requests}
+function pushWatchers() {
+  send("hosts", { t: "requests", hosts: [...watchers].map(([id, w]) => ({ id, name: w.name, status: w.status, requests: w.requests })) });
+}
+function startWatchers() {
+  for (const w of watchers.values()) { w.client.removeAllListeners(); w.client.stop(); }
+  watchers.clear();
+  if (!settings || FIXTURE || SHOT) return pushWatchers();
+  for (const h of settings.data.hosts) {
+    if (h.id === settings.data.activeHost || !h.bridge || h.bridge.mode === "off") continue;
+    const client = new BridgeClient(h.bridge, {});
+    const w = { client, name: h.name, status: "connecting", requests: [] };
+    watchers.set(h.id, w);
+    const mine = (fn) => (...a) => watchers.get(h.id) === w && fn(...a);
+    // a plugin on another wire protocol is not answered (the same rule as the active connection's version check)
+    const checked = (st) => (st.status !== "open" ? Promise.resolve(st) : client.version().then((v) =>
+      v && Number.isInteger(v.protocol) && v.protocol !== HOST_PROTOCOL ? { status: "protocol" } : st, () => st));
+    client.on("status", mine((st) => checked(st).then(mine((s) => {
+      if (s.status === "protocol") { client.removeAllListeners(); client.stop(); }
+      w.status = s.status; if (s.status !== "open") w.requests = []; pushWatchers();
+    }))));
+    client.on("requests", mine((list) => { w.requests = list; pushWatchers(); }));
+    client.start();
+  }
+  pushWatchers();
+}
+ipc.handle("hosts:requests", () => [...watchers].map(([id, w]) => ({ id, name: w.name, status: w.status, requests: w.requests })));
+ipc.handle("hosts:answer", (_e, hostId, kind, id, value, o) => {
+  const w = watchers.get(String(hostId ?? ""));
+  if (!w || w.status !== "open") throw new Error(i18nText("hosts.offline"));
+  const rid = String(id ?? "").slice(0, 256);
+  return trackMutation(() => kind === "question"
+    ? w.client.answerQuestion(rid, bObj(value), { profile: bProfile(o) })
+    : w.client.answerApproval(rid, String(value ?? ""), { profile: bProfile(o) }));
+});
 
 const needBridge = () => {
   if (!bridge) throw new Error(i18nText("U0045"));
@@ -524,7 +574,7 @@ ipc.handle("bridge:discard", (_e, sid) => needBridge().discard(bSid(sid))); // u
 function resumeRailUnload() {
   if (!win || win.isDestroyed()) return;
   if (windowClosing) win.close();
-  else win.webContents.reload();
+  else win.loadURL(appUrl()).catch(() => {}); // the active host's page (a host switch waits here too)
 }
 ipc.handle("bridge:unload-done", (e) => { fromApp(e); resumeRailUnload(); });
 ipc.handle("bridge:delete", (_e, sid, o) => needBridge().deleteSession(bSid(sid), { profile: bProfile(o) })); // right-click > Delete, confirmed
@@ -557,8 +607,8 @@ ipc.handle("bridge:set-model", (_e, sid, c) => {
   return needBridge().setModel(bSid(sid), { model: String(x.model || ""), provider: String(x.provider || ""), confirm: x.confirm === true, profile: bProfile(x) });
 });
 ipc.handle("bridge:set-effort", (_e, sid, o) => needBridge().setEffort(bSid(sid), { effort: String(bObj(o).effort || ""), profile: bProfile(o) }));
-ipc.handle("bridge:answer-approval", (_e, id, choice) => needBridge().answerApproval(String(id ?? "").slice(0, 256), String(choice ?? "")));
-ipc.handle("bridge:answer-question", (_e, id, answers) => needBridge().answerQuestion(String(id ?? "").slice(0, 256), bObj(answers)));
+ipc.handle("bridge:answer-approval", (_e, id, choice, o) => needBridge().answerApproval(String(id ?? "").slice(0, 256), String(choice ?? ""), { profile: bProfile(o) }));
+ipc.handle("bridge:answer-question", (_e, id, answers, o) => needBridge().answerQuestion(String(id ?? "").slice(0, 256), bObj(answers), { profile: bProfile(o) }));
 // Botlar (renderer/bots.js): the profile roster and avatars (reads), the read-only Bot Chat lookup, and the
 // Bot Chat create that only a first message sent from the composer triggers
 const bName = (v) => String(v ?? "").slice(0, 64);
@@ -794,6 +844,31 @@ ipc.handle("settings:save", async (_e, patch) => {
   if (d.readReceipts !== was.readReceipts && tg && tg.setReadReceipts) tg.setReadReceipts(d.readReceipts !== false); // C5, no reconnect needed
   desktop.applySettings(); // desktop shell: pet on/off, tray menu checkboxes
   if (desktopsHost && JSON.stringify(d.desktops) !== JSON.stringify(was.desktops)) desktopsHost.settingsChanged(); // the heartbeat's limit
+  return settings.publicView();
+});
+// multi-host: saved hosts. Switching restarts the relay and bridge clients on the newly active host.
+ipc.handle("hosts:add", (_e, spec) => {
+  const was = settings.data.activeHost;
+  settings.addHost(spec);
+  if (settings.data.activeHost !== was) { startRelay(); startBridge(); } // the first host becomes active at once
+  startWatchers();
+  return settings.publicView();
+});
+ipc.handle("hosts:remove", (_e, id) => { settings.removeHost(String(id ?? "")); startWatchers(); return settings.publicView(); });
+ipc.handle("hosts:select", (_e, id) => {
+  if (quitAttempt) throw new Error(i18nText("outbound.settingsClosing"));
+  const was = settings.data.activeHost;
+  settings.selectHost(String(id ?? ""));
+  if (settings.data.activeHost === was) return settings.publicView();
+  // device permissions were given to the old host: off before the new host connects (the old relay hears it)
+  if (presence) for (const cap of ["browser", "desktop"]) if (presence.hosting[cap] && presence.capabilities.has(cap)) { try { presence.setHosting(cap, false); } catch {} }
+  if (desktopsHost) desktopsHost.hostOff().catch(() => {});
+  if (workspace) workspace.forgetTransferConsent(); // browser-transfer consent was given on the old host too
+  // a fresh page for the new host first: nothing the old page had in flight can land on the new host's screen
+  if (win && !win.isDestroyed()) { switchingHost = true; win.loadURL(appUrl()).catch(() => {}).finally(() => { switchingHost = false; }); }
+  startRelay();
+  startBridge();
+  startWatchers();
   return settings.publicView();
 });
 ipc.handle("tg:retry", () => {
@@ -1242,7 +1317,8 @@ function createWindow() {
   });
   require("./context-menu").attachContextMenu(win); // cut/copy/paste on right-click in text fields
   theme.attach(win);
-  win.loadURL("deck://app/index.html");
+  win.webContents.on("will-prevent-unload", (e) => { if (switchingHost) e.preventDefault(); }); // switch wins
+  win.loadURL(appUrl());
   win.on("focus", () => tg && tg.wakeReads && tg.wakeReads()); // C5: marks held while in the background
 }
 
@@ -1310,7 +1386,7 @@ app.whenReady().then(() => {
   }
   if (botscreen.shotBar()) return; // dev: --shot-botbar=<png> draws only the bot screen's activity bar
   // --- Workspace tab: hosting is off until the user allows it in Settings > This device ---
-  const device = new DevicePresence({ persist: !SHOT });
+  const device = (presence = new DevicePresence({ persist: !SHOT }));
   if (setupHosting) {
     for (const cap of ["browser", "desktop"]) if (setupHosting[cap] !== undefined) device.hosting[cap] = setupHosting[cap];
     device._save();
@@ -1345,6 +1421,7 @@ app.whenReady().then(() => {
   }
   startRelay();
   startBridge();
+  startWatchers();
   startTelegram();
 });
 
@@ -1353,6 +1430,7 @@ function shutdown() {
   if (desktopsHost) desktopsHost.quit(); // agent desktops here stop (stopped, not removed); once
   if (relay) relay.stop();
   if (bridge) bridge.stop();
+  for (const w of watchers.values()) w.client.stop();
   cancelLogin();
 }
 app.on("window-all-closed", () => {

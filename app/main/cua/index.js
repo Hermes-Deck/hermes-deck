@@ -1,4 +1,5 @@
 "use strict";
+const { samePage } = require("../ipc-guard");
 const { t: i18nText, getLocale: i18nLocale } = require("../../renderer/i18n");
 // Bot screen, device side (E2–E6; contract: docs/bot-screen-protocol.md). A Hermes agent may use
 // computer_use on this computer, in the one window the user handed over ("Agent'a ver"), through a
@@ -762,7 +763,9 @@ function onQuit() {
 
 // ---------------------------------------------------------------- renderer calls (each one checked)
 function registerIpc() {
-  const own = (e) => !!(S.win && !S.win.isDestroyed() && e.sender === S.win.webContents);
+  // multi-host: and the page must be the active host's (a stale page cannot pair or grant on the new host)
+  const own = (e) => !!(S.win && !S.win.isDestroyed() && e.sender === S.win.webContents
+    && samePage(e, S.settings && S.settings.data.activeHost));
   const handle = (ch, fn) =>
     ipcMain.handle(ch, async (e, ...a) => {
       if (!own(e)) throw new Error(i18nText("U0175"));

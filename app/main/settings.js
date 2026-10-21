@@ -23,7 +23,7 @@ const DEFAULTS = {
   // last screen position (DIP), kept here so it survives restarts. autostart (G2) mirrors the OS login
   // item: desktop.js re-reads the real state on every start (main/autostart.js). petSkin: the pet's look
   // (character = Character, orb = Orb, agent = Agent); petMotion: its animations (off = stills).
-  desktop: { notifications: true, sound: true, pet: true, closeToTray: true, autostart: false, petPos: null, petSkin: "character", petMotion: true, petSize: 1, taskbarBadge: true },
+  desktop: { notifications: true, sound: true, pet: true, petAlwaysOnTop: true, closeToTray: true, autostart: false, petPos: null, petSkin: "character", petMotion: true, petSize: 1, taskbarBadge: true },
   // notification sounds (main/sounds.js), heard while desktop.sound is on: volume 0..100 and, per event, a built-in
   // sound ("preset:<id>"), "" for none, or a stored file of the user's own
   sounds: JSON.parse(JSON.stringify(notifySounds.DEFAULTS)),
@@ -53,10 +53,17 @@ const DEFAULTS = {
   // switch (off on a new install; it changes only through the desktops:host IPC, after the consent sheet); the rest
   // are this computer's limits for them. homeWarnGB is a warning in Settings, not a cap (volumes have none).
   desktops: { host: false, limit: 3, memory: "1.5g", cpus: 2, idleMin: 20, homeWarnGB: 10 },
-  // updates (main/update-check.js): auto = check on start and every 6 h; repo/branch override the build's own
-  // ("" = where it was built from, main); token: a GitHub token when neither GH_TOKEN nor the gh CLI has one
-  updates: { auto: true, host: false, repo: "", branch: "main", token: "", fromSource: false },
+  // Desktop channels only; auto checks every 6 h. Legacy repo/branch values are retained, not executed.
+  // token: a GitHub token when neither GH_TOKEN nor the gh CLI has one
+  updates: { channel: "stable", auto: true, host: false, repo: "", branch: "main", token: "", fromSource: false },
+  // multi-host: every saved Hermes host. relay/bridge above stay the ACTIVE host's copy, so every existing caller
+  // (and an older Deck reading this file) keeps working; hosts[] is the source for switching.
+  hosts: [],
+  activeHost: "",
 };
+const HOST_NAME = /^[^\x00-\x1f\x7f]{1,40}$/;
+const HOST_ID = /^h[0-9a-z]{1,16}$/;
+const MAX_HOSTS = 16;
 const BUSY_SEND = ["queue", "steer"];
 const READING = { agentMessages: ["plain", "bubble"], font: ["newsreader", "geist", "atkinson"] };
 const readingSize = (v) => Number.isInteger(v) && v >= 14 && v <= 20;
@@ -95,7 +102,7 @@ function normalizeDesktops(v) {
   for (const [k, ok] of Object.entries(DESKTOP_RULES)) out[k] = ok(o[k]) ? o[k] : DEFAULTS.desktops[k];
   return out;
 }
-const DESKTOP_FLAGS = ["notifications", "sound", "pet", "closeToTray", "autostart", "petMotion", "taskbarBadge"];
+const DESKTOP_FLAGS = ["notifications", "sound", "pet", "petAlwaysOnTop", "closeToTray", "autostart", "petMotion", "taskbarBadge"];
 const PET_SKINS = require("../renderer/pets/catalog").IDS;
 const PET_SIZES = [0.75, 1, 1.25, 1.5]; // Small / Medium / Large / Extra large (pet-model.js scales by it)
 const THEMES = ["basalt", "marble", "aegean", "system"];
@@ -159,6 +166,7 @@ class Settings {
     }
     if (!raw) {
       this.data = this._fromLegacy();
+      this._migrateHosts();
       this.data.firstRunDone = this._configuredProfile();
       if (this.data.firstRunDone) this.save();
       return this;
@@ -187,7 +195,27 @@ class Settings {
         d[sec][key] = String(v.plain);
       }
     }
+    // an unreadable secret keeps its ciphertext (sealed) for the next save, like the top-level SECRETS
+    const open = (v, sealed, key) => {
+      if (v && typeof v === "object" && v.enc) { try { return safeStorage.decryptString(Buffer.from(v.enc, "base64")); } catch { sealed[key] = v; return ""; } }
+      return v && typeof v === "object" && v.plain !== undefined ? String(v.plain) : "";
+    };
+    const ids = new Set();
+    d.hosts = (Array.isArray(raw.hosts) ? raw.hosts : []).filter((x) => x && HOST_ID.test(String(x.id)) && !ids.has(x.id) && ids.add(x.id) && HOST_NAME.test(x.name || "")).slice(0, MAX_HOSTS).map((x) => {
+      const sealed = {};
+      return {
+        id: x.id, name: x.name,
+        relay: { url: typeof x.relay?.url === "string" ? x.relay.url : "", token: open(x.relay?.token, sealed, "relay") },
+        bridge: x.bridge && typeof x.bridge === "object" ? { ...DEFAULTS.bridge, ...x.bridge } : clone(DEFAULTS.bridge),
+        // desktop control is paired per host: one host's device key and allowed agents never reach another
+        botscreen: { agents: Array.isArray(x.botscreen?.agents) ? x.botscreen.agents.filter((p) => PROFILE_RE.test(String(p))) : [], deviceToken: open(x.botscreen?.deviceToken, sealed, "device") },
+        sealed,
+      };
+    });
     this.data = d;
+    // one-time copy of the pre-multi-host file, so a downgrade or a bad migration can be undone by hand
+    if (!Array.isArray(raw.hosts)) try { fs.copyFileSync(this.file, `${this.file}.pre-hosts`, fs.constants.COPYFILE_EXCL); } catch {}
+    this._migrateHosts();
     if (!raw.chat) d.chat.defaultMode = d.chatChannel === "hermes" ? "sessions" : "telegram";
     try { d.chat = validateChat(d.chat); } catch { d.chat = clone(DEFAULTS.chat); }
     d.chatChannel = d.chat.defaultMode === "telegram" ? "telegram" : "hermes";
@@ -197,11 +225,72 @@ class Settings {
     d.wallpaper = wallpaper.normalize(d.wallpaper);
     d.sounds = notifySounds.normalize(raw.sounds);
     if (!PET_SIZES.includes(d.desktop.petSize)) d.desktop.petSize = DEFAULTS.desktop.petSize;
+    if (typeof d.desktop.petAlwaysOnTop !== "boolean") d.desktop.petAlwaysOnTop = DEFAULTS.desktop.petAlwaysOnTop;
     if (!d.composer || !BUSY_SEND.includes(d.composer.busySend)) d.composer = clone(DEFAULTS.composer);
     d.reading = normalizeReading(raw.reading);
     if (!d.spaces || !SPACE_LEVELS.includes(d.spaces.defaultLevel)) d.spaces = clone(DEFAULTS.spaces);
     d.desktops = normalizeDesktops(raw.desktops);
     return this;
+  }
+
+  /** The single pre-multi-host connection becomes the first host; the active host's relay/bridge copy is restored. */
+  _migrateHosts() {
+    const d = this.data;
+    if (!d.hosts.length && (d.relay.url || d.bridge.mode !== "off")) d.hosts = [{ id: "h1", name: "Host 1", relay: clone(d.relay), bridge: clone(d.bridge), botscreen: clone(d.botscreen), sealed: {} }];
+    if (!d.hosts.some((x) => x.id === d.activeHost)) d.activeHost = d.hosts[0] ? d.hosts[0].id : "";
+  }
+
+  /** Copy the active host's live relay/bridge back into its hosts[] entry (after a settings save). */
+  _syncActive() {
+    const h = this.data.hosts.find((x) => x.id === this.data.activeHost);
+    if (!h) return;
+    h.relay = clone(this.data.relay); h.bridge = clone(this.data.bridge); h.botscreen = clone(this.data.botscreen);
+    // the active host's unreadable top-level secrets belong to it
+    h.sealed = { ...(h.sealed || {}) };
+    if (this.unreadableSecrets["relay.token"] && !h.relay.token) h.sealed.relay = this.unreadableSecrets["relay.token"];
+    if (this.unreadableSecrets["botscreen.deviceToken"] && !h.botscreen.deviceToken) h.sealed.device = this.unreadableSecrets["botscreen.deviceToken"];
+  }
+
+  /** Add a host from {name, relay:{url, token}, bridge}. Validates before any change; returns its id. */
+  addHost(spec) {
+    const d = this.data, s = spec && typeof spec === "object" ? spec : {};
+    const name = typeof s.name === "string" ? s.name.trim() : "";
+    if (!HOST_NAME.test(name) || d.hosts.some((x) => x.name === name)) throw new Error(i18nText("hosts.badName"));
+    if (d.hosts.length >= MAX_HOSTS) throw new Error(i18nText("hosts.tooMany"));
+    const relay = { url: s.relay?.url ? normalizeRelayUrl(s.relay.url) : "", token: typeof s.relay?.token === "string" ? s.relay.token.trim() : "" };
+    const bridge = s.bridge === undefined ? clone(DEFAULTS.bridge) : normalizeBridge(s.bridge);
+    if (!relay.url && bridge.mode === "off") throw new Error(i18nText("hosts.noConnection"));
+    this._syncActive();
+    // never reuse an id: a removed host's drafts and outbox stay under its old key (renderer hostKey)
+    let id;
+    do id = `h${Date.now().toString(36)}${Math.floor(Math.random() * 36 ** 2).toString(36)}`; while (d.hosts.some((x) => x.id === id) || id === "h1");
+    d.hosts.push({ id, name, relay, bridge, botscreen: clone(DEFAULTS.botscreen), sealed: {} });
+    if (!d.activeHost) { d.activeHost = id; d.relay = clone(relay); d.bridge = clone(bridge); d.botscreen = clone(DEFAULTS.botscreen); }
+    this.save();
+    return id;
+  }
+
+  /** Make another saved host the active one (main.js restarts the relay and bridge clients). */
+  selectHost(id) {
+    const d = this.data, h = d.hosts.find((x) => x.id === id);
+    if (!h) throw new Error(i18nText("hosts.unknown"));
+    this._syncActive();
+    d.activeHost = h.id; d.relay = clone(h.relay); d.bridge = clone(h.bridge); d.botscreen = clone(h.botscreen);
+    // the old host's unreadable ciphertext stays on its entry; the new host's own (if any) takes the top-level slot
+    delete this.unreadableSecrets["relay.token"]; delete this.unreadableSecrets["botscreen.deviceToken"];
+    if (h.sealed?.relay) this.unreadableSecrets["relay.token"] = h.sealed.relay;
+    if (h.sealed?.device) this.unreadableSecrets["botscreen.deviceToken"] = h.sealed.device;
+    // hosting agent desktops is consent given to one host; a switch turns it off (main.js stops them)
+    d.desktops = { ...normalizeDesktops(d.desktops), host: false };
+    this.save();
+  }
+
+  /** Forget a host. The active one cannot go: switch first, so a live connection never loses its settings. */
+  removeHost(id) {
+    const d = this.data;
+    if (id === d.activeHost || !d.hosts.some((x) => x.id === id)) throw new Error(i18nText("hosts.cannotRemove"));
+    d.hosts = d.hosts.filter((x) => x.id !== id);
+    this.save();
   }
 
   _configuredProfile() {
@@ -220,11 +309,38 @@ class Settings {
       }
       out[sec][key] = enc ? { enc: safeStorage.encryptString(v).toString("base64") } : { plain: v };
     }
+    const seal = (v) => (v ? (enc ? { enc: safeStorage.encryptString(v).toString("base64") } : { plain: v }) : "");
+    out.hosts = out.hosts.map(({ sealed = {}, ...x }) => ({ ...x, relay: { url: x.relay.url, token: seal(x.relay.token) || sealed.relay || "" },
+      botscreen: { agents: x.botscreen.agents, deviceToken: seal(x.botscreen.deviceToken) || sealed.device || "" } }));
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     const tmp = `${this.file}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(out, null, 2), { mode: 0o600 });
     fs.renameSync(tmp, this.file);
     for (const [sec, key] of SECRETS) if (this.data[sec][key]) delete this.unreadableSecrets[`${sec}.${key}`];
+  }
+
+  /** Channel-only saves must not persist pending host migration or re-encrypt unrelated secrets. */
+  setUpdateChannel(channel) {
+    if (!["stable", "test"].includes(channel)) throw new Error(i18nText("updates.badChannel"));
+    this._savePreference("updates", { channel });
+  }
+
+  /** Persist only the chosen non-secret fields, preserving unrelated ciphertext and pending migrations. */
+  _savePreference(section, patch) {
+    let stored;
+    try { stored = JSON.parse(fs.readFileSync(this.file, "utf8")); }
+    catch (e) {
+      if (e.code !== "ENOENT") throw e;
+      this.data[section] = { ...this.data[section], ...patch };
+      this.save(); // first save: there is no existing file to preserve
+      return;
+    }
+    if (!stored || typeof stored !== "object" || Array.isArray(stored) ||
+        (stored[section] !== undefined && (!stored[section] || typeof stored[section] !== "object" || Array.isArray(stored[section])))) throw new Error(i18nText("settings.invalidPreference"));
+    stored[section] = { ...stored[section], ...patch };
+    fs.writeFileSync(`${this.file}.tmp`, JSON.stringify(stored, null, 2), { mode: 0o600 });
+    fs.renameSync(`${this.file}.tmp`, this.file);
+    this.data[section] = { ...this.data[section], ...patch };
   }
 
   isConfigured() {
@@ -252,7 +368,7 @@ class Settings {
       firstRunDone: d.firstRunDone,
       language: d.language,
       theme: THEMES.includes(d.theme) ? d.theme : "basalt",
-      updates: { auto: d.updates.auto !== false, host: d.updates.host === true, repo: d.updates.repo || "", branch: d.updates.branch || "main", hasToken: !!d.updates.token, fromSource: d.updates.fromSource === true },
+      updates: { channel: d.updates.channel === "test" ? "test" : "stable", auto: d.updates.auto !== false, host: d.updates.host === true, repo: d.updates.repo || "", branch: d.updates.branch || "main", hasToken: !!d.updates.token, fromSource: d.updates.fromSource === true },
       wallpaper: wallpaper.normalize(d.wallpaper),
       sounds: notifySounds.normalize(d.sounds),
       composer: { busySend: BUSY_SEND.includes(d.composer && d.composer.busySend) ? d.composer.busySend : "queue" },
@@ -261,6 +377,8 @@ class Settings {
       desktops: normalizeDesktops(d.desktops),
       botscreen: { agents: Array.isArray(d.botscreen.agents) ? [...d.botscreen.agents] : [], hasDeviceToken: !!d.botscreen.deviceToken, deviceKeyUnreadable: !!this.unreadableSecrets["botscreen.deviceToken"] },
       plainSecrets: this.plainSecrets || this.weakStorage(),
+      hosts: d.hosts.map((x) => ({ id: x.id, name: x.name, relay: { url: x.id === d.activeHost ? d.relay.url : x.relay.url, hasToken: !!(x.id === d.activeHost ? d.relay.token : x.relay.token) }, bridge: { mode: (x.id === d.activeHost ? d.bridge : x.bridge).mode } })),
+      activeHost: d.activeHost,
     };
   }
 
@@ -297,6 +415,7 @@ class Settings {
       if (t.length < 16 || t.length > 512 || /\s/.test(t)) throw new Error(i18nText("U0290"));
       b.deviceToken = t;
     }
+    this._syncActive();
     this.save();
   }
 
@@ -325,6 +444,12 @@ class Settings {
   /** Apply a renderer patch; empty secret fields mean "keep the stored value". */
   update(patch) {
     const d = this.data;
+    if (patch.desktop?.petAlwaysOnTop !== undefined && typeof patch.desktop.petAlwaysOnTop !== "boolean") throw new Error(i18nText("settings.invalidPreference"));
+    if (Object.keys(patch).join() === "desktop" && patch.desktop && typeof patch.desktop === "object" && !Array.isArray(patch.desktop) &&
+        Object.keys(patch.desktop).length && Object.entries(patch.desktop).every(([k, v]) => ["pet", "petAlwaysOnTop"].includes(k) && typeof v === "boolean")) {
+      this._savePreference("desktop", patch.desktop);
+      return;
+    }
     // Validate mode changes before mutating any settings (an invalid patch must not enable a client).
     let chat = patch.chat === undefined ? null : validateChat(patch.chat);
     if (patch.chatChannel !== undefined) {
@@ -339,6 +464,7 @@ class Settings {
     if (patch.updates !== undefined) {
       const u = patch.updates;
       if (!u || typeof u !== "object" || Array.isArray(u) ||
+          (u.channel !== undefined && !["stable", "test"].includes(u.channel)) ||
           (u.auto !== undefined && typeof u.auto !== "boolean") ||
           (u.fromSource !== undefined && typeof u.fromSource !== "boolean") ||
           (u.host !== undefined && typeof u.host !== "boolean") ||
@@ -429,6 +555,7 @@ class Settings {
     if (patch.updates !== undefined) {
       const u = patch.updates;
       d.updates = { ...d.updates,
+        ...(u.channel !== undefined ? { channel: u.channel } : {}),
         ...(u.auto !== undefined ? { auto: u.auto } : {}),
         ...(u.fromSource !== undefined ? { fromSource: u.fromSource } : {}),
         ...(u.host !== undefined ? { host: u.host } : {}),
@@ -450,6 +577,8 @@ class Settings {
     if (patch.reading) d.reading = normalizeReading({ ...d.reading, ...patch.reading });
     if (patch.spaces && patch.spaces.defaultLevel !== undefined) d.spaces = { ...d.spaces, defaultLevel: patch.spaces.defaultLevel };
     if (patch.desktops !== undefined) d.desktops = { ...normalizeDesktops(d.desktops), ...patch.desktops };
+    this._syncActive();
+    this._migrateHosts();
     this.save();
   }
 

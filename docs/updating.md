@@ -244,8 +244,53 @@ Then restart each changed profile's gateway at a quiet moment.
 
 ## Updating the desktop app
 
-Use Settings › General › Updates.
+Use Settings › General › Updates. **Desktop app channel** has two choices:
 
-- **Windows:** the app downloads the newer release's installer, checks it against `SHA256SUMS.txt` and runs it.
-- **macOS:** the app downloads the `.zip`, checks it the same way and shows it in Finder. Unzip it and move
-  Hermes Deck to Applications. Builds are not notarized, so the app does not install them silently.
+- **Stable (main)** (default): the latest published stable release from `Hermes-Deck/hermes-deck`.
+- **Test**: the most recently published prerelease with a tag `vX.Y.Z-test.N` in the same repository.
+  Other prereleases and drafts are ignored. Discovery is bounded to the 100 most recent releases.
+  A branch push alone does not create an installable update.
+
+Changing the channel saves only that choice. Press **Check now** to see the **Target version**; press the
+install button to open a native confirmation. Cancel is the default. Downloads use the checked release ID,
+not a moving latest-release URL. A changed asset requires another check and confirmation. Missing installers,
+unsupported architectures, or missing/mismatched checksums prevent installation. Existing repository/branch
+overrides remain stored but no longer select update code: only the canonical repository is used.
+
+A Test build can return to the same or an older Stable version, after a warning and explicit confirmation.
+Back up app data first: older versions may not understand Test settings (including multiple saved hosts), and
+may remove this selector. The updater does not reset settings, but cannot make older software understand them.
+The selector does not change relay/plugin channels, restart gateways, or enable automatic host updates.
+The separate **Automatically update the host** preference keeps its existing behavior.
+
+The opt-in developer source build remains **Stable/main only**, checks the cached clone's origin, and builds
+the exact confirmed commit. It never falls back to building main for Test. It runs dependency scripts locally.
+
+- **Windows x64:** the normal installed app downloads the selected release's NSIS installer, checks it against
+  `SHA256SUMS.txt` and runs it. Portable or isolated copies (including a separate TEST installation/profile)
+  refuse automatic installation because NSIS targets the normal installation. Update those copies manually.
+- **macOS arm64/x64:** the app verifies the release ZIP, validates the staged bundle, and uses the existing
+  swap/rollback helper for a writable installed bundle. A development, translocated or read-only bundle uses
+  the manual Finder handoff instead. Packages remain unsigned/not notarized as documented in the README.
+
+### Preparing a Test package (maintainers)
+
+No Test publishing workflow runs on branch pushes. After review and explicit publication approval:
+
+1. Choose an unused immutable `vX.Y.Z-test.N` tag whose base version matches `app/package.json`.
+   Do not move an existing tag or replace published assets.
+2. Build the approved commit with `DECK_RELEASE_TAG` set to that tag. On Windows PowerShell:
+   `$env:DECK_RELEASE_TAG = 'vX.Y.Z-test.N'; npm run dist:win` from `app/`.
+   On macOS: `DECK_RELEASE_TAG=vX.Y.Z-test.N npm run dist:mac` from `app/`.
+   `scripts/build-info.js` embeds the channel and exact tag without changing the shared product version.
+   Use actual version numbers, not the placeholders. A local unpublished Test build can instead set
+   `DECK_UPDATE_CHANNEL=test`; do not claim that build is a published release.
+3. Keep the existing asset names (`Hermes-Deck-<version>-Setup.exe`, `-mac-arm64.zip`, `-mac-x64.zip`).
+   Combine the installers in one directory and run `node app/scripts/checksums.js <directory>` to create
+   one `SHA256SUMS.txt` covering every offered installer. Keep the existing release provenance review.
+4. Publish the approved tag as a GitHub **prerelease**, not latest, with the installers and checksum file.
+   This is a separate public write requiring maintainer approval; the existing stable release workflow
+   does not create Test releases. A Windows ZIP alone is not an automatic-update installer.
+5. On a normal test installation, check Test, verify the target tag, cancel once, then approve installation
+   and verify the reopened build. Also test an explicitly confirmed return to Stable. Until those packages
+   exist, local fixture tests do not prove a published install end to end.

@@ -156,9 +156,12 @@
         try { fn(detail); } catch (e) { if (win && win.console) win.console.error(`DeckShell ${ev} listener:`, e); }
       }
     }
+    const host = (() => { try { return new URLSearchParams(win.location.search).get("host") || ""; } catch { return ""; } })();
+    const hostKey = (k) => (host && host !== "h1" ? `${host}/${k}` : k);
     const store = {
-      get(k) { try { return win.localStorage.getItem(k); } catch { return null; } },
-      set(k, v) { try { win.localStorage.setItem(k, v); } catch { /* per-viewer convenience only */ } },
+      // per host, like app.js's store (the first host keeps the old, unprefixed keys)
+      get(k) { try { return win.localStorage.getItem(hostKey(k)); } catch { return null; } },
+      set(k, v) { try { win.localStorage.setItem(hostKey(k), v); } catch { /* per-viewer convenience only */ } },
     };
     const defs = { work: new Map() };
     const services = new Map();

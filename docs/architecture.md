@@ -187,6 +187,27 @@ The service lists bot DMs from the first 300 dialogs (minus hidden bots) and, if
 
 Both directions speak newline-delimited JSON-RPC 2.0 on stdio. The host sends `hermes-deck.v1` snapshots (at least every 5 s while healthy), native events, approval and question requests, and replies. The Deck sends only the methods allow-listed in `app/main/bridge.js` (`READS` and `MUTATIONS`), each with validated parameters. Reads include `session.list`, `deck.session_index`, `session.messages`, `session.usage`, `model.options`, `profiles.list`, `profiles.get_asset`, `deck.transcribe` (dictation), `deck.file_read` (downloads of files the agent offered), `deck.file_grant` (the same check, answered with a download ticket the relay on that host streams; see [relay.md](relay.md#large-downloads)), the work pane's `subagent.list`, `subagent.tail` and `deck.plan`, and `commands.catalog` (one profile's slash commands for the composer's `/` suggestions). Mutations include `session.create`, `session.resume`, `deck.takeover`, `prompt.submit`, `deck.attach_submit`, `deck.attach_staged` (files the relay already wrote to this host's upload spool, named by id; see [relay.md](relay.md#large-attachments)), `native.steer`, `native.redirect`, `native.interrupt`, `session.interrupt`, `config.set` (the session's model with `--session`, never `--global`, or its reasoning level), `request.answer`, and the session-management calls (`session.title`, `session.delete`, `session.archive`, `session.branch_stored`, …), and `subagent.steer` / `subagent.interrupt` for one child of a session. Mutations only follow a click and are never replayed: a request whose connection drops fails and says it may have run. The bridge works without the relay and without Telegram.
 
+### Several Hermes hosts
+
+Settings keep a list of hosts (`hosts` and `activeHost` in `settings.json`; Settings › Relay › Hermes hosts). One host
+is active: its relay and direct connection are the ones above, and the window loads as `deck://app/index.html?host=<id>`.
+Every main-window IPC channel refuses a page that was loaded for another host, so a reply that lands after a switch
+never reaches the new host's screen. Drafts, the outbox and rail selections are stored per host.
+
+A switch turns off this device's hosting switches (agent browsers, desktop control) and agent desktops, because that
+consent was given to the old host. Desktop-control pairing (`botscreen` agents and device key) is saved per host.
+
+Each other host with a direct connection keeps one `BridgeClient` open only for its approvals and questions
+(`hosts:requests`). The inbox shows them with the host's name. An answer goes through `hosts:answer` to the host that
+raised the request, never to the active host, and is refused while that host is not connected. Relay-only hosts are
+not watched.
+
+On the first `session.list` of a new control connection, the plugin restores up to 32 still-open native approval
+and question frames. It keeps each request's ID, owning profile and creation time. It does not restore secret
+prompts, resume sessions, or resend answers. Answered and cancelled requests are omitted. This also restores
+pending cards after a host switch or a dropped direct connection. While restored cards remain open, a
+connection-scoped check runs once per second and removes ended requests without changing their session's transport.
+
 ### Work pane data: plans, tool calls, sub-agents
 
 The work pane's Plan, Run and Agents tabs read the same data on both paths. The plan path: the plugin's `plan` event → the relay's session model (and `deck.plan` on the direct stream) → the app (`bridge.plan`, else the relay's `sessionPlan`); with no live plan, the relay or plugin rebuilds it from `state.db`.

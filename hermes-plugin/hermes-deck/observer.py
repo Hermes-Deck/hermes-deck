@@ -1340,8 +1340,8 @@ PROFILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 # --- session browser: deck.session_index (read) and deck.session_update (rename / pin) ------------------------
 # session.list has no paging, no last-activity field, no archived view and no pin flag, and session.title needs a
 # live runtime session. So the browser reads one page of a profile's stored sessions through Hermes' own
-# list_sessions_rich (read-only handle, the REST listing's query) and writes a title or a pin on one stored row
-# through the same SessionDB setters the REST PATCH uses. Neither takes anything but the parameters checked here.
+# list_sessions_rich (read-only handle, the REST listing's query). Edits go to the profile's canonical owner
+# via its native authenticated client; only an absent owner uses the exclusive-maintenance SessionDB path.
 INDEX_METHOD = "deck.session_index"
 UPDATE_METHOD = "deck.session_update"
 INDEX_LIMIT_MAX = 100
@@ -1469,10 +1469,67 @@ def session_index(params, with_db=None):
     return {"sessions": out, "has_more": len(rows) >= limit}
 
 
+class SessionUpdateError(Exception):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
+def _session_update_owner(profile, sid, row, payload):
+    """One native, revision-fenced edit; None only when discovery proves the owner absent."""
+    import asyncio
+    import uuid
+    from dataclasses import replace
+    from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError, connect_gateway
+    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from hermes_cli.gateway_runtime_discovery import DiscoveryError
+    from hermes_cli.web_server_sessions import _session_db_path_for_profile
+    from websockets.exceptions import ConnectionClosed
+
+    home = _session_db_path_for_profile(profile).parent.resolve()
+    found = discover_gateway_endpoint(home, timeout=1.5)
+    if found.state == "absent":
+        return None  # _profile_db still takes the exclusive lock: discovery can race a new owner.
+    if found.state != "ready" or found.endpoint is None:
+        raise SessionUpdateError(5030, "Hermes session owner unavailable; refresh before retrying")
+    endpoint = found.endpoint
+    if not endpoint.control_home:
+        # A standalone secondary mints on its own socket, not the plugin's launch profile.
+        endpoint = replace(endpoint, control_home=str(home))
+    revision = row.get("runtime_revision")
+    if type(revision) is not int or revision < 0:
+        raise SessionUpdateError(5030, "Hermes session revision unavailable")
+
+    async def run():
+        # Native peer authentication supplies the actor. Never invent a subject, attach/resume the
+        # row, or route session.mutate through the legacy tui_gateway dispatcher.
+        async with connect_gateway(endpoint=endpoint) as client:
+            return await client.rpc("session.mutate", session_id=sid, request_id=uuid.uuid4().hex,
+                                    expected_revision=revision, operation="sidebar", payload=payload)
+    try:
+        result = asyncio.run(run())  # session browser handlers already run off the reader thread
+    except GatewayRPCError as exc:
+        code, message = {
+            "permission_denied": (4030, "Hermes session update not permitted"),
+            "profile_mismatch": (4030, "Hermes session profile mismatch"),
+            "not_found": (4040, "Persisted session not found"),
+            "invalid_params": (4000, "Invalid Hermes session update"),
+            "revision_conflict": (4090, "Hermes session changed; refresh before retrying"),
+            "session_busy": (4090, "Hermes session is busy; refresh before retrying"),
+            "runtime_draining": (5030, "Hermes session owner is draining"),
+            "storage_unavailable": (5030, "Hermes session store unavailable"),
+        }.get(str(exc), (4090, "Hermes session update refused"))
+        raise SessionUpdateError(code, message) from exc
+    except (GatewayClientError, DiscoveryError, ConnectionClosed, OSError, TimeoutError) as exc:
+        # An interrupted mutation may have committed. No fallback and no automatic replay.
+        raise SessionUpdateError(5030, "Hermes session update outcome unknown; refresh before retrying") from exc
+    return {"ok": True, "title": str(result.get("title", row.get("title")) or ""),
+            "pinned": bool(result.get("pinned", row.get("pinned")))}
+
+
 def session_update(params, with_db=None):
     """Rename (user provenance) and/or pin one stored session: {ok, title, pinned}. params: session_id, profile,
     title (1-100 characters, no control characters, never the canonical "Bot Chat"), pinned (boolean)."""
-    with_db = with_db or _profile_db
     if not isinstance(params, dict) or set(params) - {"session_id", "profile", "title", "pinned"} or not _profile_ok(params):
         raise ValueError("Unsupported session update parameter")
     sid, profile = params.get("session_id"), params.get("profile", "default")
@@ -1488,12 +1545,32 @@ def session_update(params, with_db=None):
     if "pinned" in params and type(params["pinned"]) is not bool:
         raise ValueError("pinned must be a boolean")
 
-    def write(db):
+    def read(db):
         row = db.get_session(sid)
         if not row:
             raise ValueError("Persisted session not found")
         if title is not None and (row.get("title") or "") == BOT_CHAT_TITLE:
             raise ValueError("A bot's Bot Chat cannot be renamed")
+        return row
+
+    # Pre-owner engines use their existing native store helper. Its policy still decides
+    # whether writing is allowed; missing client support never disables a runtime lock.
+    # Import errors inside an available client do not qualify for this legacy path.
+    if with_db is None and importlib.util.find_spec("hermes_cli.gateway_client") is not None:
+        row = _profile_db(profile, read, True)  # also rejects missing profiles before discovery
+        payload = {}
+        if title is not None:
+            payload["title"] = title
+        if "pinned" in params:
+            payload["pinned"] = params["pinned"]
+            if params["pinned"]:
+                payload["hidden"] = False  # match SessionDB.set_session_pinned: pin means visible
+        result = _session_update_owner(profile, sid, row, payload)
+        if result is not None:
+            return result
+
+    def write(db):
+        row = read(db)  # recheck under the exclusive-maintenance reservation
         if title is not None:
             db.set_session_title(sid, title)
         if "pinned" in params:
@@ -1501,7 +1578,7 @@ def session_update(params, with_db=None):
         after = db.get_session(sid) or row
         return {"ok": True, "title": str(after.get("title") or ""), "pinned": bool(after.get("pinned"))}
 
-    return with_db(profile, write, False)
+    return (with_db or _profile_db)(profile, write, False)
 
 
 def session_reply(request, fn, with_db=None):
@@ -1509,6 +1586,8 @@ def session_reply(request, fn, with_db=None):
     rid = request.get("id")
     try:
         return {"jsonrpc": "2.0", "id": rid, "result": fn(request.get("params", {}), with_db)}
+    except SessionUpdateError as exc:
+        return {"jsonrpc": "2.0", "id": rid, "error": {"code": exc.code, "message": str(exc)}}
     except ValueError as exc:
         return {"jsonrpc": "2.0", "id": rid, "error": {"code": 4000, "message": str(exc)[:300]}}
     except Exception:
@@ -1774,7 +1853,7 @@ def launch_profile_reply(obj, launch_home):
 
 
 def request_arrival_reply(obj, server):
-    """Copy trusted, still-registered request arrival seconds onto live frames and reconnect rows."""
+    """Copy trusted, still-registered request arrival seconds and the owning profile onto live frames and reconnect rows."""
     if not isinstance(obj, dict):
         return obj
     result = obj.get("result")
@@ -1814,10 +1893,13 @@ def request_arrival_reply(obj, server):
                 for scope in scopes:
                     if isinstance(scope, dict) and any(scope[key] != profile for key in ("profile", "profile_name") if key in scope):
                         return clean
+                # The owning profile, from the registry's own session (Hermes' frames carry none): the Deck
+                # answers it to that profile instead of refusing an unbound request.
+                stamped = dict(clean, params=dict(row["params"], profile_name=profile))
                 created = req.created_at
                 if type(created) not in (int, float) or not math.isfinite(created) or created <= 0:
-                    return clean
-                return dict(clean, request_created_at=created)
+                    return stamped
+                return dict(stamped, request_created_at=created)
         except Exception:
             return clean  # Legacy engines and compute-host mirrors keep the existing unstamped path.
 
@@ -2652,7 +2734,9 @@ class Observer:
         with self.lock: self._persist()
 
         class Peer:
-            def __init__(self, conn): self.conn,self.lock = conn,threading.Lock()
+            def __init__(self, conn):
+                self.conn, self.lock = conn, threading.Lock()
+                self.closed, self.replayed = threading.Event(), {}
             def write(self, obj):
                 try:
                     obj = launch_profile_reply(obj, getattr(server, "_launch_home", None))
@@ -2660,7 +2744,48 @@ class Observer:
                     with self.lock: self.conn.sendall(json.dumps(obj,ensure_ascii=True).encode()+b"\n")
                     return True
                 except OSError: return False
+            def replay_requests(self):
+                # Restore pending decisions, never answers or session ownership. Serialize the snapshot with
+                # live writes so a cancellation cannot overtake it and leave a stale card on reconnect.
+                requests = getattr(server, "_server_requests", None)
+                if requests is None:
+                    return  # older engines have no native request registry
+                with self.lock:
+                    with requests._lock:
+                        # ponytail: match BridgeClient's 32-card cap; add paging if larger queues are supported.
+                        frames = [(req, req.frame()) for req in requests._open.values()
+                                  if req.method in {"approval", "clarify"}][-32:]
+                    for req, frame in frames:
+                        obj = request_arrival_reply(frame, server)
+                        # Only the registry/owning-session check can add this field. Missing, expired or
+                        # conflicting-profile requests are not restored; secret/vault prompts never enter here.
+                        if "request_created_at" in obj:
+                            self.conn.sendall(json.dumps(obj, ensure_ascii=True).encode() + b"\n")
+                            self.replayed[req.id] = (req, obj["params"]["profile_name"])
+                if self.replayed:
+                    threading.Thread(target=self.watch_replayed, args=(requests,),
+                                     name="hermes-deck-replayed-requests", daemon=True).start()
+
+            def watch_replayed(self, requests):
+                # A restored session can still send its cancellation to an old transport. Read only the
+                # requests shown here; never attach this peer to that session or take over its controls.
+                try:
+                    while self.replayed and not self.closed.wait(1) and not stop.is_set():
+                        with self.lock:
+                            with requests._lock:
+                                ended = [(rid, req, profile) for rid, (req, profile) in self.replayed.items()
+                                         if requests._open.get(rid) is not req]
+                            for rid, req, profile in ended:
+                                frame = {"jsonrpc": "2.0", "method": "event", "params": {
+                                    "type": "request.cancel", "session_id": req.sid, "profile_name": profile,
+                                    "payload": {"id": rid, "method": req.method, "reason": "expired"}}}
+                                self.conn.sendall(json.dumps(frame, ensure_ascii=True).encode() + b"\n")
+                                del self.replayed[rid]
+                except OSError:
+                    self.close()
+
             def close(self):
+                self.closed.set()
                 # FanoutTransport calls this when it drops the peer (backlog overflow). close() alone does not
                 # release the socket while serve() still reads through conn.makefile(): the client would never
                 # see EOF and keep a connection that no pooled reply or event reaches any more. shutdown() ends
@@ -2680,6 +2805,7 @@ class Observer:
             created = OrderedDict()  # runtime ids a Bot Chat session.create returned on this connection (session.title)
             avatars = OneInFlight()  # one profiles.get_asset at a time on this connection
             files, budget = file_reader, ReadBudget()  # deck.file_read: the shared reader and this connection's budget
+            requests_replayed = False
             try:
                 with conn.makefile("rb") as incoming:
                     for line in incoming:
@@ -2731,6 +2857,9 @@ class Observer:
                                 response = {"jsonrpc":"2.0","id":request.get("id"),"error":{"code":5000,"message":"Native Hermes history unavailable"}}
                             peer.write(response)
                         elif allowed_request(method, params, created):
+                            if method == "session.list" and not requests_replayed:
+                                peer.replay_requests()
+                                requests_replayed = True
                             refusal = avatar_refusal(params) if method == "profiles.get_asset" else None
                             if refusal:
                                 peer.write({"jsonrpc":"2.0","id":request.get("id"),"error":{"code":4071,"message":refusal}})

@@ -401,7 +401,7 @@ test("B: a snapshot that still claims the stopped turn is neutralised; a newer t
   const SNAP = fn("applyBridgeSnapshot");
   assert.ok(SNAP, "applyBridgeSnapshot found");
   const w = appWorld();
-  Object.assign(w.ctx, { hermesRank() {}, hermesAutoSelect() {}, updateBridgeStatusLine() {}, outboxDrain() {}, liveRowRefresh() {} });
+  Object.assign(w.ctx, { refreshHermesProfiles() {}, hermesRank() {}, hermesAutoSelect() {}, updateBridgeStatusLine() {}, outboxDrain() {}, liveRowRefresh() {} });
   w.ctx.H.snap = [];
   w.ctx.H.stored = new Map();
   vm.runInContext(fn("hermesMergeNodes"), w.ctx);
