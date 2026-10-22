@@ -64,7 +64,10 @@ function harness(opts = {}) {
     setBackgroundColor(c) { this.bg = c; }
   }
   const app = new EventEmitter();
-  Object.assign(app, { getPath: () => require("os").tmpdir(), requestSingleInstanceLock: () => true, whenReady: () => new Promise(() => {}), exit() {}, quit() {}, getVersion: () => "0.0.0" });
+  // a private data folder per harness: main.js's draft store rewrites its index on start, and two test processes
+  // sharing one folder would race on that rewrite
+  const userData = fs.mkdtempSync(path.join(require("os").tmpdir(), "deck-mv-"));
+  Object.assign(app, { getPath: () => userData, requestSingleInstanceLock: () => true, whenReady: () => new Promise(() => {}), exit() {}, quit() {}, getVersion: () => "0.0.0" });
   const stub = new Proxy(function () {}, { get: (_t, k) => (k === "then" || typeof k === "symbol" ? undefined : stub), apply: () => stub, construct: () => stub });
   const ipcMain = { handle: (ch, fn) => handlers.set(ch, fn), on: (ch, fn) => handlers.set(ch, fn) };
   const electron = new Proxy({ app, ipcMain, WebContentsView: FakeView }, { get: (t, k) => (k in t ? t[k] : stub) });
