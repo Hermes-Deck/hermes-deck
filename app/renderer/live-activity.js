@@ -21,6 +21,7 @@
   const MAX_STEPS = 12;
   const STALE_MS = 15000; // event state with no event for this long and no live node is over
   const SEARCH_RE = /search|browse|web_|fetch|crawl|lookup/i;
+  const STEP_END_RE = / · (done|failed)$/;
 
   /** A fresh per-turn state. */
   const fresh = (at) => ({ phase: "thinking", tool: "", arg: "", since: at, lastAt: at, think: "", steps: [], done: false });
@@ -69,6 +70,7 @@
         const s = st && !st.done ? st : fresh(at);
         if (s.stepDone && String(pl.text || "")) { s.think = ""; s.stepDone = false; } // a new step's reasoning
         const added = addThink(s, pl.text);
+        if (added) s.streamed = true; // reasoning reaches this connection for this turn
         if (s.phase === "writing") s.phase = "thinking";
         s.lastAt = at;
         return [s, added || !st];
@@ -128,7 +130,8 @@
     const steps = Array.isArray(n && n.steps) ? n.steps : [];
     const last = steps[steps.length - 1] || "";
     if (n && n.state === "searching") return { phase: "searching", tool: "" };
-    if (n && n.state === "working" && last && last !== "Thinking") return { phase: "tool", tool: last };
+    // the observer marks a finished call "<tool> · done" / "· failed": the model is thinking again, nothing runs
+    if (n && n.state === "working" && last && last !== "Thinking" && !STEP_END_RE.test(last)) return { phase: "tool", tool: last };
     return { phase: "thinking", tool: "" };
   }
 
@@ -194,7 +197,7 @@
       }
       if (request === "approval" || request === "question") phase = request;
       const steps = st ? st.steps.map((x) => x.name) : (node && Array.isArray(node.steps) ? node.steps.filter((x) => x !== "Thinking").slice(-MAX_STEPS) : []);
-      return { sid, phase, tool, arg: st ? st.arg : "", since, think: st ? st.think : "", steps, source: st ? "events" : "snapshot", label: label(phase, tool), node };
+      return { sid, phase, tool, arg: st ? st.arg : "", since, think: st ? st.think : "", steps, source: st ? "events" : "snapshot", streamed: !!(st && st.streamed), label: label(phase, tool), node };
     }
 
     /** "Show thinking" on/off: remembered, and the caller asks Hermes for reasoning of the sessions it drives. */
@@ -207,7 +210,10 @@
     function bodyKids(v) {
       // only reasoning: the tool calls are in the transcript (each under the thought that made it), not listed again
       if (v.think) return [h("p", { class: "la-think" }, v.think)];
-      return [h("p", { class: "la-none" }, i18nText("live.noReasoning"))];
+      // Honest about what reaches this connection: a row built from the snapshot gets no turn events (and so no
+      // reasoning) for this session; a turn whose events carried no reasoning by its first step will not start now.
+      const note = v.source === "snapshot" ? "tview.noStream" : v.steps.length && !v.streamed ? "tview.noReasoning" : "live.noReasoning";
+      return [h("p", { class: "la-none" }, i18nText(note))];
     }
 
     function follow(b) {

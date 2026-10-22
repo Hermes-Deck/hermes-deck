@@ -115,17 +115,28 @@
         // A running call belongs to the live turn even when that turn was first seen after the call began.
         if (live && (ts * 1000 >= live.since || (!live.measured && call.status === "running"))) { live.calls.push(call); continue; }
         if (!imported) {
-          imported = { id: `receipt-${++seq}`, since: (ts ?? at / 1000) * 1000, end: null, open: false, calls: [], anchor: null, measured: false, imported: true };
+          const since = (ts ?? at / 1000) * 1000;
           let i = list.length;
-          while (i > 0 && list[i - 1].since > imported.since) i--;
-          list.splice(i, 0, imported);
+          while (i > 0 && list[i - 1].since > since) i--;
+          // A session watched from here (a sub-agent, a TUI or Telegram run) pushes its list once per call: new calls
+          // join the history group next to them, never one group per push (that piled up as "1 tools" receipts).
+          // Placement still splits a group by user message.
+          imported = list[i - 1]?.imported ? list[i - 1] : list[i]?.imported ? list[i] : null;
+          if (!imported) {
+            imported = { id: `receipt-${++seq}`, since, end: null, open: false, calls: [], anchor: null, measured: false, imported: true };
+            list.splice(i, 0, imported);
+          } else if (since < imported.since) imported.since = since;
         }
         imported.calls.push(call);
       }
-      // History groups close once none of their calls runs (the Deck saw no turn end for them).
+      // History groups are closed while none of their calls runs (the Deck saw no turn end for them) and open again
+      // when a new call of theirs runs. A turn the snapshot follows ends on the snapshot (observe), not here.
       for (const turn of list) {
-        if (turn.measured || turn.end != null || turn.calls.some(c => c.status === "running")) continue;
-        turn.end = Math.max(turn.since, ...turn.calls.map(c => c.ts * 1000)); turn.open = false;
+        if (!turn.imported) continue;
+        const running = turn.calls.some(c => c.status === "running");
+        if (running) { turn.end = null; continue; }
+        if (turn.end == null) turn.open = false;
+        turn.end = Math.max(turn.since, ...turn.calls.map(c => c.ts * 1000));
       }
       while (list.length > MAX_TURNS) list.shift();
       bound(sid);
@@ -183,7 +194,9 @@
   }
   function receipt({ h, t, sid, turn, select, selected = null }) {
     const totals = stats(turn);
-    const label = t(totals.running ? "conv.working" : totals.seconds == null ? "conv.receiptCount" : "conv.receipt", { ...totals, seconds: totals.seconds == null ? null : dur(totals.seconds * 1000) });
+    // "1 tool" / "2 tools": the `.one` form for a single call (en and tr both use it for exactly one)
+    const key = totals.running ? "conv.working" : totals.seconds == null ? "conv.receiptCount" : "conv.receipt";
+    const label = t(totals.tools === 1 ? `${key}.one` : key, { ...totals, seconds: totals.seconds == null ? null : dur(totals.seconds * 1000) });
     const fold = h("details", { class: "receipt-fold", open: turn.open ? true : null, ontoggle: () => { turn.open = fold.open; } },
       h("summary", { class: "receipt-summary" }, label, totals.failed ? h("span", { class: "receipt-fail" }, t("conv.failed", totals)) : null),
       h("div", { class: "receipt-calls" }, turn.calls.map(call => {
@@ -233,7 +246,8 @@
      * inline when the transcript has none: the Run tab still lists those calls.
      */
     function placements(sid, users) {
-      const out = [];
+      const parts = [];
+      const hermes = session.kind === "hermes";
       const stamps = users.map(el => Number(el.dataset.ts));
       const userAt = ts => {
         if (!Number.isFinite(ts)) return null;
@@ -242,20 +256,23 @@
         return hit;
       };
       for (const turn of store.turns(sid)) {
-        if (!turn.calls.length) continue;
         // A Hermes chat shows each call under the thought that made it while the turn runs, and the live row says what
         // runs now: the receipt waits for the turn's end (a summary), unless the reader opened one of its calls.
-        if (session.kind === "hermes" && turn.end == null && !turn.open) continue;
+        const waiting = hermes && turn.end == null && !turn.open;
+        if (waiting && turn.measured) continue;
+        // a turn followed from the snapshot takes part even before its first call: it holds its user turn's receipt
+        if (!turn.calls.length && !waiting) continue;
         if (!turn.imported) {
           // Fixed at first placement (calls arrive after the user's message is on screen), so a later steer or
-          // queued message never pulls an earlier turn's receipt; a turn seen only via snapshots uses timestamps.
+          // queued message never pulls an earlier turn's receipt; a turn seen only via snapshots uses timestamps
+          // (provisional while it still runs: the calls it absorbs may be older).
+          let el = turn.anchor ? users.find(u => u.dataset.convKey === turn.anchor) : null;
           if (!turn.anchor) {
             const times = turn.calls.map(call => call.ts).filter(Number.isFinite);
-            const el = turn.measured ? users.at(-1) : times.length ? userAt(Math.min(...times)) : null;
-            if (el) turn.anchor = el.dataset.convKey;
+            el = turn.measured ? users.at(-1) : times.length ? userAt(Math.min(...times)) : waiting ? users.at(-1) : null;
+            if (el && !waiting) turn.anchor = el.dataset.convKey;
           }
-          const anchor = users.find(el => el.dataset.convKey === turn.anchor);
-          if (anchor || (turn.measured && !users.length)) out.push({ key: turn.id, turn, anchor, calls: turn.calls });
+          if (el || (turn.measured && !users.length)) parts.push({ turn, anchor: el || null, calls: turn.calls });
           continue;
         }
         const groups = new Map();
@@ -265,9 +282,33 @@
           if (!groups.has(el)) groups.set(el, []);
           groups.get(el).push(call);
         }
-        for (const [el, calls] of groups) out.push({ key: `${turn.id}@${el.dataset.convKey}`, turn: { ...turn, calls, id: `${turn.id}@${el.dataset.convKey}` }, anchor: el, calls });
+        for (const [el, calls] of groups) parts.push({ turn, anchor: el, calls });
+      }
+      // ONE receipt per user turn: every turn, snapshot-followed run and history group placed under the same user
+      // message is summed up in one receipt (a long autonomous run is many of them, and listing each piled up a row of
+      // "1 tools" receipts under the work stretch). It waits while any part of that user turn still runs.
+      const byAnchor = new Map();
+      for (const part of parts) {
+        if (!byAnchor.has(part.anchor)) byAnchor.set(part.anchor, []);
+        byAnchor.get(part.anchor).push(part);
+      }
+      const out = [];
+      for (const [anchor, list] of byAnchor) {
+        const turns = [...new Set(list.map(part => part.turn))];
+        if (hermes && !turns.some(turn => turn.open) && turns.some(turn => turn.end == null)) continue;
+        const calls = list.flatMap(part => part.calls);
+        if (!calls.length) continue;
+        const turn = list.length === 1 && list[0].calls === list[0].turn.calls ? list[0].turn : combined(list[0].turn.id + (anchor ? `@${anchor.dataset.convKey}` : ""), turns, calls);
+        out.push({ key: turn.id, turn, anchor: anchor || undefined, calls });
       }
       return out;
+    }
+    /** The parts of one user turn as one receipt turn: their calls, their span, and one fold shared by all of them. */
+    function combined(id, turns, calls) {
+      const ends = turns.map(turn => turn.end);
+      const turn = { id, since: Math.min(...turns.map(t => t.since)), end: ends.includes(null) ? null : Math.max(...ends), calls,
+        measured: turns.every(t => t.measured !== false) };
+      return Object.defineProperty(turn, "open", { enumerable: true, get: () => turns.some(t => t.open), set: value => { for (const t of turns) t.open = value; } });
     }
     const after = el => { let next = el.nextElementSibling; while (next?.matches(".receipt")) next = next.nextElementSibling; return next; };
     function paint() {

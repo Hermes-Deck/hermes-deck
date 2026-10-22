@@ -1334,7 +1334,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     const t = s.tokens || {};
     const bits = [];
     if (!s.parent && s.turns) bits.push(i18nText("time.turns", { turns: s.turns }));
-    bits.push(i18nText("U0482", { v: s.ntools || 0 }));
+    bits.push(i18nText(`activity.tools.${new Intl.PluralRules(i18nLocale()).select(s.ntools || 0) === "one" ? "one" : "other"}`, { n: s.ntools || 0 }));
     bits.push(i18nText("time.fresh", { v: k((t.in || 0) + (t.cw || 0)) }));
     if (t.cr) bits.push(i18nText("U0350", { cr: k(t.cr) }));
     bits.push(i18nText("U0351", { out: k(t.out) }));

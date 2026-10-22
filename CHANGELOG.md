@@ -13,6 +13,9 @@ The desktop app, relay and Hermes plugin share one version number.
 - A **Split view** button next to the host numbers shows two hosts side by side (when the app supports it); each pane has its own numbers, and the Windows caption-button space is reserved only in the right or full pane.
 
 - The chat title is no longer repeated in the top bar's breadcrumb; the chat header below shows it.
+- Hermes chats show one tool receipt per message you sent, after the work it started. A session watched from here (a sub-agent, a TUI or Telegram run) no longer piles a row of "1 tools" receipts under its work.
+- Tool counts read "1 tool" / "2 tools" in receipts, the sub-agent views and the session statistics.
+- The live row no longer says "Running terminal · done" for a step that already finished; it says Thinking…. When this Deck receives no live reasoning for a session (it runs elsewhere), Show thinking says so instead of promising reasoning that will not come, and a turn whose model streamed no reasoning says so after its first step.
 ## [1.1.0] - 2026-11-05
 
 - Switching hosts cancels pending browser-transfer approvals and file downloads. Late image and audio responses from the previous host are discarded.

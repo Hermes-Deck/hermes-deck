@@ -226,6 +226,13 @@ Telegram. Known executable and script types are saved but never opened directly.
 
 **What it is.**
 
+- In a Hermes chat, one live row at the end of the transcript says what the agent is doing (**Thinking…**,
+  **Running <tool>**, **Writing…**, **Waiting for approval**, **Waiting for your answer**) with the elapsed time and a
+  **Show thinking** disclosure that streams the reasoning of the step under way when Hermes sends it (finished steps
+  are already in the transcript above). Hermes streams reasoning only to a connection that drives or resumed the
+  session; for a session running elsewhere (a sub-agent, a TUI or Telegram run) the row follows the host's snapshot
+  and says that its reasoning is not streamed here, and a turn whose model streamed no reasoning says so after its
+  first step.
 - The agent status card above the composer follows the selected direct or Telegram/relay session. It shows the
   agent, current tool or status, and elapsed time when available. It starts collapsed. Select its header to show
   recent observed steps, the model, **Open Work**, and the existing **Stop (Esc)** control. Relay-only activity is
@@ -242,7 +249,8 @@ Telegram. Known executable and script types are saved but never opened directly.
   send** drops the current task and follows your message; **Stop** stops the running turn.
 - Agent prose is set in a reading serif; reasoning folds say how long the agent thought. A turn's work reads in
   order: each thought is followed by the tool calls it made (tool name and main argument). After the work, a folded
-  receipt sums the turn up (**Worked Ns · N tools**) and lists each call's output; clicking a call in the transcript
+  receipt sums the turn up (**Worked Ns · N tools**; one receipt per message you sent, however many steps or
+  sub-agent runs it took) and lists each call's output; clicking a call in the transcript
   opens it there and in Work › **Run**, expanded on its row. A scrubber on the chat's left edge jumps between
   turns.
 - Approvals and questions from the agent appear in the composer tray and are answered there (or in the

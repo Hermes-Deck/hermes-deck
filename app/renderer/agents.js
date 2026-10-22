@@ -3,6 +3,8 @@ var i18nNode = (key, vars) => (typeof module === "object" && module.exports ? re
 var i18nBind = (el, attr, key, vars) => (typeof module === "object" && module.exports ? require("./i18n") : window.DeckI18n).bind(el, attr, key, vars);
 var i18nText = typeof module === "object" && module.exports ? require("./i18n").t : window.DeckI18n.t;
 var i18nLocale = typeof module === "object" && module.exports ? require("./i18n").getLocale : window.DeckI18n.getLocale;
+// "1 tool" / "2 tools" (the plural rule of the UI language)
+var agentToolCount = (n) => i18nNode(`activity.tools.${new Intl.PluralRules(i18nLocale()).select(n) === "one" ? "one" : "other"}`, { n });
 // Hermes Deck sub-agent views (window.DeckAgents.create(ctx)):
 //   B1  one session or sub-agent in the chat column: header, message history, live steps, "Back to chat"
 //   B2  "Running now": every running session and sub-agent across agents, on top of Activity
@@ -694,7 +696,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       const metaBits = [
         h("span", null, i18nNode("U0381", { v: typeof span === "string" ? span : "" }), typeof span === "string" ? null : span),
         tokens ? h("span", null, tokText(tokens)) : null,
-        s && s.ntools ? h("span", null, i18nNode("U0382", { ntools: s.ntools })) : m.tools ? h("span", null, i18nNode("U0383", { tools: m.tools })) : null,
+        s && s.ntools ? h("span", null, agentToolCount(s.ntools)) : m.tools ? h("span", null, agentToolCount(m.tools)) : null,
         s && s.lastTs ? h("span", { title: new Date(s.lastTs * 1000).toLocaleString(i18nLocale()) }, i18nNode("A0207", { lastTs: ago(s.lastTs) })) : null,
       ].filter(Boolean);
       const kids = s ? kidsOf(s) : [];

@@ -21,6 +21,9 @@
       "conv.receiptCount": "{tools} tools",
       "conv.failed": " · {failed} failed",
       "conv.working": "Working · {tools} tools",
+      "conv.receipt.one": "Worked {seconds} · {tools} tool",
+      "conv.receiptCount.one": "{tools} tool",
+      "conv.working.one": "Working · {tools} tool",
       "conv.inspect": "Inspect",
       "conv.output": "Output",
       "conv.noOutput": "No output preview available",
@@ -39,7 +42,9 @@
       "conv.timeline.receipt": "Tool receipt",
       "conv.timeline.failed": "Failed tool receipt",
       "conv.timeline.heading": "Heading",
-      "conv.timeline.approval": "Needs you"
+      "conv.timeline.approval": "Needs you",
+      "tview.noStream": "Reasoning is not streamed to this Deck for this session; each thought shows in the transcript once its step is stored.",
+      "tview.noReasoning": "No reasoning streamed in this turn so far."
     },
     tr: {
       "conv.messageFont": "Mesaj yazı tipi",
@@ -60,6 +65,9 @@
       "conv.receiptCount": "{tools} araç",
       "conv.failed": " · {failed} başarısız",
       "conv.working": "Çalışıyor · {tools} araç",
+      "conv.receipt.one": "{seconds} çalıştı · {tools} araç",
+      "conv.receiptCount.one": "{tools} araç",
+      "conv.working.one": "Çalışıyor · {tools} araç",
       "conv.inspect": "İncele",
       "conv.output": "Çıktı",
       "conv.noOutput": "Çıktı önizlemesi yok",
@@ -78,7 +86,9 @@
       "conv.timeline.receipt": "Araç özeti",
       "conv.timeline.failed": "Başarısız araç özeti",
       "conv.timeline.heading": "Başlık",
-      "conv.timeline.approval": "Seni bekliyor"
+      "conv.timeline.approval": "Seni bekliyor",
+      "tview.noStream": "Bu oturumun düşüncesi bu Deck'e canlı akmıyor; her düşünce, adımı kaydedilince konuşmada görünür.",
+      "tview.noReasoning": "Bu turda şimdiye kadar düşünce akmadı."
     }
   };
   if (typeof module === "object" && module.exports) module.exports = strings;
