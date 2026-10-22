@@ -70,7 +70,7 @@ test("invalid pagination and duplicate identities fail closed", async () => {
 test("actual pinned producer → Python adapter → stdio BridgeClient → UI → producer edit/readback", async ctx => {
   const fixture = path.resolve(__dirname, "../../hermes-plugin/hermes-deck/test_drafts.py");
   const b = new BridgeClient({ mode: "local", python: "/usr/bin/python3", stream: "/fixture" }, {
-    launch: { file: process.env.DECK_TEST_PYTHON || "python3", args: [fixture, "--rpc"] },
+    launch: { file: process.env.DECK_TEST_PYTHON || "python3", args: ["-X", "utf8", fixture, "--rpc"] },
     timing: { handshake: 10000, heartbeat: 60000, request: 10000, keepalive: 60000 },
   });
   ctx.after(() => b.stop());
