@@ -1507,7 +1507,9 @@ app.whenReady().then(() => {
   // agent spaces: registered before the desktop shell like every channel of the main window
   // the agent desktops this computer runs (desktopsHost, set just below) are viewed on loopback, not through the relay
   const localDesktops = { port: async (p) => (desktopsHost ? desktopsHost.port(p) : null), token: (p) => (desktopsHost ? desktopsHost.token(p) : null) };
-  initSpaces({ ipc, win, relayCfg: botscreen.relayCfg, relayFetch: botscreen.relayFetch, deviceId: () => device.id, settings, notify: (k, p) => desktop.notify(k, p), send, desktops: localDesktops });
+  // the viewer is laid over the Bot screen's stage of the page that asked: its rectangle moves into window coordinates
+  const spacesIpc = { ...ipc, handle: (ch, fn) => ipc.handle(ch, ch === "spaces:view" ? (e, rect, ...rest) => fn(e, views.offsetRect(e, rect), ...rest) : fn) };
+  initSpaces({ ipc: spacesIpc, win, relayCfg: botscreen.relayCfg, relayFetch: botscreen.relayFetch, deviceId: () => device.id, settings, notify: (k, p) => desktop.notify(k, p), send, desktops: localDesktops });
   // agent desktops on this computer (off until the user turns them on, after the consent sheet); before the desktop shell
   desktopsHost = initDesktops({ ipc, settings, presence: device, send, dataDir: path.join(app.getPath("userData"), "desktops"), shot: !!SHOT });
   desktop.init({ win, settings, icon: ICON, shot: !!SHOT, pages: views, showHost }); // desktop shell: notifications, pet, tray, close-to-tray

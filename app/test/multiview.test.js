@@ -322,3 +322,12 @@ test("first host: the page made before any host was saved becomes that host's pa
   assert.ok(h.hosts.has("ha"));
   assert.deepEqual(h.views.shownHosts(), ["ha"]);
 });
+
+test("a view laid over a pane (the agent space viewer) is moved from the page's coordinates into the window's", () => {
+  const h = harness();
+  assert.deepEqual(h.views.offsetRect(h.eventFrom("ha"), { x: 10, y: 20, width: 300, height: 200 }), { x: 10, y: 20, width: 300, height: 200 });
+  h.call("ha", "hosts:set-split", true);
+  const right = h.pageOf("hb").view.bounds;
+  assert.deepEqual(h.views.offsetRect(h.eventFrom("hb"), { x: 10, y: 20, width: 300, height: 200 }), { x: 10 + right.x, y: 20, width: 300, height: 200 });
+  assert.deepEqual(h.views.offsetRect({ sender: {}, senderFrame: { url: "deck://app/index.html?host=hb" } }, { x: 1, y: 1 }), { x: 1, y: 1 }, "a stranger gets no offset");
+});

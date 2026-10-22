@@ -145,6 +145,7 @@ class HostViews extends EventEmitter {
       const page = this.pages.get(id);
       if (!page || !rect) return;
       page.view.setBounds(rect);
+      page.rect = rect;
       page.view.setVisible(true);
       page.shown = true;
       shown.add(id);
@@ -219,6 +220,14 @@ class HostViews extends EventEmitter {
   }
 
   owns(e) { return this.hostOf(e) !== null; }
+
+  /** A rectangle in the sender page's own coordinates, moved into the window's (a view laid over that pane). */
+  offsetRect(e, rect) {
+    const id = this.hostOf(e);
+    const page = id === null ? null : this.pages.get(id);
+    const r = page && page.rect ? page.rect : { x: 0, y: 0 };
+    return rect && typeof rect === "object" ? { ...rect, x: Number(rect.x) + r.x, y: Number(rect.y) + r.y } : rect;
+  }
 
   /** True when the sender is the primary pane's page (device hosting is granted from there only). */
   isPrimary(e) {
