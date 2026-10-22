@@ -60,6 +60,9 @@ const DEFAULTS = {
   // (and an older Deck reading this file) keeps working; hosts[] is the source for switching.
   hosts: [],
   activeHost: "",
+  // split view (main/host-layout.js, host-views.js): the right pane's host while `split` is on, and the divider's
+  // position as the left pane's share of the width. The left (or only) pane's host is activeHost above.
+  panes: { split: false, right: "", ratio: 0.5 },
 };
 const HOST_NAME = /^[^\x00-\x1f\x7f]{1,40}$/;
 const HOST_ID = /^h[0-9a-z]{1,16}$/;
@@ -103,6 +106,13 @@ function normalizeDesktops(v) {
   return out;
 }
 const NOTIFICATION_MODES = ["auto", "pet", "banner"];
+/** The split-view state as stored: the right host must be a saved host other than the primary, the ratio in range. */
+function normalizePanes(v, hostIds, primary) {
+  const o = v && typeof v === "object" && !Array.isArray(v) ? v : {};
+  const ratio = typeof o.ratio === "number" && Number.isFinite(o.ratio) && o.ratio >= 0.15 && o.ratio <= 0.85 ? o.ratio : 0.5;
+  const right = typeof o.right === "string" && o.right && o.right !== primary && (!Array.isArray(hostIds) || hostIds.includes(o.right)) ? o.right : "";
+  return { split: o.split === true && !!right, right: o.split === true ? right : "", ratio };
+}
 const DESKTOP_FLAGS = ["notifications", "sound", "pet", "petAlwaysOnTop", "closeToTray", "autostart", "petMotion", "taskbarBadge"];
 const PET_SKINS = require("../renderer/pets/catalog").IDS;
 const PET_SIZES = [0.75, 1, 1.25, 1.5]; // Small / Medium / Large / Extra large (pet-model.js scales by it)
@@ -231,6 +241,7 @@ class Settings {
     d.reading = normalizeReading(raw.reading);
     if (!d.spaces || !SPACE_LEVELS.includes(d.spaces.defaultLevel)) d.spaces = clone(DEFAULTS.spaces);
     d.desktops = normalizeDesktops(raw.desktops);
+    d.panes = normalizePanes(raw.panes, d.hosts.map((x) => x.id), d.activeHost);
     return this;
   }
 
@@ -271,7 +282,7 @@ class Settings {
     return id;
   }
 
-  /** Make another saved host the active one (main.js restarts the relay and bridge clients). */
+  /** Make another saved host the active one (the primary pane's host; main.js moves device hosting with it). */
   selectHost(id) {
     const d = this.data, h = d.hosts.find((x) => x.id === id);
     if (!h) throw new Error(i18nText("hosts.unknown"));
@@ -283,7 +294,18 @@ class Settings {
     if (h.sealed?.device) this.unreadableSecrets["botscreen.deviceToken"] = h.sealed.device;
     // hosting agent desktops is consent given to one host; a switch turns it off (main.js stops them)
     d.desktops = { ...normalizeDesktops(d.desktops), host: false };
+    d.panes = normalizePanes(d.panes, d.hosts.map((x) => x.id), d.activeHost); // the right pane never shows the primary
     this.save();
+  }
+
+  /**
+   * Split view (main/host-views.js): the right pane's host and the divider's share, persisted like a preference
+   * (nothing else in the file is touched or re-encrypted). `primary` changes go through selectHost.
+   */
+  setPanes(patch) {
+    const d = this.data;
+    const next = normalizePanes({ ...d.panes, ...(patch && typeof patch === "object" ? patch : {}) }, d.hosts.map((x) => x.id), d.activeHost);
+    this._savePreference("panes", next);
   }
 
   /** Forget a host. The active one cannot go: switch first, so a live connection never loses its settings. */
@@ -291,6 +313,7 @@ class Settings {
     const d = this.data;
     if (id === d.activeHost || !d.hosts.some((x) => x.id === id)) throw new Error(i18nText("hosts.cannotRemove"));
     d.hosts = d.hosts.filter((x) => x.id !== id);
+    d.panes = normalizePanes(d.panes, d.hosts.map((x) => x.id), d.activeHost);
     this.save();
   }
 
@@ -360,18 +383,24 @@ class Settings {
     return !!(Number(this.data.telegram.apiId) && this.data.telegram.apiHash);
   }
 
-  /** What the renderer may see. */
-  publicView() {
+  /**
+   * What the renderer may see. `hostId` is the asking page's host (split view): that page sees its own host as the
+   * active one with its relay / direct-connection settings, so every page works the same whichever pane it is in.
+   * Without it (or for the primary), the active host's.
+   */
+  publicView(hostId) {
     const d = this.data;
+    const own = hostId !== undefined && hostId !== d.activeHost ? d.hosts.find((x) => x.id === hostId) : null;
+    const relay = own ? own.relay : d.relay, bridge = own ? own.bridge : d.bridge, active = own ? own.id : d.activeHost;
     return {
-      relay: { url: d.relay.url, hasToken: !!d.relay.token },
+      relay: { url: relay.url, hasToken: !!relay.token },
       telegram: { apiId: d.telegram.apiId, hasApiHash: !!d.telegram.apiHash },
       groupChatId: d.groupChatId,
       hiddenBots: d.hiddenBots,
       readReceipts: d.readReceipts !== false,
       downloads: { dir: typeof d.downloads.dir === "string" ? d.downloads.dir : "", ask: d.downloads.ask === true },
       desktop: { notificationMode: NOTIFICATION_MODES.includes(d.desktop.notificationMode) ? d.desktop.notificationMode : "auto", ...Object.fromEntries(DESKTOP_FLAGS.map((k) => [k, !!d.desktop[k]])), petSkin: PET_SKINS.includes(d.desktop.petSkin) ? d.desktop.petSkin : "character", petSize: PET_SIZES.includes(d.desktop.petSize) ? d.desktop.petSize : 1 },
-      bridge: { ...d.bridge },
+      bridge: { ...bridge },
       chatChannel: d.chatChannel,
       chat: clone(d.chat),
       firstRunDone: d.firstRunDone,
@@ -387,7 +416,8 @@ class Settings {
       botscreen: { agents: Array.isArray(d.botscreen.agents) ? [...d.botscreen.agents] : [], hasDeviceToken: !!d.botscreen.deviceToken, deviceKeyUnreadable: !!this.unreadableSecrets["botscreen.deviceToken"] },
       plainSecrets: this.hasSecrets() && (this.plainSecrets || this.weakStorage()),
       hosts: d.hosts.map((x) => ({ id: x.id, name: x.name, relay: { url: x.id === d.activeHost ? d.relay.url : x.relay.url, hasToken: !!(x.id === d.activeHost ? d.relay.token : x.relay.token) }, bridge: { mode: (x.id === d.activeHost ? d.bridge : x.bridge).mode } })),
-      activeHost: d.activeHost,
+      activeHost: active,
+      primaryHost: d.activeHost, // the left / full pane's host (device hosting follows it); activeHost above is the page's own
     };
   }
 
@@ -450,9 +480,14 @@ class Settings {
     return hosting || null;
   }
 
-  /** Apply a renderer patch; empty secret fields mean "keep the stored value". */
-  update(patch) {
+  /**
+   * Apply a renderer patch; empty secret fields mean "keep the stored value". `hostId` is the saving page's host
+   * (split view): its relay / direct-connection fields change that saved host, the rest is shared by every page.
+   */
+  update(patch, hostId) {
     const d = this.data;
+    const own = hostId !== undefined && hostId !== d.activeHost ? d.hosts.find((x) => x.id === hostId) : null;
+    const conn = own || d; // where relay / bridge edits land
     if (patch.desktop?.petAlwaysOnTop !== undefined && typeof patch.desktop.petAlwaysOnTop !== "boolean") throw new Error(i18nText("settings.invalidPreference"));
     if (Object.keys(patch).join() === "desktop" && patch.desktop && typeof patch.desktop === "object" && !Array.isArray(patch.desktop) &&
         Object.keys(patch.desktop).length && Object.entries(patch.desktop).every(([k, v]) => ["pet", "petAlwaysOnTop"].includes(k) && typeof v === "boolean")) {
@@ -505,8 +540,8 @@ class Settings {
       if (!ok) throw new Error(i18nText("set.desktopsInvalid"));
     }
     if (patch.relay) {
-      if (typeof patch.relay.url === "string") d.relay.url = normalizeRelayUrl(patch.relay.url);
-      if (typeof patch.relay.token === "string" && patch.relay.token.trim()) d.relay.token = patch.relay.token.trim();
+      if (typeof patch.relay.url === "string") conn.relay.url = normalizeRelayUrl(patch.relay.url);
+      if (typeof patch.relay.token === "string" && patch.relay.token.trim()) conn.relay.token = patch.relay.token.trim();
     }
     if (patch.telegram) {
       if (patch.telegram.apiId !== undefined) {
@@ -555,7 +590,7 @@ class Settings {
       // v: the position format (pet-model.js POS_V); an untagged one is from the 88 px coin and gets migrated
       if (p !== undefined) d.desktop.petPos = p && Number.isFinite(p.x) && Number.isFinite(p.y) ? { x: Math.round(p.x), y: Math.round(p.y), ...(Number.isInteger(p.v) ? { v: p.v } : {}) } : null;
     }
-    if (patch.bridge !== undefined) d.bridge = normalizeBridge(patch.bridge); // throws a Turkish message when invalid
+    if (patch.bridge !== undefined) conn.bridge = normalizeBridge(patch.bridge); // throws a Turkish message when invalid
     if (chat) {
       d.chat = chat;
       d.chatChannel = chat.defaultMode === "telegram" ? "telegram" : "hermes";
@@ -627,4 +662,4 @@ function normalizeRelayUrl(v) {
   return `${u.protocol}//${u.host}`;
 }
 
-module.exports = { Settings, normalizeRelayUrl, PET_SIZES, THEMES, normalizeDesktops };
+module.exports = { Settings, normalizeRelayUrl, PET_SIZES, THEMES, normalizeDesktops, normalizePanes };
