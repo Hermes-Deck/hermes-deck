@@ -17,7 +17,7 @@ function world(load = async () => [{ name: "default" }, { name: "quiet" }, { nam
     isSubagent: n => !!n.parent, SUB_FOLD_AFTER_S: 600,
     sectionHead: (_id, name, count) => h("header", null, name, count), i18nText: key => key,
     i18nNode: key => key, mark() {}, LA: { clear() {} }, updateBridgeStatusLine() {}, renderNote() {},
-    VO: { sync() {} }, hermesMode: () => false, BT: null, SB: null,
+    VO: { sync() {} }, hermesMode: () => false, BT: null, SB: null, WA: null,
     RG: { reusable: () => false, leave() {}, mint: async profile => { ctx.created = profile; return { sid: "new" }; } },
     chatMode: () => "sessions", hermesSelect: sid => { H.sel = sid; }, els: { input: { focus() {} } },
     cleanErr: String, setFormMsg() {}, console };

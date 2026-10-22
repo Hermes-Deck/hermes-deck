@@ -25,6 +25,7 @@ function world() {
     send: async () => true, scopeOf: () => ({ kind: "dm" }), agentList: () => [],
     window: { DeckModelPicker: { create: (opts) => { picker = opts; return {}; } } },
     PK: null,
+    WA: null, // Watch (watch.js): not under test here
   };
   vm.createContext(ctx);
   if (src.includes("function composerSession(")) vm.runInContext(fn("composerSession"), ctx);

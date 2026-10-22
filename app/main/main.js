@@ -650,6 +650,12 @@ ipc.handle("bridge:subagent-steer", (e, sid, id, text, o) => trackMutation(() =>
 ipc.handle("bridge:subagent-interrupt", (e, sid, id, o) => trackMutation(() => needBridge(e).interruptSubagent(bSid(sid), bSub(id), { profile: bProfile(o) })));
 ipc.handle("bridge:plan", (e, sid, o) => needBridge(e).plan(bSid(sid), { profile: bProfile(o) }));
 ipc.handle("bridge:tool-calls", (e, sid, o) => needBridge(e).toolCalls(bSid(sid), { profile: bProfile(o) }));
+// watch: the page's selected live session, read-only, on the page's own host (one per page; see BridgeClient.watch)
+ipc.handle("bridge:watch", (e, sid, o) => needBridge(e).watch(bSid(sid), { profile: bProfile(o), owner: String(e.sender?.id ?? "") }));
+ipc.handle("bridge:unwatch", (e, sid, o) => {
+  const rt = runtimeOf(e);
+  return rt && rt.bridge ? rt.bridge.unwatch(bSid(sid), { profile: bProfile(o), owner: String(e.sender?.id ?? "") }) : { watching: false };
+});
 ipc.handle("bridge:reasoning", (e, show) => {
   const rt = runtimeOf(e);
   return rt ? rt.setReasoning(show === true) : { show: show === true };

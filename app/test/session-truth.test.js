@@ -206,7 +206,7 @@ function appWorld() {
     BS: require("../renderer/busy-send"), LA: { event() { return false; }, end() { return false; } }, setTimeout: (fn) => fn && 0,
     i18nText: I18N.t, i18nNode: (k) => ({ textContent: I18N.t(k) }), cleanErr: (e) => String((e && e.message) || e),
     TK: require("../renderer/takeover").create({ takeover: async () => ({ok:true,mode:'transferred'}), changed() {}, error() {} }),
-    AT: { key: () => "k", queued() {}, sent() {}, render() {}, views: (key, toks) => toks.map((t) => ({ token: t, name: `${t}.png`, size: 3, kind: "photo" })), restore() {}, forget() {} }, BT: null, SB: null,
+    AT: { key: () => "k", queued() {}, sent() {}, render() {}, views: (key, toks) => toks.map((t) => ({ token: t, name: `${t}.png`, size: 3, kind: "photo" })), restore() {}, forget() {} }, BT: null, SB: null, WA: null,
     // drafts.js stand-in: clears the box when it still holds the sent text, like DeckDrafts.sent for the chat on screen
     DR: { sent(key, text) { if (ctx.els.input.value.trim() === String(text || "").trim()) ctx.els.input.value = ""; } }, autosize() {}, renderNote() {}, mark() {}, hermesPoll() {},
     scrollToEnd: false, bridgeOpen: () => true, hermesMode: () => true, nowS: () => 5000,

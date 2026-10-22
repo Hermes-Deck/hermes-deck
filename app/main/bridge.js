@@ -1157,6 +1157,13 @@ class BridgeClient extends EventEmitter {
     // work pane: the latest deck.plan / deck.tools per [profile, stored id] on this connection (cleared on reconnect)
     this.livePlans = new Map();
     this.liveTools = new Map();
+    // watch (a page looking at a session someone else drives): page -> [profile, stored id] it watches, the runtime
+    // ids bound only by a watch (read-only: no Stop, no close), the ones of those whose reasoning view a watch armed,
+    // and [profile, stored id] -> the epoch of its last watch resume (one attempt per session and connection)
+    this.watching = new Map();
+    this.watchOnly = new Set();
+    this.watchArmed = new Set();
+    this.watchTried = new Map();
   }
 
   /** pid of the current child, if any (diagnostics and tests). */
@@ -1332,7 +1339,7 @@ class BridgeClient extends EventEmitter {
   _emitSnapshot(snap = this.snapshot) {
     if (!snap) return;
     const extra = [...this.created.values()].filter((c) => !snap.nodes.some((n) => n.sid === c.sid && n.profile === c.profile));
-    const out = { ...snap, nodes: [...snap.nodes, ...extra].map((n) => ({ ...n, bound: this.bindings.has(sessionKey(n.profile, n.sid)) })) };
+    const out = { ...snap, nodes: [...snap.nodes, ...extra].map((n) => ({ ...n, bound: this._drives(n.profile, n.sid) })) };
     const key = JSON.stringify(out);
     this.snapshot = snap;
     if (key === this.snapshotKey) return;
@@ -1340,11 +1347,17 @@ class BridgeClient extends EventEmitter {
     this.emit("snapshot", out);
   }
 
+  /** Bound here by something other than a watch (send, model picker, sub-agent calls...): the controls may use it. */
+  _drives(profile, sid) {
+    const b = this.bindings.get(sessionKey(profile, sid));
+    return !!b && !this.watchOnly.has(b.rpcId);
+  }
+
   /** Current snapshot for a late subscriber (renderer reload). */
   currentSnapshot() {
     if (!this.snapshot) return null;
     const extra = [...this.created.values()].filter((c) => !this.snapshot.nodes.some((n) => n.sid === c.sid && n.profile === c.profile));
-    return { ...this.snapshot, nodes: [...this.snapshot.nodes, ...extra].map((n) => ({ ...n, bound: this.bindings.has(sessionKey(n.profile, n.sid)) })) };
+    return { ...this.snapshot, nodes: [...this.snapshot.nodes, ...extra].map((n) => ({ ...n, bound: this._drives(n.profile, n.sid) })) };
   }
 
   /**
@@ -1488,6 +1501,10 @@ class BridgeClient extends EventEmitter {
 
   _clearSession() {
     this.recovering?.clear();
+    this.watching.clear(); // the pages watch again on the next connection (status open)
+    this.watchOnly.clear();
+    this.watchArmed.clear();
+    this.watchTried.clear();
     this.livePlans?.clear(); // a new stream sends every session's activity again
     this.liveTools?.clear();
     this.bindings.clear();
@@ -1868,7 +1885,7 @@ class BridgeClient extends EventEmitter {
     const canonical = this.botPending.get(p);
     const canonicalMatch = canonical && (canonical.chat.id === sessionId || canonical.chat.sid === sessionId);
     const freshUnstored = made && made.fresh && !(canonicalMatch && !canonical.pending);
-    if (bound && bound.epoch === this.epoch && !(node && (node.active || node.state === "thinking" || node.state === "working" || node.state === "searching") && node.terminalAt === null)) {
+    if (bound && bound.epoch === this.epoch && !this.watchOnly.has(bound.rpcId) && !(node && (node.active || node.state === "thinking" || node.state === "working" || node.state === "searching") && node.terminalAt === null)) {
       try { await this.request("session.close", { session_id: bound.rpcId }); }
       catch (error) { if (freshUnstored) throw error; } // no DB acknowledgement can establish deletion of an unpersisted runtime
     }
@@ -1911,15 +1928,22 @@ class BridgeClient extends EventEmitter {
     return { discarded: sessionId };
   }
 
-  /** Persisted id -> live gateway id, resuming the session in Hermes's TUI gateway when needed. */
-  async _bind(storedId, profile) {
+  /**
+   * Persisted id -> live gateway id, resuming the session in Hermes's TUI gateway when needed. `watch`: only to look
+   * at it (watch()); every other caller drives the session, which turns a watch-only binding into a normal one.
+   * `lazy`: Hermes' agentless watch session (a gateway sub-agent child; see watch()).
+   */
+  async _bind(storedId, profile, { watch = false, lazy = false } = {}) {
     checkSid(storedId);
     profile = this._profileOf(storedId, profile);
     const key = sessionKey(profile, storedId);
     const epoch = this.epoch;
     const b = this.bindings.get(key);
-    if (b && b.epoch === epoch) return b.rpcId;
-    const params = { session_id: storedId, omit_messages: true, inline_images: false };
+    if (b && b.epoch === epoch) {
+      if (!watch) this._driven(b.rpcId);
+      return b.rpcId;
+    }
+    const params = { session_id: storedId, omit_messages: true, inline_images: false, ...(lazy ? { lazy: true } : {}) };
     if (profile && profile !== "default") {
       if (!PROFILE_RE.test(profile)) throw new Error(i18nText("U0081"));
       params.profile = profile;
@@ -1932,11 +1956,95 @@ class BridgeClient extends EventEmitter {
     const canonical = [r.stored_session_id, r.session_key, r.resumed, info.stored_session_id].find((v) => typeof v === "string" && v && v.length <= 512);
     const existing = this.rpcToStored.get(rpcId);
     if (existing && existing.profile !== profile) throw new Error(MSG.changed);
+    const meanwhile = this.bindings.get(key);
+    if (watch && meanwhile && meanwhile.epoch === epoch) return meanwhile.rpcId; // a send bound it while this resumed
     for (const id of new Set([storedId, canonical].filter(Boolean))) this.bindings.set(sessionKey(profile, id), { rpcId, epoch });
     this.rpcToStored.set(rpcId, { sid: storedId, profile });
+    if (watch) {
+      if (!existing) this.watchOnly.add(rpcId);
+    } else {
+      this.watchOnly.delete(rpcId); // the arming below covers it
+      this.watchArmed.delete(rpcId);
+    }
     this._emitSnapshot();
-    if (this.showReasoning) this._reasoningView(rpcId, true);
+    if (this.showReasoning) {
+      if (this.watchOnly.has(rpcId)) this._watchView(rpcId, true);
+      else this._reasoningView(rpcId, true);
+    }
     return rpcId;
+  }
+
+  /** A watch-only binding that the user now drives (send, model picker...): normal binding, Show thinking as for any. */
+  _driven(rpcId) {
+    if (!this.watchOnly.delete(rpcId)) return;
+    const armed = this.watchArmed.delete(rpcId);
+    this._emitSnapshot();
+    if (this.showReasoning && !armed) this._reasoningView(rpcId, true);
+  }
+
+  /** Arm/disarm the reasoning view of a watch-only session, only ever undoing what a watch armed. */
+  _watchView(rpcId, show) {
+    if (show === this.watchArmed.has(rpcId)) return;
+    if (show) this.watchArmed.add(rpcId);
+    else this.watchArmed.delete(rpcId);
+    this._reasoningView(rpcId, show);
+  }
+
+  /**
+   * Watch a live session this Deck does not drive (a sub-agent, a turn started from another Deck, the phone or Hermes
+   * Desktop on this gateway): bind it on this connection (session.resume with omit_messages), so its tool.*, message.*
+   * and, with Show thinking on, reasoning.delta events reach this page. A run outside the gateway's session server (a
+   * Telegram turn, a TUI in its own process) gets an idle runtime of its own and no events: snapshot-only as before.
+   * Read-only: never prompt.submit, takeover or
+   * session.close, and a watch-only binding offers no Stop. A gateway sub-agent child is resumed `lazy`, Hermes'
+   * own agentless watch session that _mirror_subagent_to_child feeds (a plain resume would build a second agent
+   * for the child and stop that mirror). One resume per session and connection: a refusal (another process owns
+   * the session) stays snapshot-only until the next connection. `owner` is the asking page; it watches one
+   * session, so watching another one unwatches the previous one.
+   */
+  async watch(sessionId, { profile, owner = "" } = {}) {
+    checkSid(sessionId);
+    const p = this._profileOf(sessionId, profile);
+    const key = sessionKey(p, sessionId);
+    const prev = this.watching.get(owner);
+    this.watching.set(owner, key);
+    if (prev && prev !== key) this._unwatchKey(prev);
+    if (!this.conn) return { watching: false };
+    const epoch = this.epoch;
+    const b = this.bindings.get(key);
+    if (b && b.epoch === epoch) {
+      if (this.showReasoning && this.watchOnly.has(b.rpcId)) this._watchView(b.rpcId, true); // back to it: re-arm
+      return { watching: true };
+    }
+    if (this.watchTried.get(key) === epoch) return { watching: false };
+    this.watchTried.set(key, epoch);
+    const node = this.nodeFor(sessionId, p);
+    try {
+      await this._bind(sessionId, p, { watch: true, lazy: !!(node && node.parent) });
+    } catch (error) {
+      return { watching: false, error: String((error && error.message) || error).slice(0, 300) };
+    }
+    if (epoch !== this.epoch) return { watching: false };
+    if (this.watching.get(owner) !== key) {
+      this._unwatchKey(key); // the page moved on while Hermes resumed it
+      return { watching: false };
+    }
+    return { watching: true };
+  }
+
+  /** The page left the session (or it went idle): disarm what its watch armed. The binding stays; nothing is closed. */
+  unwatch(sessionId, { profile, owner = "" } = {}) {
+    checkSid(sessionId);
+    const key = sessionKey(this._profileOf(sessionId, profile), sessionId);
+    if (this.watching.get(owner) === key) this.watching.delete(owner);
+    this._unwatchKey(key);
+    return { watching: false };
+  }
+
+  _unwatchKey(key) {
+    if ([...this.watching.values()].includes(key)) return; // another page still looks at it
+    const b = this.bindings.get(key);
+    if (b && b.epoch === this.epoch && this.watchOnly.has(b.rpcId)) this._watchView(b.rpcId, false);
   }
 
   /** Retry only an explicit missing-runtime reply, never an uncertain/timeout send. */
@@ -1977,7 +2085,12 @@ class BridgeClient extends EventEmitter {
   setReasoning(show) {
     this.showReasoning = show === true;
     const rpcIds = new Set([...this.bindings.values()].filter((b) => b.epoch === this.epoch).map((b) => b.rpcId));
-    for (const id of rpcIds) this._reasoningView(id, this.showReasoning);
+    const watched = new Set([...this.watching.values()].map((k) => this.bindings.get(k)).filter((b) => b && b.epoch === this.epoch).map((b) => b.rpcId));
+    for (const id of rpcIds) {
+      // a watch-only session: on only while a page looks at it, off only if a watch armed it
+      if (this.watchOnly.has(id)) { if (!this.showReasoning || watched.has(id)) this._watchView(id, this.showReasoning); }
+      else this._reasoningView(id, this.showReasoning);
+    }
     return { show: this.showReasoning };
   }
 
@@ -2240,7 +2353,11 @@ class BridgeClient extends EventEmitter {
     if (!isPlainObject(r) || r.ok !== true || !["transferred", "restarted"].includes(r.mode) || !sidOrNull(r.session_id)) throw new Error("Invalid takeover reply");
     const key = sessionKey(profile, sessionId);
     const old = this.bindings.get(key);
+    this.watchOnly.delete(r.session_id); // an explicit takeover drives the session from here on
+    this.watchArmed.delete(r.session_id);
     if (old) {
+      this.watchOnly.delete(old.rpcId);
+      this.watchArmed.delete(old.rpcId);
       this.rpcToStored.delete(old.rpcId);
       for (const [alias, binding] of this.bindings) if (binding.rpcId === old.rpcId && JSON.parse(alias)[0] === profile) this.bindings.set(alias, { rpcId: r.session_id, epoch });
     }
@@ -2269,7 +2386,8 @@ class BridgeClient extends EventEmitter {
     if (opts.turnId !== undefined && opts.turnId !== null && (!node || opts.turnId !== node.turnId)) throw new Error(i18nText("U0089"));
     if (node && controllable(node)) return this._native("native.interrupt", sessionId, undefined, opts.turnId, profile);
     const b = this.bindings.get(sessionKey(profile, sessionId));
-    if (b && b.epoch === this.epoch && this.rpcToStored.get(b.rpcId)?.profile === profile) {
+    // a watch-only binding is read-only: Stop stays with whoever drives the turn
+    if (b && b.epoch === this.epoch && !this.watchOnly.has(b.rpcId) && this.rpcToStored.get(b.rpcId)?.profile === profile) {
       const r = await this._runtimeRequest("session.interrupt", sessionId, profile, { session_id: b.rpcId });
       return { status: isPlainObject(r) && typeof r.status === "string" ? r.status.slice(0, 64) : "interrupted" };
     }

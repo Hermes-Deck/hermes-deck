@@ -2374,6 +2374,17 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
         toast: (text, bad) => MV.toast(text, bad),
       })
     : null;
+  // Watch (watch.js): the selected live session is followed read-only on this page's host, so its tool calls and
+  // thinking stream here too (a sub-agent, a turn from another Deck); hooks below are marked "Watch"
+  const WA = window.DeckWatch && deck.bridge && deck.bridge.watch
+    ? window.DeckWatch.create({
+        deck,
+        want: () => {
+          const n = H.sel && hermesMode() && bridgeOpen() ? H.nodes.get(H.sel) : null;
+          return nodeLive(n) && !(BT && BT.isDraft(n.sid)) ? { sid: n.sid, profile: n.profile } : null;
+        },
+      })
+    : null;
   // Botlar (bots.js, botface.js): the Hermes rail's bot mode, as in Hermes Desktop; one row per profile and
   // its one "Bot Chat", independent of Telegram. Hooks below are marked "Botlar".
   const BT = window.DeckBots
@@ -3072,6 +3083,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     hermesLoadHistory(sid);
     hermesPoll();
     if (GC) GC.onSelect(); // Group Chat: the open room's own poll starts or stops
+    if (WA) WA.sync(); // Watch: follow the newly selected session if it is live
   }
 
   /** Group Chat: leave a room (disbanded, or the create form cancelled); the Bots view then opens its remembered bot. */
@@ -3081,6 +3093,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     store.set("deck.hsel", "");
     DR.sync();
     if (GC) GC.onSelect();
+    if (WA) WA.sync(); // Watch: nothing selected, nothing watched
     mark("rail", "head", "msgs", "strip", "panel", true);
     renderNote();
     hermesAutoSelect();
@@ -4332,6 +4345,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     if (s.status === "open") refreshHermesProfiles();
     if (BT) BT.onStatus(s.status, was); // Botlar: roster poll on (re)connect
     if (SB && s.status === "open") SB.onStatus(); // All sessions: reload an open browser on (re)connect
+    if (WA) WA.status(s.status, was); // Watch: a new connection binds the selected live session again
   }
 
   function applyBridgeSnapshot(snap) {
@@ -4355,6 +4369,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     mark("top", "rail", "head", "strip", "panel");
     liveRowRefresh(); // a turn driven elsewhere (TUI, Telegram): the row follows the snapshot's state and steps
     renderNote(); // Send / Stop / Queue / Steer follows the session's state in every mode
+    if (WA) WA.sync(); // Watch: the selected session went live (watch) or idle (unwatch)
   }
 
   function applyBridgeSessions(list) {

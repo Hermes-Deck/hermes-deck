@@ -229,10 +229,15 @@ Telegram. Known executable and script types are saved but never opened directly.
 - In a Hermes chat, one live row at the end of the transcript says what the agent is doing (**Thinking…**,
   **Running <tool>**, **Writing…**, **Waiting for approval**, **Waiting for your answer**) with the elapsed time and a
   **Show thinking** disclosure that streams the reasoning of the step under way when Hermes sends it (finished steps
-  are already in the transcript above). Hermes streams reasoning only to a connection that drives or resumed the
-  session; for a session running elsewhere (a sub-agent, a TUI or Telegram run) the row follows the host's snapshot
-  and says that its reasoning is not streamed here, and a turn whose model streamed no reasoning says so after its
-  first step.
+  are already in the transcript above). Hermes streams a session's events only to a connection that drives or resumed
+  it, so opening a session that is working elsewhere on the host's gateway (a sub-agent, a run started from another
+  Deck, the phone or Hermes Desktop) attaches this Deck to it read-only: its tool calls and, with Show thinking open,
+  its reasoning stream live here too, again after a reconnect, and the Deck lets go when you open another chat or the
+  turn ends. Watching never sends, stops or takes the session over. Show thinking is one switch per Hermes session, so
+  another client attached to the same session (a TUI or Hermes Desktop on the same gateway) also starts showing
+  reasoning while you watch it with Show thinking open. A run Hermes executes outside its gateway session server (a Telegram turn, a TUI in its own process) cannot
+  stream here; its row follows the host's snapshot and says that its reasoning is not streamed here, and a turn whose
+  model streamed no reasoning says so after its first step.
 - The agent status card above the composer follows the selected direct or Telegram/relay session. It shows the
   agent, current tool or status, and elapsed time when available. It starts collapsed. Select its header to show
   recent observed steps, the model, **Open Work**, and the existing **Stop (Esc)** control. Relay-only activity is

@@ -95,7 +95,7 @@ The main process (`app/main/`) owns every connection and every secret. The rende
 | `shell.js` | The Blend frame and its `window.DeckShell` API: sidebar (modes, filters), top bar, main area (chat or inbox), the right slot (the Work pane, with tabs; an old stored Inspector state migrates to Work › Session or the Usage view), named slots, events, shared services and the frame shortcuts. Later modules plug in through it. |
 | `app.js` | Sidebar rail, chat column, the Work pane's Session tab, the Usage view's contents, the direct Hermes views, and the services other modules use (`h`, `chat`, `openChat`, `triageData`, `relaySession`, `usageView`, …). |
 | `settings-view.js`, `chat-modes.js`, `i18n.js` | The Settings view (General, Hermes, Relay, Telegram, Desktop, This device), the chat-mode editor, and the English and Turkish UI strings. |
-| `sessions-browser.js`, `bots.js`, `activity-view.js`, `live-activity.js` | All sessions; the Bots mode and Bot Chat; the Activity tree; the live "working" row in a Hermes chat. |
+| `sessions-browser.js`, `bots.js`, `activity-view.js`, `live-activity.js`, `watch.js` | All sessions; the Bots mode and Bot Chat; the Activity tree; the live "working" row in a Hermes chat and the read-only watch of the selected live session that feeds it. |
 | `group-chat.js` | Group Chat: the gateway's hosted rooms in the Bots view (rows, the room transcript with its one live line, the create form, approvals, rename, disband), polled over `groups.*`; request shapes and reply projections in `main/group-rpc.js`. |
 | `outbox.js`, `busy-send.js`, `takeover.js`, `drafts.js`, `attach.js`, `voice.js`, `voice-bubble.js`, `hermes-files.js`, `media-preview.js` | Composer: queued messages, queue-or-steer, explicit take over, per-chat drafts, attachments, dictation, voice notes, files offered by the agent, image previews. |
 | `msgview.js`, `reactions.js`, `markdown.js`, `topics.js` | Message bubbles, media, inline buttons, context menu, reply bar; reaction chips and the quick picker; agent markdown as DOM nodes; forum topic management. |
@@ -189,6 +189,25 @@ The service lists bot DMs from the first 300 dialogs (minus hidden bots) and, if
 | Local (macOS, Linux) | `<python> -I <stream.py> --follow` |
 
 Both directions speak newline-delimited JSON-RPC 2.0 on stdio. The host sends `hermes-deck.v1` snapshots (at least every 5 s while healthy), native events, approval and question requests, and replies. The Deck sends only the methods allow-listed in `app/main/bridge.js` (`READS` and `MUTATIONS`), each with validated parameters. Reads include `session.list`, `deck.session_index`, `session.messages`, `session.usage`, `model.options`, `profiles.list`, `profiles.get_asset`, `deck.transcribe` (dictation), `deck.file_read` (downloads of files the agent offered), `deck.file_grant` (the same check, answered with a download ticket the relay on that host streams; see [relay.md](relay.md#large-downloads)), the work pane's `subagent.list`, `subagent.tail` and `deck.plan`, `commands.catalog` (one profile's slash commands for the composer's `/` suggestions), and Group Chat's `groups.capabilities`, `groups.list`, `groups.state` and `groups.log`. Mutations include `session.create`, `session.resume`, `deck.takeover`, `prompt.submit`, `deck.attach_submit`, `deck.attach_staged` (files the relay already wrote to this host's upload spool, named by id; see [relay.md](relay.md#large-attachments)), `native.steer`, `native.redirect`, `native.interrupt`, `session.interrupt`, `config.set` (the session's model with `--session`, never `--global`, or its reasoning level), `request.answer`, and the session-management calls (`session.title`, `session.delete`, `session.archive`, `session.branch_stored`, …), `subagent.steer` / `subagent.interrupt` for one child of a session, and Group Chat's `groups.create`, `groups.send`, `groups.rename`, `groups.stop`, `groups.approve`, `groups.retry` and `groups.disband` (exact shapes in `app/main/group-rpc.js`, checked again by the plugin). Mutations only follow a click and are never replayed: a request whose connection drops fails and says it may have run. The bridge works without the relay and without Telegram.
+
+### Watching a live session
+
+Hermes sends a session's events (`tool.*`, `message.*`, and `reasoning.delta` while the session's `show_reasoning`
+flag is on) only to the connections attached to it. The Deck attaches by binding the session (`BridgeClient._bind`:
+`session.resume` with `omit_messages`), which a send, the model picker or a sub-agent call does. For a session the
+page only looks at, `app/renderer/watch.js` asks main to **watch** the selected session while its snapshot node is
+live (`deck.bridge.watch`/`unwatch`, routed to the sender page's own host runtime like every bridge channel) and
+again after each new connection. `BridgeClient.watch()` binds it read-only: a watch-only binding offers no Stop
+(`bound` stays false in the snapshot), is never interrupted, closed or taken over, and arms `deck.reasoning_view`
+only while a page watches it with Show thinking on, disarming only what it armed when the page leaves or the turn
+ends. A gateway sub-agent child is resumed with `lazy: true`, Hermes' own agentless watch session that
+`_mirror_subagent_to_child` feeds (a plain resume would pre-build an agent for the child, which stops that mirror).
+A refused resume is tried once per session and connection. A run Hermes executes outside the gateway's session server
+(a Telegram turn, a TUI in its own process) is resumed into an idle runtime of its own that receives none of that
+run's events, so its live row stays snapshot-built (the existing "not streamed here" note). A send or another
+driving call turns a watch-only binding into a normal one. Because `show_reasoning` is one flag per Hermes session,
+another client attached to the same session (a TUI or Hermes Desktop on the same gateway) also receives reasoning
+while the Deck watches it with Show thinking on.
 
 ### Several Hermes hosts
 

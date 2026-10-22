@@ -140,7 +140,7 @@ function sourceWorld({ host = "h1", storage = new Map(), ready = true } = {}) {
     syncChatMode: mode => { ctx.activeChatMode = mode; calls.push(["mode", mode]); },
     SV: { close() {}, refresh() {} }, UD: { close() {} }, SH: { setMain: v => calls.push(["main", v]) },
     SB: { isOpen: () => false, close() {} }, allSessionsView: () => ctx.SB,
-    RG: { leave() {} }, BT: null, AG: null, GC: null,
+    RG: { leave() {} }, BT: null, AG: null, GC: null, WA: null,
     renderStrip() {}, shownHost: () => ctx.S.settings.activeHost, renderHosts() {}, publishDesktopView() {}, mark() {}, renderNote() {}, renderMsgs() {}, hermesPoll() {},
     hermesLoadHistory: sid => calls.push(["history", sid, ctx.H.nodes.get(sid)?.profile || ctx.H.hist.get(sid)?.profile]),
     MV: { toast: () => calls.push(["error"]) }, i18nText: k => k, cleanErr: String,

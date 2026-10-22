@@ -454,6 +454,8 @@ function answer(method, p) {
     }
     case "session.resume": {
       if (!p.session_id) return err(4006, "session_id required");
+      // --resume-fail <sid>: the session belongs to another Hermes process (a TUI in its own process)
+      if (values("resume-fail").includes(p.session_id)) return err(4009, "Session already has a live owner");
       const profile = p.profile || "default";
       const rpc = flag("profile-collision") ? `rpc-${profile}-${p.session_id}` : `rpc-${p.session_id}`;
       rpcProfiles.set(rpc, profile);
@@ -578,6 +580,14 @@ function answer(method, p) {
 
 let listed = false;
 function after(method, p) {
+  if (method === "session.resume" && flag("resume-events") && !values("resume-fail").includes(p.session_id)) {
+    // a turn driven elsewhere: once this connection is attached, its live events reach it too
+    const ev = (type, payload) => out({ jsonrpc: "2.0", method: "event", params: { type, session_id: `rpc-${p.session_id}`, payload } });
+    setTimeout(() => {
+      ev("tool.start", { name: "terminal", tool_id: "w1" });
+      ev("reasoning.delta", { text: "Checking the logs" });
+    }, 30);
+  }
   if (method === "session.messages" && flag("work-live") && !workLiveSent && p.session_id === MAIN) {
     workLiveSent = true;
     workLive(MAIN);

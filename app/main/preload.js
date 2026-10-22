@@ -172,6 +172,8 @@ contextBridge.exposeInMainWorld("deck", {
     redirect: (sid, text, opts) => ipcRenderer.invoke("bridge:redirect", sid, text, opts),
     interrupt: (sid, opts) => ipcRenderer.invoke("bridge:interrupt", sid, opts),
     reasoning: (show) => ipcRenderer.invoke("bridge:reasoning", show === true), // "Show thinking" for sessions the Deck drives
+    watch: (sid, opts) => ipcRenderer.invoke("bridge:watch", sid, opts), // the selected live session's events, read-only
+    unwatch: (sid, opts) => ipcRenderer.invoke("bridge:unwatch", sid, opts),
     // work pane: a session's live sub-agents (reads), steer / interrupt one of them (a click each), its plan and tool calls
     subagents: (sid, opts) => ipcRenderer.invoke("bridge:subagents", sid, opts),
     subagentTail: (sid, subagentId, opts) => ipcRenderer.invoke("bridge:subagent-tail", sid, subagentId, opts),

@@ -150,6 +150,25 @@ test("routing: every channel resolves the SENDER page's host; a mutation from pa
   assert.equal(h.call("ha", "settings:get").activeHost, "ha", "each page sees its own host as its active one");
 });
 
+test("watch: each page watches on ITS host's connection, keyed by that page; unwatch reaches a runtime that is not open", async () => {
+  const h = harness();
+  h.call("ha", "hosts:set-split", true); // two panes: ha left, hb right
+  const seen = [];
+  const client = (id) => ({ watch: async (sid, o) => { seen.push([id, "watch", sid, o.profile, o.owner]); return { watching: true }; },
+    unwatch: (sid, o) => { seen.push([id, "unwatch", sid, o.profile, o.owner]); return { watching: false }; },
+    removeAllListeners() {}, stop() {}, currentSnapshot: () => null, listRequests: () => [] });
+  h.pageOf("ha").wc.id = 11;
+  h.pageOf("hb").wc.id = 12;
+  h.access.inject("ha", client("ha"));
+  const rb = h.access.inject("hb", client("hb"));
+  assert.deepEqual(await h.call("ha", "bridge:watch", "s-1", { profile: "default" }), { watching: true });
+  assert.deepEqual(await h.call("hb", "bridge:watch", "s-1", { profile: "research" }), { watching: true });
+  rb.phase = "connecting";
+  await assert.rejects(async () => h.call("hb", "bridge:watch", "s-2", {}), "a watch needs the page's own open connection");
+  assert.deepEqual(h.call("hb", "bridge:unwatch", "s-1", { profile: "research" }), { watching: false });
+  assert.deepEqual(seen, [["ha", "watch", "s-1", "default", "11"], ["hb", "watch", "s-1", "research", "12"], ["hb", "unwatch", "s-1", "research", "12"]]);
+});
+
 test("gate: a page whose ?host= disagrees with its sender, or a stranger, is refused; device hosting changes only from the primary pane", () => {
   const h = harness();
   h.call("ha", "hosts:set-split", true);

@@ -434,6 +434,9 @@
     });
     function refresh() { if (!scheduled) { scheduled = true; root.requestAnimationFrame(paint); } }
     function ingest(sid, type, payload, at) {
+      // A watched gateway sub-agent's mirrored tool events (Hermes ids "submirror:<child>:<n>") only feed the live row:
+      // that child's calls arrive with their real ids in its deck.tools push, and counting both doubled them.
+      if (/^tool\./.test(type) && /^submirror:/.test(String(payload?.tool_id || ""))) return;
       store.event(sid, type, payload, at);
       if (type === "tool.start") controller.select(sid, String(payload?.tool_id || payload?.call || payload?.id || ""), false, "live");
       changed();
