@@ -1,7 +1,7 @@
 "use strict";
 // Wires main/update-check.js into the app: real network/process access, the "updates:*" IPC channels for
 // Settings > General > Updates, a check on start and every 6 h (Settings: updates.auto), and one notification per
-// new main commit or release. Clicking it opens Settings at the Updates group.
+// new selected-branch commit or release. Clicking it opens Settings at the Updates group.
 const { app, shell, dialog } = require("electron");
 const { execFile, spawn } = require("child_process");
 const fs = require("fs");
@@ -47,12 +47,12 @@ function tokenSource(settings) {
 }
 
 /** Runs a command, collecting the tail of its output; `detached` starts it and returns at once (installers). */
-function run(cmd, args, { cwd, detached = false } = {}) {
+function run(cmd, args, { cwd, env = process.env, detached = false } = {}) {
   return new Promise((resolve) => {
     const shellNeeded = process.platform === "win32" && /^(npm|npx)$/i.test(cmd); // .cmd shims need a shell
     let child;
     try {
-      child = spawn(cmd, args, { cwd, detached, windowsHide: true, shell: shellNeeded, stdio: detached ? "ignore" : ["ignore", "pipe", "pipe"] });
+      child = spawn(cmd, args, { cwd, env, detached, windowsHide: true, shell: shellNeeded, stdio: detached ? "ignore" : ["ignore", "pipe", "pipe"] });
     } catch (e) {
       return resolve({ code: 1, out: e.message });
     }
@@ -128,7 +128,8 @@ function initUpdates({ ipc, settings, send, notify, quit, openSettings = () => {
   }
   function tell(st) {
     if (!st || st.error) return;
-    const key = st.release && st.release.newer ? `release:${st.release.tag}` : st.behind > 0 ? `head:${st.head}` : "";
+    const releaseNotice = !(st.channel === "test" && st.behind > 0) && st.release && st.release.newer;
+    const key = releaseNotice ? `release:${st.release.tag}` : st.behind > 0 ? `head:${st.head}` : "";
     if (!key || key === seen) return;
     seen = key;
     try {
@@ -136,7 +137,7 @@ function initUpdates({ ipc, settings, send, notify, quit, openSettings = () => {
     } catch {
       // read-only profile: it may tell again next start
     }
-    const body = st.release && st.release.newer ? i18nText("updates.toastRelease", { tag: st.release.tag })
+    const body = releaseNotice ? i18nText("updates.toastRelease", { tag: st.release.tag })
       : i18nText("updates.toastBehind", { count: st.behind, branch: st.branch });
     notify("update", { title: i18nText("updates.toastTitle"), body, quiet: true, onClick: openSettings });
   }

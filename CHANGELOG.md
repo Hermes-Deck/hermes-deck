@@ -6,6 +6,10 @@ The desktop app, relay and Hermes plugin share one version number.
 
 ## [Unreleased]
 
+- Source updates use a fresh clone per attempt, leaving old caches and linked checkouts untouched. Source Test builds no longer offer potentially older Test packages. macOS rechecks the source target after staging and removes stale candidates before the swap.
+
+- Test updates now list `test/desktop-fixes` commits without a published release. An explicit source-build opt-in and exact-SHA confirmation reuse the isolated build/install route; stale targets and incomplete or divergent comparisons cannot build. Source Test metadata preserves the return to Stable.
+
 - Needs you can review/edit Draft Cards email drafts, compare actual versions and request revision. Matching Draft Cards + Gmail source extensions add verified primary-account review and a separate exact-version, single-use send confirmation with persistent receipts. Old or disabled plugins stay review-only; no plugin is installed or enabled automatically.
 
 - The top bar now has a keyboard-friendly host selector with separate Relay and Sessions status. Host setup accepts Local, SSH or WSL direct connections, or an explicitly relay-only host; saved configuration is not labelled connected.

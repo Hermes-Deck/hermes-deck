@@ -247,9 +247,12 @@ Then restart each changed profile's gateway at a quiet moment.
 Use Settings › General › Updates. **Desktop app channel** has two choices:
 
 - **Stable (main)** (default): the latest published stable release from `Hermes-Deck/hermes-deck`.
-- **Test**: the most recently published prerelease with a tag `vX.Y.Z-test.N` in the same repository.
-  Other prereleases and drafts are ignored. Discovery is bounded to the 100 most recent releases.
-  A branch push alone does not create an installable update.
+- **Test**: compares this build with the exact head of `test/desktop-fixes` in the same repository.
+  New commits appear even with source builds disabled and with no published Test package.
+  Published `vX.Y.Z-test.N` prereleases remain a fallback when no newer branch commits are known;
+  they never hide newer branch commits. Source Test builds (no release tag) do not use this package fallback:
+  a tag alone cannot prove that a package is newer than their source commit. Other prereleases and drafts
+  are ignored (100 recent releases checked).
 
 Changing the channel saves only that choice. Press **Check now** to see the **Target version**; press the
 install button to open a native confirmation. Cancel is the default. Downloads use the checked release ID,
@@ -263,8 +266,34 @@ may remove this selector. The updater does not reset settings, but cannot make o
 The selector does not change relay/plugin channels, restart gateways, or enable automatic host updates.
 The separate **Automatically update the host** preference keeps its existing behavior.
 
-The opt-in developer source build remains **Stable/main only**, checks the cached clone's origin, and builds
-the exact confirmed commit. It never falls back to building main for Test. It runs dependency scripts locally.
+Source builds use the existing developer opt-in, **Offer builds from unreleased source (developers)**.
+It is visible directly under Updates in Test; Stable keeps it under Advanced. Enable it and press **Check now**
+again. The source button names the branch; native confirmation names Test/Stable and the full exact commit SHA.
+Cancel is the default. Checks and channel selection never run npm or build/install anything.
+
+The source route supports **Test/test/desktop-fixes** and **Stable/main** (Stable still prefers a newer release).
+Each attempt creates a fresh `<userData>/update-src-*` directory, clones the canonical repository,
+checks its origin, fetches the confirmed SHA, checks it out detached, verifies HEAD, and runs `npm ci`
+and the existing platform build command. Old checkouts (including `update-src`, linked directories and
+their targets) are never reused or cleaned. Per-attempt directories remain for build diagnostics/manual
+handoff; remove only known updater-created directories when no build or installer is using them.
+The branch must contain this build's commits; divergent, unknown, malformed or incomplete comparisons cannot
+start a source build. Unpaginated comparisons beyond GitHub's 250-commit limit fail closed; use a published
+package or a separately reviewed manual build rather than treating a partial list as the branch head.
+The target is checked again before building and before installation. A moved head, changed channel, disabled
+source setting or build error prevents installation. On macOS, source freshness is checked again after
+copying and signature verification; failure removes the staged candidate without starting the swap.
+This narrows the staging window, but a remote ref check and local launch cannot be atomic.
+The current app stays untouched on build failure.
+
+The build environment sets `DECK_UPDATE_CHANNEL`, clears `DECK_RELEASE_TAG`, and passes `DECK_SOURCE_COMMIT`.
+`scripts/build-info.js` verifies that SHA against git HEAD and records the channel's canonical branch even
+in a detached checkout. Source Test builds have channel `test`, branch `test/desktop-fixes`, the exact SHA,
+and no release tag. Returning to Stable therefore remains available without inventing a release version.
+
+This runs dependency scripts locally and requires git/npm plus a supported installed app. Linux cannot build
+or install through this updater. The first app containing this updater still needs a separately approved
+bootstrap installation; branch commits cannot add this feature to an older installed updater.
 
 - **Windows x64:** the normal installed app downloads the selected release's NSIS installer, checks it against
   `SHA256SUMS.txt` and runs it. Portable or isolated copies (including a separate TEST installation/profile)
@@ -275,7 +304,8 @@ the exact confirmed commit. It never falls back to building main for Test. It ru
 
 ### Preparing a Test package (maintainers)
 
-No Test publishing workflow runs on branch pushes. After review and explicit publication approval:
+Source Test updates do not require a published release. A bootstrap or optional Test package can still be
+prepared separately. No Test publishing workflow runs on branch pushes. After review and publication approval:
 
 1. Choose an unused immutable `vX.Y.Z-test.N` tag whose base version matches `app/package.json`.
    Do not move an existing tag or replace published assets.

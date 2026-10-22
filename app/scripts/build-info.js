@@ -1,6 +1,6 @@
 "use strict";
 // Writes app/main/build-info.json before a packaged build (npm run dist*): the commit, branch and GitHub repository
-// the app was built from, so the installed app can ask GitHub how far main has moved since (main/update-check.js).
+// the app was built from, so it can compare the selected update branch (main/update-check.js).
 // A dev checkout has no such file; update-check.js then asks git directly. Nothing else in the app reads it.
 const { execFileSync } = require("child_process");
 const fs = require("fs");
@@ -21,21 +21,28 @@ function repoOf(url) {
   return m ? `${m[1]}/${m[2]}` : "";
 }
 
-function releaseInfo(env = process.env, version = require("../package.json").version) {
-  const { TEST_TAG, STABLE_TAG } = require("../main/update-check");
+function releaseInfo(env = process.env, version = require("../package.json").version, commit = "") {
+  const { TEST_TAG, STABLE_TAG, TEST_BRANCH } = require("../main/update-check");
   const releaseTag = env.DECK_RELEASE_TAG || "";
   if (releaseTag && !((TEST_TAG.test(releaseTag) || STABLE_TAG.test(releaseTag)) && releaseTag.replace(/^v/, "").split("-test.")[0] === version)) throw new Error("DECK_RELEASE_TAG must match the package version (vX.Y.Z or vX.Y.Z-test.N)");
   if (env.DECK_UPDATE_CHANNEL && !["stable", "test"].includes(env.DECK_UPDATE_CHANNEL)) throw new Error("Invalid DECK_UPDATE_CHANNEL");
   const channel = releaseTag ? (TEST_TAG.test(releaseTag) ? "test" : "stable") : env.DECK_UPDATE_CHANNEL || "stable";
   if (releaseTag && env.DECK_UPDATE_CHANNEL && channel !== env.DECK_UPDATE_CHANNEL) throw new Error("Release tag/channel mismatch");
+  if (env.DECK_SOURCE_COMMIT) {
+    if (!/^[0-9a-f]{40}$/.test(env.DECK_SOURCE_COMMIT) || env.DECK_SOURCE_COMMIT.length !== 40 ||
+        env.DECK_SOURCE_COMMIT !== commit || releaseTag || !env.DECK_UPDATE_CHANNEL) throw new Error("Invalid source build metadata");
+    return { channel, releaseTag: "", branch: channel === "test" ? TEST_BRANCH : "main" };
+  }
   return { channel, releaseTag };
 }
 
 function main() {
+  const commit = git("rev-parse", "HEAD");
+  const metadata = releaseInfo(process.env, require("../package.json").version, commit);
   const info = {
-    ...releaseInfo(),
-    commit: git("rev-parse", "HEAD"),
-    branch: git("rev-parse", "--abbrev-ref", "HEAD"),
+    ...metadata,
+    commit,
+    branch: metadata.branch || git("rev-parse", "--abbrev-ref", "HEAD"),
     repo: repoOf(git("remote", "get-url", "origin")),
     dirty: git("status", "--porcelain", "--untracked-files=no") !== "",
     builtAt: new Date().toISOString(),

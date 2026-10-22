@@ -1004,6 +1004,55 @@ test("General Updates channel resets the target without installing; only the che
   assert.equal(root().querySelector('[data-fk="upd:install"]'), null);
 });
 
+test("Test source updates show commits, visible opt-in and exact target without executing on check", async () => {
+  const sha = "b".repeat(40), installs = [];
+  let status = { version: "1.0.0", channel: "test", branch: "test/desktop-fixes", head: sha, behind: 1, commits: [{ sha: "bbbbbbb", title: "<script>untrusted title</script>" }], action: "none", unavailable: "updates.sourceDisabled" };
+  const deck = { updates: { status: async () => ({ status }), on() {}, open() {},
+    check: async () => ({ status: status = { ...status, unavailable: "", action: "build", target: "exact-source-target" } }),
+    install: async target => { installs.push(target); return { ok: true }; } } };
+  const { sv, root, saves } = mount({ deck });
+  sv.open("general");
+  await flushAll();
+  assert.match(root().text, /<script>untrusted title<\/script>/);
+  assert.equal(root().querySelector("script"), null);
+  assert.ok(root().text.includes(sha));
+  assert.equal(root().querySelector('[data-fk="upd:install"]'), null);
+  const source = root().querySelector("#s-upd-src");
+  assert.ok(source);
+  assert.equal(source.closest("details"), null, "Test opt-in is outside Advanced");
+  assert.equal(source.checked, false);
+  source.checked = true;
+  source.dispatch("change");
+  await flushAll();
+  assert.deepEqual(saves.at(-1), { updates: { fromSource: true } });
+  assert.deepEqual(installs, []);
+  root().querySelector('[data-fk="upd:check"]').dispatch("click");
+  await flushAll();
+  const install = root().querySelector('[data-fk="upd:install"]');
+  assert.match(install.text, /Build from test\/desktop-fixes and install/);
+  assert.deepEqual(installs, []);
+  install.dispatch("click");
+  await flushAll();
+  assert.deepEqual(installs, ["exact-source-target"]);
+});
+
+test("F2: current source Test does not advertise a package even when installation is unavailable", async () => {
+  const { UpdateChecker } = require("../main/update-check");
+  const sha = "b".repeat(40), tag = "v1.0.0-test.1";
+  const c = new UpdateChecker({ version: "1.0.0", info: { channel: "test", commit: sha, releaseTag: "" },
+    settings: () => ({ channel: "test" }), platform: "win32", arch: "x64", installSupported: false });
+  c._compare = async () => ({ head: sha, ahead_by: 0, behind_by: 0, commits: [] });
+  c._release = async () => ({ id: 1, tag_name: tag, assets: [{ id: 2, name: "Hermes-Deck-1.0.0-Setup.exe" }, { id: 3, name: "SHA256SUMS.txt" }] });
+  const status = await c.check();
+  assert.equal(status.action, "none");
+  const { sv, root } = mount({ deck: { updates: { status: async () => ({ status }), on() {} } } });
+  sv.open("general");
+  await flushAll();
+  assert.equal(root().text.includes(tag), false);
+  assert.equal(root().querySelector(".upd-state.new"), null);
+  assert.equal(root().querySelector('[data-fk="upd:install"]'), null);
+});
+
 test("General › Updates: the host auto-update switch saves updates.host", async () => {
   const deck = { updates: { status: async () => ({ status: { version: "1.3.0" }, busy: null }), check: async () => ({}), install: async () => ({}), open() {}, on() {} } };
   const { sv, saves, root, setSettings } = mount({ deck });

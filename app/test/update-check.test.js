@@ -15,17 +15,19 @@ const HEAD = "b".repeat(40);
 const SETUP = Buffer.from("fake installer bytes");
 const SUM = crypto.createHash("sha256").update(SETUP).digest("hex");
 
-function github({ ahead = 3, own = 0, tag = "v0.4.0", status = 200, sum = SUM, compareStatus = 200, sums = true } = {}) {
+function github({ ahead = 3, own = 0, tag = "v0.4.0", status = 200, sum = SUM, compareStatus = 200, sums = true, branch = "main" } = {}) {
   const calls = [];
   const fetch = async (url, opts) => {
     calls.push({ url, auth: opts.headers.Authorization || "" });
     const json = (body) => ({ ok: status === 200, status, json: async () => body, text: async () => String(body), arrayBuffer: async () => body });
     if (status !== 200) return json({});
+    if (url.includes("/git/ref/heads/")) return json({ ref: `refs/heads/${branch}`, object: { type: "commit", sha: ahead ? HEAD : BUILT } });
     if (url.includes("/compare/") && compareStatus !== 200) return { ok: false, status: compareStatus, json: async () => ({}) };
     if (url.includes("/compare/")) {
       const commits = Array.from({ length: ahead }, (_, i) => ({ sha: i === ahead - 1 ? HEAD : `${i}`.repeat(40).slice(0, 40), commit: { message: `Commit ${i + 1}\n\nbody`, committer: { date: "2026-10-06T10:00:00Z" } } }));
-      return json({ ahead_by: ahead, behind_by: own, commits });
+      return json({ status: ahead ? (own ? "diverged" : "ahead") : own ? "behind" : "identical", ahead_by: ahead, behind_by: own, total_commits: ahead, base_commit: { sha: BUILT }, merge_base_commit: { sha: BUILT }, commits });
     }
+    if (url.endsWith("/releases?per_page=100")) return json([]);
     if (url.endsWith("/releases/latest") || url.endsWith("/releases/10")) {
       return json({ id: 10, draft: false, prerelease: false, tag_name: tag, html_url: "https://github.com/o/r/releases/tag/" + tag, assets: [
         { id: 1, name: `Hermes-Deck-${tag.slice(1)}-Setup.exe` }, ...(sums ? [{ id: 2, name: "SHA256SUMS.txt" }] : []), { id: 3, name: `Hermes-Deck-${tag.slice(1)}-mac-arm64.zip` }] });
@@ -62,7 +64,7 @@ test("check: commits behind main (newest first), the newer release and what the 
   assert.equal(st.release.tag, "v0.4.0");
   assert.equal(st.release.newer, true);
   assert.equal(st.action, "release", "a newer release beats building main");
-  assert.match(gh.calls[0].url, /\/repos\/Hermes-Deck\/hermes-deck\/compare\/a{40}\.\.\.main$/);
+  assert.ok(gh.calls.some(c => /\/repos\/Hermes-Deck\/hermes-deck\/compare\/a{40}\.\.\.b{40}$/.test(c.url)));
   assert.equal(gh.calls[0].auth, "Bearer tok");
 });
 
@@ -124,12 +126,13 @@ test("install: a release is downloaded, its checksum verified, then started sile
   assert.equal(bad.ran.length, 0, "nothing ran");
 });
 
-test("install: building main clones once, checks out the branch, builds and runs the new installer", async () => {
+test("install: building main uses a fresh clone, checks out the commit, builds and runs the new installer", async () => {
   const ran = [];
   const { c, work } = checker({ fetch: github({ tag: "v0.3.0" }).fetch,
     run: async (cmd, args, opts) => {
       ran.push({ cmd, args, opts });
       if (args[0] === "remote") return { code: 0, out: "https://github.com/Hermes-Deck/hermes-deck.git" };
+      if (args[0] === "rev-parse") return { code: 0, out: HEAD };
       if (args[0] === "clone") fs.mkdirSync(path.join(args[3], ".git"), { recursive: true });
       if (args[1] === "dist:win") {
         fs.mkdirSync(path.join(opts.cwd, "dist"), { recursive: true });
@@ -139,10 +142,10 @@ test("install: building main clones once, checks out the branch, builds and runs
     } });
   await c.check();
   const file = await confirmedInstall(c);
-  assert.deepEqual(ran.map((r) => `${r.cmd} ${r.args[0]}`), ["git clone", "git remote", "git fetch", "git -c", "npm ci", "npm run", `${file} /S`]);
+  assert.deepEqual(ran.map((r) => `${r.cmd} ${r.args[0]}`), ["git clone", "git remote", "git fetch", "git -c", "git rev-parse", "npm ci", "npm run", `${file} /S`]);
   assert.equal(ran[0].args[2], "https://github.com/Hermes-Deck/hermes-deck.git");
   assert.deepEqual(ran[2].args, ["fetch", "origin", HEAD]);
-  assert.deepEqual(ran[3].args, ["-c", "core.hooksPath=/dev/null", "checkout", "--detach", "--force", HEAD]);
+  assert.deepEqual(ran[3].args, ["-c", "core.hooksPath=/dev/null", "checkout", "--detach", HEAD]);
   fs.rmSync(work, { recursive: true, force: true });
 });
 
@@ -202,16 +205,17 @@ function fakeApp(dir, id = BUNDLE_ID, mark = "new") {
   fs.writeFileSync(path.join(dir, "mark"), mark);
 }
 
-test("macOS: building main picks this arch's .app, stages it beside the running bundle and starts the swap", async () => {
+test("macOS: building Test picks this arch's .app, stages it beside the running bundle and starts the swap", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "deck-mac-"));
   const target = path.join(root, "Hermes Deck.app");
   fakeApp(target, BUNDLE_ID, "old");
   fs.mkdirSync(path.join(root, "work"));
   const ran = [];
-  const { c } = checker({ fetch: github({ tag: "v0.3.0" }).fetch, platform: "darwin", arch: "arm64", appBundle: target, pid: 4242, workDir: path.join(root, "work"),
+  const { c } = checker({ fetch: github({ tag: "v0.3.0", branch: "test/desktop-fixes" }).fetch, settings: () => ({ channel: "test", fromSource: true }), platform: "darwin", arch: "arm64", appBundle: target, pid: 4242, workDir: path.join(root, "work"),
     run: async (cmd, args, opts) => {
       ran.push({ cmd, args, opts });
       if (args[0] === "remote") return { code: 0, out: "https://github.com/Hermes-Deck/hermes-deck.git" };
+      if (args[0] === "rev-parse") return { code: 0, out: HEAD };
       if (args[0] === "clone") fs.mkdirSync(path.join(args[3], ".git"), { recursive: true });
       if (args[1] === "dist") { fakeApp(path.join(opts.cwd, "dist", "mac", "Hermes Deck.app"), BUNDLE_ID, "x64"); fakeApp(path.join(opts.cwd, "dist", "mac-arm64", "Hermes Deck.app"), BUNDLE_ID, "arm64"); }
       if (cmd === "ditto") fs.cpSync(args[0], args[1], { recursive: true });
@@ -245,6 +249,29 @@ test("macOS: a foreign bundle, a dev run or a read-only folder never gets swappe
   await assert.rejects(checker({ platform: "darwin", appBundle: "", run }).c._launch(newApp), /updates\.manualBuilt/);
   await assert.rejects(checker({ platform: "darwin", appBundle: "/private/var/folders/x/AppTranslocation/y/Hermes Deck.app", run }).c._launch(newApp), /updates\.manualBuilt/);
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("macOS: channel or source permission changes during staging cannot launch a swap", async t => {
+  for (const change of [s => { s.channel = "stable"; }, s => { s.fromSource = false; }]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "deck-stage-cancel-"));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const target = path.join(root, "Hermes Deck.app"), built = path.join(root, "New.app");
+    fakeApp(target, BUNDLE_ID, "old"); fakeApp(built);
+    const settings = { channel: "test", fromSource: true }, ran = [];
+    const { c, work } = checker({ platform: "darwin", appBundle: target, settings: () => settings,
+      run: async (cmd, args) => {
+        ran.push(cmd);
+        if (cmd === "ditto") fs.cpSync(args[0], args[1], { recursive: true });
+        if (cmd === "codesign") change(settings);
+        return { code: 0, out: cmd === "plutil" ? BUNDLE_ID : "" };
+      } });
+    t.after(() => fs.rmSync(work, { recursive: true, force: true }));
+    c.status = { channel: "test", branch: "test/desktop-fixes", action: "build", head: HEAD };
+    await assert.rejects(c._launch(built, c.status), /updates.changed/);
+    assert.equal(ran.includes("/bin/sh"), false);
+    assert.equal(fs.existsSync(path.join(root, ".Hermes Deck.app.update")), false);
+    assert.equal(fs.readFileSync(path.join(target, "mark"), "utf8"), "old");
+  }
 });
 
 test("macOS swap script: keeps the old app until the new one runs, restores it when the new one does not start", { skip: process.platform === "win32" }, () => {

@@ -329,7 +329,7 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
     };
 
     // ------------------------------------------------------------ Updates (main/update-check.js)
-    // How far the repository's main branch moved since this build, the newest release, and one button to get
+    // How far the selected branch moved since this build, the newest release, and one button to get
     // there. State comes from main ("updates" events); the first look at General asks for it.
     const UPD = { status: null, busy: null, progress: null, asked: false };
     const PHASES = ["download", "clone", "fetch", "checkout", "deps", "build", "install", "quit"];
@@ -361,6 +361,7 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
       if (s.error) return T(s.error) + (s.detail ? ` (${s.detail})` : "");
       if (s.unavailable) return T(s.unavailable);
       if (s.replaceBuild && s.release) return T("updates.returnAvailable", { tag: s.release.tag });
+      if (s.channel === "test" && s.behind > 0) return T(s.ahead > 0 ? "updates.diverged" : "updates.behind", { count: s.behind, branch: s.branch, own: s.ahead });
       if (s.channel === "test" && s.release && !s.release.newer) return T("updates.releaseCurrent");
       if (s.release && s.release.newer) return T("updates.newRelease", { tag: s.release.tag });
       if (s.behind > 0 && s.ahead > 0) return T("updates.diverged", { count: s.behind, branch: s.branch, own: s.ahead });
@@ -382,7 +383,7 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
       const go = action === "release" || action === "build"
         ? h("button", { class: "btn mini primary", type: "button", disabled: working ? true : null, dataset: { fk: "upd:install" },
           onclick: () => updatesCall(() => ctx.deck.updates.install(s.target)) },
-          node(action === "release" ? "updates.installRelease" : "updates.buildMain"))
+          node(action === "release" ? "updates.installRelease" : "updates.buildSource", { branch: s.branch }))
         : action === "download"
           ? h("button", { class: "btn mini", type: "button", dataset: { fk: "upd:open" }, onclick: () => ctx.deck.updates.open() }, node("updates.openRelease"))
           : null;
@@ -397,15 +398,19 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
         ...["stable", "test"].map(value => h("option", { value, selected: value === selectedChannel ? true : null }, T(`updates.channel.${value}`))));
       const token = input("s-upd-token", { type: "password", placeholder: u.hasToken ? T("U0485") : T("updates.tokenHint") });
       const saveAdv = () => ctx.save({ updates: { ...(token.value ? { token: token.value } : {}) } }, T("set.saved"));
+      const source = switchRow("s-upd-src", node("updates.fromSource"), u.fromSource === true, (on) => ctx.save({ updates: { fromSource: on } }, T("set.saved")), { fk: "upd:src" });
       const adv = h("details", { class: "sv-row sv-block upd-adv" }, h("summary", null, T("updates.advanced")),
         row(node("updates.repo"), h("span", { class: "sv-path" }, s && s.repo || "Hermes-Deck/hermes-deck")),
         row(node("updates.token"), token, { id: "s-upd-token", title: T("updates.tokenHelp") }),
-        switchRow("s-upd-src", node("updates.fromSource"), u.fromSource === true, (on) => ctx.save({ updates: { fromSource: on } }, T("set.saved")), { fk: "upd:src" }),
+        selectedChannel !== "test" ? source : null,
         h("div", { class: "form-actions sv-actions" }, h("button", { class: "btn mini", type: "button", dataset: { fk: "upd:save" }, onclick: saveAdv }, node("A0151"))));
       return group(node("updates.group"),
         row(node("updates.channel"), channel, { id: "s-upd-channel" }),
         h("p", { class: "sv-row sv-block" }, T("updates.channelHelp")),
-        s && s.release ? row(node("updates.target"), h("span", { class: "sv-path" }, s.release.tag)) : null,
+        s && s.channel === "test" && s.behind > 0 && s.head ? row(node("updates.targetCommit"), h("span", { class: "sv-path" }, s.head)) :
+          s && s.release ? row(node("updates.target"), h("span", { class: "sv-path" }, s.release.tag)) : null,
+        selectedChannel === "test" ? source : null,
+        selectedChannel === "test" ? h("p", { class: "sv-row sv-block" }, T("updates.sourceHelp")) : null,
         build ? row(node("updates.thisBuild"), h("span", { class: "sv-path", title: s && s.repo ? s.repo : null }, build)) : null,
         row(node("updates.state"), h("span", { class: `upd-state${s && s.error ? " bad" : s && (s.behind > 0 || (s.release && s.release.newer)) ? " new" : ""}`, role: "status" }, updatesText(s))),
         commits,
