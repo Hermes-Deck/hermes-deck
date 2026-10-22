@@ -546,6 +546,10 @@ function init({ win, settings, icon, shot }) {
   if (IS_WIN) for (const ev of ["query-session-end", "session-end"]) win.on(ev, () => (S.quitting = true)); // never hold up a logoff
   app.on("before-quit", () => (S.quitting = true));
   app.on("activate", () => showDeck(null)); // macOS: dock click while the window is hidden
+  // Cmd-Tab does not emit activate. A focused fullscreen window can still be on another Space.
+  if (process.platform === "darwin") app.on("did-become-active", () => {
+    if (!S.quitting) showDeck(null);
+  });
   if (IS_WIN && typeof Notification.handleActivation === "function") Notification.handleActivation(() => showDeck(null));
 
   ipcMain.on("desktop:pet-state", (e, s) => {

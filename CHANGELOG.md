@@ -6,6 +6,8 @@ The desktop app, relay and Hermes plugin share one version number.
 
 ## [Unreleased]
 
+- macOS app switching now uses the same main-window restore path as Dock and pet clicks, returning to the main window's fullscreen Space instead of leaving only the pet visible. Hidden and minimized main windows also reopen.
+
 - Source updates use a fresh clone per attempt, leaving old caches and linked checkouts untouched. Source Test builds no longer offer potentially older Test packages. macOS rechecks the source target after staging and removes stale candidates before the swap.
 
 - Test updates now list `test/desktop-fixes` commits without a published release. An explicit source-build opt-in and exact-SHA confirmation reuse the isolated build/install route; stale targets and incomplete or divergent comparisons cannot build. Source Test metadata preserves the return to Stable.
