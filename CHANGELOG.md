@@ -16,6 +16,7 @@ The desktop app, relay and Hermes plugin share one version number.
 - Hermes chats show one tool receipt per message you sent, after the work it started. A session watched from here (a sub-agent, a TUI or Telegram run) no longer piles a row of "1 tools" receipts under its work.
 - Tool counts read "1 tool" / "2 tools" in receipts, the sub-agent views and the session statistics.
 - The live row no longer says "Running terminal · done" for a step that already finished; it says Thinking…. When this Deck receives no live reasoning for a session (it runs elsewhere), Show thinking says so instead of promising reasoning that will not come, and a turn whose model streamed no reasoning says so after its first step.
+- Approvals and questions reach every Deck connected to a host as they are asked, including those of a session started from another Deck or before you switched hosts, so an inactive host notifies you and the card can be answered there. A card answered or expired anywhere leaves every Deck. Needs the updated Hermes plugin and a gateway restart.
 ## [1.1.0] - 2026-11-05
 
 - Switching hosts cancels pending browser-transfer approvals and file downloads. Late image and audio responses from the previous host are discarded.

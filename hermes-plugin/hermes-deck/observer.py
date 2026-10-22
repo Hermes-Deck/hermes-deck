@@ -2165,6 +2165,197 @@ def withdraw_answered(server, request_id, opened, response):
         return False
 
 
+# --- open approvals/questions on every Deck connection, live ------------------------------------------------------
+# Hermes writes a server request only to its session's own transport (tui_gateway write_json): the Deck connection
+# that created or resumed the session. When that Deck left (the owner switched to another host) or another Deck only
+# watches this host, nobody saw the question, and Hermes' request.cancel followed the same dead route.
+REQUEST_KINDS = frozenset({"approval", "clarify"})  # what a Deck card shows; secret/sudo/vault prompts never leave
+REQUEST_CARDS_MAX = 32       # BridgeClient's open-request cap
+REQUEST_POLL_SECONDS = 0.5   # registry read while a Deck is connected (server_requests offers no subscription hook)
+WITHDRAWN_MAX = 512
+
+
+def request_frame_id(obj):
+    """The id of an approval/clarify server-request frame, else None."""
+    if isinstance(obj, dict) and obj.get("method") in REQUEST_KINDS and isinstance(obj.get("id"), str):
+        return obj["id"]
+    return None
+
+
+def cancel_frame_id(obj):
+    """The request id a request.cancel event withdraws, else None."""
+    params = obj.get("params") if isinstance(obj, dict) and obj.get("method") == "event" else None
+    if not isinstance(params, dict) or params.get("type") != "request.cancel":
+        return None
+    payload = params.get("payload")
+    rid = payload.get("id") if isinstance(payload, dict) else None
+    return rid if isinstance(rid, str) else None
+
+
+class RequestCards:
+    """One Deck connection's approval/question cards: exactly one arrival and one withdrawal per request, whichever
+    path delivers it first (Hermes' session transport, the reconnect restore, or RequestHub). `send(obj)` writes one
+    frame and may raise OSError; `lock` serializes it with the connection's other writes. Lock order: `lock`, then the
+    registry's `_lock`, then RequestHub.lock."""
+
+    def __init__(self, send, lock, server):
+        self.send, self.lock, self.server = send, lock, server
+        self.subscribed = False        # listed sessions: wants every open request, not only its sessions'
+        self.shown = OrderedDict()     # request id -> (registry object, profile): cards this connection shows
+        self.withdrawn = OrderedDict() # request ids this connection was told are gone
+
+    def _registry(self):
+        return getattr(self.server, "_server_requests", None)
+
+    def _withdrew(self, rid):
+        self.shown.pop(rid, None)
+        self.withdrawn[rid] = True
+        self.withdrawn.move_to_end(rid)
+        while len(self.withdrawn) > WITHDRAWN_MAX:
+            self.withdrawn.popitem(last=False)
+
+    def admit(self, obj):
+        """With `lock` held, for a frame Hermes routes here: False drops a duplicate. Returns (send?, new request?)."""
+        rid = request_frame_id(obj)
+        if rid is not None:
+            if rid in self.shown or rid in self.withdrawn:
+                return False, False
+            profile = obj["params"].get("profile_name") if isinstance(obj.get("params"), dict) else None
+            requests = self._registry()
+            if isinstance(profile, str) and requests is not None:
+                # only a stamped frame (request_arrival_reply proved the registry entry and profile) is tracked
+                with requests._lock:
+                    req = requests._open.get(rid)
+                if req is not None:
+                    self.shown[rid] = (req, profile)
+                    return True, True
+            return True, False
+        rid = cancel_frame_id(obj)
+        if rid is not None:
+            if rid in self.withdrawn:
+                return False, False
+            self._withdrew(rid)
+        return True, False
+
+    def _cancel(self, rid, req, profile, reason):
+        self.send({"jsonrpc": "2.0", "method": "event", "params": {
+            "type": "request.cancel", "session_id": req.sid, "profile_name": profile,
+            "payload": {"id": rid, "method": req.method, "reason": reason}}})
+        self._withdrew(rid)
+
+    def sync(self, fresh, settling):
+        """Withdraw cards whose request left the registry; offer (when subscribed) every open one not shown yet.
+        `fresh`: [(registry object, frame)] read under the registry lock; `settling(rid)`: an answer is in flight."""
+        requests = self._registry()
+        if requests is None:
+            return
+        with self.lock:
+            with requests._lock:
+                ended = [(rid, req, profile) for rid, (req, profile) in self.shown.items()
+                         if requests._open.get(rid) is not req and not settling(rid)]
+            for rid, req, profile in ended:
+                self._cancel(rid, req, profile, "expired")
+            if not self.subscribed:
+                return
+            for req, frame in fresh:
+                if req.id in self.shown or req.id in self.withdrawn:
+                    continue
+                obj = request_arrival_reply(frame, self.server)
+                # Only the registry/owning-session check adds this field: missing, expired or conflicting-profile
+                # requests are not offered.
+                if "request_created_at" in obj:
+                    self.send(obj)
+                    self.shown[req.id] = (req, obj["params"]["profile_name"])
+
+    def withdraw(self, rid, reason):
+        with self.lock:
+            entry = self.shown.get(rid)
+            if entry is not None:
+                self._cancel(rid, entry[0], entry[1], reason)
+
+
+class RequestHub:
+    """Every open approval/clarify of this Hermes process on every Deck connection that listed sessions, live, and
+    withdrawn everywhere once it is answered, expired or cancelled. Hermes' tui_gateway.server_requests has no
+    subscription hook, so the hub reads its registry under the registry's own lock every REQUEST_POLL_SECONDS while
+    a Deck is connected, and at once when a request passes through any Deck connection. It never attaches a
+    connection to a session, never takes over controls and never replays an answer."""
+
+    def __init__(self, server):
+        self.server = server
+        self.lock = threading.Lock()
+        self.cards = []          # RequestCards of the connected Decks
+        self.answering = {}      # request id -> request.answer calls in flight (withdrawn as "answered", not expired)
+        self.wake = threading.Event()
+
+    def add(self, cards):
+        with self.lock:
+            self.cards.append(cards)
+
+    def remove(self, cards):
+        with self.lock:
+            if cards in self.cards:
+                self.cards.remove(cards)
+
+    def settling(self, rid):
+        with self.lock:
+            return rid in self.answering
+
+    @contextmanager
+    def answer(self, rid):
+        """Around a request.answer: the sweep does not call that request expired while its answer settles."""
+        if not isinstance(rid, str):
+            yield
+            return
+        with self.lock:
+            self.answering[rid] = self.answering.get(rid, 0) + 1
+        try:
+            yield
+        finally:
+            with self.lock:
+                left = self.answering.pop(rid, 1) - 1
+                if left > 0:
+                    self.answering[rid] = left
+
+    def answered(self, rid):
+        """A request.answer settled `rid`: withdraw it (reason answered) from every connection that shows it."""
+        with self.lock:
+            cards = list(self.cards)
+        for card in cards:
+            try:
+                card.withdraw(rid, "answered")
+            except OSError:
+                pass  # that connection is gone; its reader ends it
+
+    def sweep(self, only=None):
+        requests = getattr(self.server, "_server_requests", None)
+        if requests is None:
+            return  # older engines have no native request registry
+        with self.lock:
+            cards = [only] if only is not None else list(self.cards)
+        if not cards:
+            return
+        with requests._lock:
+            fresh = [(req, req.frame()) for req in requests._open.values()
+                     if req.method in REQUEST_KINDS][-REQUEST_CARDS_MAX:]
+        for card in cards:
+            try:
+                card.sync(fresh, self.settling)
+            except OSError:
+                pass
+
+    def run(self, stop):
+        while not stop.is_set():
+            self.wake.wait(REQUEST_POLL_SECONDS)
+            self.wake.clear()
+            if stop.is_set():
+                return
+            try:
+                self.sweep()
+            except Exception:
+                logger.debug("Hermes Deck bridge: open-request sweep failed", exc_info=True)
+
+
 class OneInFlight:
     """At most one request of a kind in flight per control connection. acquire() returns a ticket, or None
     while another one runs; a ticket older than `stale` seconds no longer blocks (its reply never came)."""
@@ -2956,59 +3147,47 @@ class Observer:
         self.control_socket = str(path)
         with self.lock: self._persist()
 
+        # Open approvals/questions reach every Deck connection that listed sessions, not only the session's own
+        # (possibly gone) one, and leave every one of them again (RequestHub).
+        hub = RequestHub(server)
+        threading.Thread(target=hub.run, args=(stop,), name="hermes-deck-requests", daemon=True).start()
+
         class Peer:
             def __init__(self, conn):
                 self.conn, self.lock = conn, threading.Lock()
-                self.closed, self.replayed = threading.Event(), {}
+                self.closed = threading.Event()
+                self.cards = RequestCards(self._send, self.lock, server)
+            def _send(self, obj):
+                # self.lock held
+                try:
+                    self.conn.sendall(json.dumps(obj, ensure_ascii=True).encode() + b"\n")
+                except OSError:
+                    self.close()
+                    raise
             def write(self, obj):
                 try:
                     obj = launch_profile_reply(obj, getattr(server, "_launch_home", None))
                     obj = request_arrival_reply(obj, server)
-                    with self.lock: self.conn.sendall(json.dumps(obj,ensure_ascii=True).encode()+b"\n")
+                    with self.lock:
+                        # one arrival and one withdrawal per request, whichever path delivers it first
+                        send, arrived = self.cards.admit(obj)
+                        if send: self.conn.sendall(json.dumps(obj,ensure_ascii=True).encode()+b"\n")
+                    if arrived: hub.wake.set()  # the other Decks get it now, not at the next sweep
                     return True
                 except OSError: return False
             def replay_requests(self):
-                # Restore pending decisions, never answers or session ownership. Serialize the snapshot with
-                # live writes so a cancellation cannot overtake it and leave a stale card on reconnect.
-                requests = getattr(server, "_server_requests", None)
-                if requests is None:
-                    return  # older engines have no native request registry
-                with self.lock:
-                    with requests._lock:
-                        # ponytail: match BridgeClient's 32-card cap; add paging if larger queues are supported.
-                        frames = [(req, req.frame()) for req in requests._open.values()
-                                  if req.method in {"approval", "clarify"}][-32:]
-                    for req, frame in frames:
-                        obj = request_arrival_reply(frame, server)
-                        # Only the registry/owning-session check can add this field. Missing, expired or
-                        # conflicting-profile requests are not restored; secret/vault prompts never enter here.
-                        if "request_created_at" in obj:
-                            self.conn.sendall(json.dumps(obj, ensure_ascii=True).encode() + b"\n")
-                            self.replayed[req.id] = (req, obj["params"]["profile_name"])
-                if self.replayed:
-                    threading.Thread(target=self.watch_replayed, args=(requests,),
-                                     name="hermes-deck-replayed-requests", daemon=True).start()
-
-            def watch_replayed(self, requests):
-                # A restored session can still send its cancellation to an old transport. Read only the
-                # requests shown here; never attach this peer to that session or take over its controls.
+                # Restore pending decisions, never answers or session ownership, and from now on receive every new
+                # one live. Runs on the reader thread before the session.list reply, serialized with live writes, so
+                # a cancellation cannot overtake it and leave a stale card on reconnect.
+                self.cards.subscribed = True
                 try:
-                    while self.replayed and not self.closed.wait(1) and not stop.is_set():
-                        with self.lock:
-                            with requests._lock:
-                                ended = [(rid, req, profile) for rid, (req, profile) in self.replayed.items()
-                                         if requests._open.get(rid) is not req]
-                            for rid, req, profile in ended:
-                                frame = {"jsonrpc": "2.0", "method": "event", "params": {
-                                    "type": "request.cancel", "session_id": req.sid, "profile_name": profile,
-                                    "payload": {"id": rid, "method": req.method, "reason": "expired"}}}
-                                self.conn.sendall(json.dumps(frame, ensure_ascii=True).encode() + b"\n")
-                                del self.replayed[rid]
+                    hub.sweep(only=self.cards)
                 except OSError:
-                    self.close()
+                    pass
 
             def close(self):
                 self.closed.set()
+                hub.remove(self.cards)
                 # FanoutTransport calls this when it drops the peer (backlog overflow). close() alone does not
                 # release the socket while serve() still reads through conn.makefile(): the client would never
                 # see EOF and keep a connection that no pooled reply or event reaches any more. shutdown() ends
@@ -3025,6 +3204,7 @@ class Observer:
             connection_fanout = FanoutTransport()
             connection_fanout.attach(peer)
             fanout.attach(peer)
+            hub.add(peer.cards)
             created = OrderedDict()  # runtime ids a Bot Chat session.create returned on this connection (session.title)
             avatars = OneInFlight()  # one profiles.get_asset at a time on this connection
             files, budget = file_reader, ReadBudget()  # deck.file_read: the shared reader and this connection's budget
@@ -3108,9 +3288,14 @@ class Observer:
                             opened = open_request(server, params.get("id")) if method == "request.answer" else None
                             token = bind_transport(transport)
                             try:
-                                response = server.dispatch(request, transport=transport)
-                                if method == "request.answer":
-                                    withdraw_answered(server, params.get("id"), opened, response)
+                                # any connection may answer a card it shows; Hermes' request.answer is not owner-bound
+                                with hub.answer(params.get("id") if opened else None):
+                                    response = server.dispatch(request, transport=transport)
+                                    if method == "request.answer":
+                                        withdraw_answered(server, params.get("id"), opened, response)
+                                        settled = response.get("result") if isinstance(response, dict) else None
+                                        if opened and isinstance(settled, dict) and settled.get("status") == "ok":
+                                            hub.answered(params.get("id"))
                                 if method in SUBAGENT_READS:
                                     # the sub-agent detail view: Hermes' own reply, completed (and redacted) here
                                     response = enrich_subagent_reply(method, response, self)

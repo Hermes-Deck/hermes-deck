@@ -1003,6 +1003,71 @@ test("BridgeClient against the real hermes-deck stream.py and plugin control soc
   assert.equal(probed.sessions, 2);
 });
 
+/** Another Deck's connection straight to testhost's control socket (what a second stream.py opens). */
+async function controlConnection(home) {
+  const net = require("net");
+  const dir = path.join(home, "hermes-deck", "processes");
+  for (let i = 0; i < 160; i++) {
+    for (const f of fs.existsSync(dir) ? fs.readdirSync(dir).filter((n) => n.endsWith(".json")) : []) {
+      let sock = "";
+      try { sock = JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")).control_socket || ""; } catch { /* mid-write */ }
+      if (sock && fs.existsSync(sock)) {
+        const conn = net.createConnection(sock);
+        await new Promise((resolve, reject) => { conn.once("connect", resolve); conn.once("error", reject); });
+        let buf = "", n = 0;
+        const waiting = new Map();
+        conn.on("data", (d) => {
+          buf += d;
+          for (let at; (at = buf.indexOf("\n")) >= 0; buf = buf.slice(at + 1)) {
+            const frame = JSON.parse(buf.slice(0, at));
+            if (!frame.method && waiting.has(frame.id)) { waiting.get(frame.id)(frame); waiting.delete(frame.id); }
+          }
+        });
+        conn.call = (method, params) => new Promise((resolve) => {
+          const id = `other-${++n}`;
+          waiting.set(id, resolve);
+          conn.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+        });
+        return conn;
+      }
+    }
+    await sleep(50);
+  }
+  throw new Error("testhost control socket did not start");
+}
+
+test("a watcher BridgeClient hears a question from a session another Deck created and left, and answers it", async (t) => {
+  if (process.platform === "win32" && !HOST_WRAPPER) return t.skip("needs Unix sockets (Linux/macOS)");
+  if (spawnSync(HOST_PY, ["--version"]).status !== 0) return t.skip("no python");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "hd-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const launch = { file: HOST_PY, args: [...(HOST_WRAPPER ? [HOST_WRAPPER] : []), HOST, home, "--log", path.join(home, "gateway.log")] };
+  const timing = { ...FAST, handshake: 10000, request: 5000, heartbeat: 12000 };
+  // the inactive-host watcher main.js starts: a plain BridgeClient whose automatic session.list subscribes it
+  const watcher = new BridgeClient(CFG, { launch, timing });
+  t.after(() => watcher.stop());
+  const listed = next(watcher, "requests", (list) => list.some((r) => r.id === "A1"), 15000);
+  watcher.start();
+  await listed;
+  // the owner's Deck creates a session, starts a turn and leaves (switched host) before the agent asks
+  const owner = await controlConnection(home);
+  const created = await owner.call("session.create", {});
+  const rpc = created.result.session_id;
+  const asked = next(watcher, "requests", (list) => list.some((r) => r.kind === "question" && r.rpcId === rpc), 10000);
+  await owner.call("prompt.submit", { session_id: rpc, text: "deck-test:clarify" });
+  owner.destroy();
+  const q = (await asked).find((r) => r.kind === "question" && r.rpcId === rpc);
+  // a request for a session this client never bound is kept (with its stamped profile), so main.js notifies it
+  assert.deepEqual([q.profile, q.questions.map((x) => [x.qid, x.question])], ["default", [["q1", "Which colour?"]]]);
+  assert.ok(q.createdAt > 0);
+  const gone = next(watcher, "requests", (list) => !list.some((r) => r.id === q.id), 10000);
+  assert.deepEqual(await watcher.answerQuestion(q.id, { q1: "blue" }, { profile: "default" }), { status: "ok" });
+  await gone;
+  const log = readLog(path.join(home, "gateway.log"));
+  assert.deepEqual(log.filter((e) => e.method === "agent.answered").map((e) => e.params), [{ id: q.id, result: { answers: { q1: "blue" } } }]);
+  assert.equal(log.filter((e) => e.method === "session.resume").length, 0, "the watcher never attached to the session");
+});
+
 // ---------------------------------------------------------------- Group Chat (groups.*) through the real plugin
 
 test("Group Chat against the real stream.py and plugin control socket: create, send, log, approve, rename, stop, disband", async (t) => {

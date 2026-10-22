@@ -8,8 +8,11 @@ test_stream.py can drive it as a subprocess:
     python testhost.py HOME [--log FILE]
 
 HOME is an empty directory used as HERMES_HOME. Sessions: s-main (live, controllable, turn t1, owner = this
-process) and s-idle (persisted only). --log appends every request the gateway saw as a JSON line. The first
-session.list asks one approval (A1); prompt.submit streams message.start/delta/complete events. groups.* serves
+process) and s-idle (persisted only). --log appends every request the gateway saw as a JSON line, plus
+agent.asked / agent.answered lines for the server requests the fake agent raised and got answered. The first
+session.list asks one approval (A1); prompt.submit streams message.start/delta/complete events, or with the text
+"deck-test:clarify" / "deck-test:approval" makes that session ask one question / approval after
+DECK_TEST_ASK_DELAY seconds (0.8), written only to the session's own transport like Hermes does. groups.* serves
 in-memory hosted rooms (Group Chat).
 """
 import json
@@ -98,13 +101,34 @@ def install_fake_hermes(home: Path, log=None):
 
     state = {"asked": False}
     # Hermes' open server-request table (tui_gateway.server_requests) and its event sink: request.answer settles
-    # A1 once; _emit reaches every attached Deck through the process-wide fanout the observer registers.
+    # a request once (from any connection); _emit, like Hermes', reaches only the session's own transport.
     open_requests = types.SimpleNamespace(_lock=threading.Lock(), _open={})
     live = []
 
     def emit(event_type, sid, payload):
+        # like tui_gateway.server._emit -> write_json: an event goes to its session's own transport, never to every
+        # connected client (a session whose Deck left writes into a transport nobody reads)
         frame = {"jsonrpc": "2.0", "method": "event", "params": {"type": event_type, "session_id": sid, "payload": payload}}
-        return all([t.write(frame) for t in list(live)])
+        with sessions_lock:
+            target = (sessions.get(sid) or {}).get("transport")
+        return target.write(frame) if target is not None and hasattr(target, "write") else False
+
+    def ask(sid, method):
+        """The agent of runtime session `sid` asks the Deck (server_requests.send): registered first, then written to
+        the session's own transport only. Hermes ids are srq-<hex>."""
+        params = ({"questions": [{"qid": "q1", "question": "Which colour?", "choices": ["red", "blue"]}]}
+                  if method == "clarify" else {"command": "rm -rf dist", "description": "Komut onayı", "choices": ["once", "deny"]})
+        rid = "srq-" + os.urandom(6).hex()
+        frame = lambda: {"jsonrpc": "2.0", "id": rid, "method": method, "params": {"session_id": sid, **params}}
+        req = types.SimpleNamespace(id=rid, sid=sid, method=method, params=params, created_at=time.time(),
+                                    frame=frame, snapshot=frame)
+        with open_requests._lock:
+            open_requests._open[rid] = req
+        record({"id": None, "method": "agent.asked", "params": {"id": rid, "session_id": sid, "kind": method}})
+        with sessions_lock:
+            target = (sessions.get(sid) or {}).get("transport")
+        if target is not None:
+            target.write(frame())
     # Hermes' runtime session table: like _init_session, a resumed session keeps the transport that resumed it
     # (the control socket's fanout), which deck.reasoning_view checks before it flips show_reasoning.
     sessions, sessions_lock = {}, threading.Lock()
@@ -137,6 +161,11 @@ def install_fake_hermes(home: Path, log=None):
             return ok({"session_id": "rpc-" + str(p.get("session_id")), "stored_session_id": p.get("session_id")})
         if method == "prompt.submit":
             sid = str(p.get("session_id"))
+            if p.get("text") in ("deck-test:clarify", "deck-test:approval"):
+                # the turn asks a question / an approval a little later (the Deck that sent it may have left by then)
+                threading.Timer(float(os.environ.get("DECK_TEST_ASK_DELAY", "0.8")), ask,
+                                args=(sid, p["text"].split(":", 1)[1])).start()
+                return ok({"status": "streaming"})
             def stream_reply():
                 event(sid, "message.start", {})
                 event(sid, "message.delta", {"text": "Mer"})
@@ -144,8 +173,11 @@ def install_fake_hermes(home: Path, log=None):
             threading.Timer(0.05, stream_reply).start()
             return ok({"status": "streaming"})
         if method == "request.answer":
+            # Hermes' request.answer: any client may answer an open request (server_requests.resolve_response)
             with open_requests._lock:
                 settled = open_requests._open.pop(str(p.get("id")), None)
+            if settled:
+                record({"id": None, "method": "agent.answered", "params": {"id": settled.id, "result": p.get("result")}})
             return ok({"status": "ok" if settled else "expired"})
         if method == "session.interrupt":
             return ok({"status": "interrupted"})
@@ -177,6 +209,8 @@ def install_fake_hermes(home: Path, log=None):
             return None
         if method == "session.create":
             state["created"] = state.get("created", 0) + 1
+            with sessions_lock:  # like _init_session: the new session's events go to the connection that created it
+                sessions[f"rpc-new-{state['created']}"] = {"transport": transport, "show_reasoning": False, "profile_home": None}
             return ok({"session_id": f"rpc-new-{state['created']}", "stored_session_id": f"s-new-{state['created']}",
                        "message_count": 0})
         if method == "session.title":

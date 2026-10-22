@@ -232,8 +232,18 @@ direct-connection state for the switcher.
 On the first `session.list` of a new control connection, the plugin restores up to 32 still-open native approval
 and question frames. It keeps each request's ID, owning profile and creation time. It does not restore secret
 prompts, resume sessions, or resend answers. Answered and cancelled requests are omitted. This also restores
-pending cards after a host switch or a dropped direct connection. While restored cards remain open, a
-connection-scoped check runs once per second and removes ended requests without changing their session's transport.
+pending cards after a host switch or a dropped direct connection.
+
+From then on that connection also receives every new approval and question of that Hermes process live, not only
+those of sessions it created or resumed (`observer.py` `RequestHub`). Hermes writes a request only to its session's
+own transport, which is gone once the Deck that started the session switched host or disconnected; the hub offers it
+to every other listing connection too. Hermes has no subscription hook for new requests, so the hub reads its request
+registry under the registry's lock every 0.5 s while a Deck is connected, and at once when a request passes through
+any Deck connection. Each connection gets each request once, whichever path delivers it first, and one
+`request.cancel` when it ends: `answered` after a `request.answer` from any connection (Hermes accepts an answer from
+a connection that does not own the session), `expired` when Hermes timed it out or cancelled it on a route this
+connection does not hear. The hub never attaches a connection to a session, never takes over its controls and never
+resends an answer.
 
 ### Work pane data: plans, tool calls, sub-agents
 

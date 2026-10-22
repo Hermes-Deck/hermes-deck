@@ -903,6 +903,142 @@ if __name__ == "__main__":
     unittest_main()
 
 
+class ControlConnection:
+    """One more Deck connection, straight to the observer's control socket (what another stream.py opens): every frame
+    it receives is kept in `seen`, in order; call()/next() read from a queue like EndToEndTests'."""
+
+    def __init__(self, path):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.connect(str(path))
+        self.frames, self.seen, self.counter = queue.Queue(), [], 0
+        threading.Thread(target=self.read, daemon=True).start()
+
+    def read(self):
+        try:
+            with self.sock.makefile("rb") as incoming:
+                for line in incoming:
+                    frame = json.loads(line)
+                    self.seen.append(frame)
+                    self.frames.put(frame)
+        except (OSError, ValueError):
+            pass
+
+    def next(self, pred, timeout=8):
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                frame = self.frames.get(timeout=max(0.01, deadline - time.monotonic()))
+            except queue.Empty:
+                raise AssertionError(f"no matching frame within {timeout}s") from None
+            if pred(frame):
+                return frame
+
+    def call(self, method, params, timeout=8):
+        self.counter += 1
+        rid = f"other-{self.counter}"
+        self.sock.sendall((json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}) + "\n").encode())
+        return self.next(lambda f: f.get("id") == rid and "method" not in f, timeout)
+
+    def close(self):
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        self.sock.close()
+
+
+def eventually(check, timeout=8):
+    deadline = time.monotonic() + timeout
+    while not (value := check()) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return value
+
+
+def arrivals(frames, rid):
+    return [f for f in frames if f.get("id") == rid and f.get("method") in ("approval", "clarify")]
+
+
+def withdrawals(frames, rid):
+    return [f["params"] for f in frames if f.get("method") == "event" and f["params"].get("type") == "request.cancel"
+            and f["params"].get("payload", {}).get("id") == rid]
+
+
+@unittest.skipUnless(hasattr(socket, "AF_UNIX"), "needs Unix sockets (Linux/macOS)")
+class LiveRequestTests(unittest.TestCase):
+    """Open approvals/questions on every Deck connection of a host, live (observer.RequestHub), against testhost.py:
+    the session's own Deck may be gone, and another Deck that never resumed the session answers it."""
+
+    setUp, stop, read, next, call = (EndToEndTests.setUp, EndToEndTests.stop, EndToEndTests.read, EndToEndTests.next,
+                                     EndToEndTests.call)
+
+    def control(self):
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            for record in (self.home / "hermes-deck" / "processes").glob("*.json"):
+                try:
+                    path = json.loads(record.read_text()).get("control_socket")
+                except (OSError, ValueError):
+                    continue
+                if path and Path(path).exists():
+                    conn = ControlConnection(path)
+                    self.addCleanup(conn.close)
+                    return conn
+            time.sleep(0.05)
+        raise AssertionError("the observer's control socket did not start")
+
+    def agent_log(self, method):
+        return [json.loads(l)["params"] for l in self.log.read_text(encoding="utf-8").splitlines()
+                if json.loads(l)["method"] == method]
+
+    def test_a_question_whose_deck_left_reaches_another_deck_and_is_answered_there(self):
+        # this Deck (stream.py) lists sessions once: from then on it hears every open approval/question of the host
+        self.call("session.list", {"limit": 50})
+        for kind, result in (("clarify", {"answers": {"q1": "blue"}}), ("approval", {"choice": "once"})):
+            gone = self.control()
+            rpc = gone.call("session.create", {})["result"]["session_id"]
+            self.assertEqual(gone.call("prompt.submit", {"session_id": rpc, "text": f"deck-test:{kind}"})["result"],
+                             {"status": "streaming"})
+            gone.close()  # the owner switched to another host before the agent asked
+            asked = self.next(lambda f: f.get("method") == kind and f["params"].get("session_id") == rpc)
+            self.assertEqual(asked["params"]["profile_name"], "default")
+            self.assertIsInstance(asked["request_created_at"], float)
+            self.assertEqual([a["id"] for a in self.agent_log("agent.asked") if a["session_id"] == rpc], [asked["id"]])
+            # answered from this Deck, which never created, resumed or took over that session
+            self.assertEqual(self.call("request.answer", {"id": asked["id"], "result": result})["result"], {"status": "ok"})
+            self.assertIn({"id": asked["id"], "result": result}, self.agent_log("agent.answered"))
+            # the withdrawal goes out before the answer's reply (call() skips it): read every frame seen
+            self.assertTrue(eventually(lambda: withdrawals(self.seen, asked["id"])))
+            time.sleep(1.2)  # two more sweeps: nothing arrives twice
+            self.assertEqual(len(arrivals(self.seen, asked["id"])), 1)
+            self.assertEqual([(w["session_id"], w["profile_name"], w["payload"]) for w in withdrawals(self.seen, asked["id"])],
+                             [(rpc, "default", {"id": asked["id"], "method": kind, "reason": "answered"})])
+            self.assertEqual(arrivals(gone.seen, asked["id"]), [])  # it had left: nothing was written to it
+        logged = [json.loads(l)["method"] for l in self.log.read_text(encoding="utf-8").splitlines()]
+        self.assertNotIn("session.resume", logged)  # the answering Deck was never attached to those sessions
+
+    def test_a_late_deck_gets_an_open_request_once_and_no_deck_sees_it_twice(self):
+        owner = self.control()
+        owner.call("session.list", {})
+        rpc = owner.call("session.create", {})["result"]["session_id"]
+        owner.call("prompt.submit", {"session_id": rpc, "text": "deck-test:approval"})
+        asked = owner.next(lambda f: f.get("method") == "approval" and f["params"].get("session_id") == rpc)
+        time.sleep(1.2)  # Hermes' own write to the owner and the hub's sweeps both ran
+        # a Deck that connects afterwards gets it from the restore on its first session.list, before the reply
+        self.call("session.list", {"limit": 50})
+        self.assertEqual(len(arrivals(self.seen, asked["id"])), 1)
+        self.assertEqual(self.call("session.list", {"limit": 50})["result"]["sessions"][0]["id"], "s-main")
+        # the owner answers on its own connection: both Decks drop the card exactly once
+        self.assertEqual(owner.call("request.answer", {"id": asked["id"], "result": {"choice": "deny"}})["result"],
+                         {"status": "ok"})
+        self.assertTrue(eventually(lambda: withdrawals(self.seen, asked["id"])))
+        time.sleep(1.2)
+        for frames in (owner.seen, self.seen):
+            self.assertEqual(len(arrivals(frames, asked["id"])), 1)
+            self.assertEqual([w["payload"]["reason"] for w in withdrawals(frames, asked["id"])], ["answered"])
+        self.assertEqual(self.call("request.answer", {"id": asked["id"], "result": {"choice": "once"}})["result"],
+                         {"status": "expired"})
+
+
 class VersionRequestTests(unittest.TestCase):
     """deck.version: answered by the stream itself (no Hermes, no network); apps before 0.3.6 never ask."""
     def test_deck_version_answers_from_the_stream_without_a_running_hermes(self):
