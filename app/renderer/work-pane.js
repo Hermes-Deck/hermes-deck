@@ -429,7 +429,7 @@
       barRefs.push({ calls: turn.calls, nodes });
       return h("details", { class: "wk-turn", "data-turn": key, open: open ? true : null },
         h("summary", { onclick: e => { const opening = !e.currentTarget?.parentNode?.open; r.turnOpen.set(key, opening); } },
-          h("b", null, turn.text || t("work.turnUntitled")), h("small", null, [whenOf(turn.ts), t("work.turnCalls", { n: turn.calls.length })].filter(Boolean).join(" · "))),
+          h("b", null, turn.text || t("work.turnUntitled")), h("small", null, [whenOf(turn.ts), t(`work.turnCalls.${new Intl.PluralRules(root.DeckI18n?.getLocale?.() || "en").select(turn.calls.length) === "one" ? "one" : "other"}`, { n: turn.calls.length })].filter(Boolean).join(" · "))),
         h("div", { class: "wk-gantt" }, turn.calls.map((c, i) => runRow(c, bars, i, r, sid, nodes))));
     }
     // The pane redraws every second while Run is open; an unchanged view is kept (selection, focus, inner scroll
