@@ -29,10 +29,9 @@ class HostViews extends EventEmitter {
     super();
     this.deps = deps;
     this.win = null;
-    this.pages = new Map(); // hostId -> {hostId, view, wc, ready, readied, shown, side}
+    this.pages = new Map(); // hostId -> {hostId, urlHost, view, wc, ready, readied, shown}
     this.state = { primary: "", split: false, right: "", ratio: 0.5 };
-    this.divider = null; // {view, wc, dragging}
-    this.closing = false;
+    this.divider = null; // {view, wc, dragging, rect}
   }
 
   /** The main window exists: pages are added to its content view and follow its size. */
@@ -55,10 +54,10 @@ class HostViews extends EventEmitter {
     const id = String(hostId ?? "");
     const got = this.pages.get(id);
     if (got) return got;
-    if (!this.win || this.closing) return null;
+    if (!this.win) return null;
     const view = new this.deps.WebContentsView({ webPreferences: this.deps.webPreferences() });
     const wc = view.webContents;
-    const page = { hostId: id, view, wc, shown: false, readied: false };
+    const page = { hostId: id, urlHost: id, view, wc, shown: false, readied: false };
     page.ready = new Promise((resolve) => { page._readyResolve = resolve; });
     if (this.deps.background) view.setBackgroundColor(this.deps.background());
     view.setVisible(false);
@@ -83,6 +82,20 @@ class HostViews extends EventEmitter {
     if (!page || page.readied) return;
     page.readied = true;
     page._readyResolve(true);
+  }
+
+  /**
+   * The page made before any host was saved (loaded as ?host=) becomes the first saved host's page, as the old
+   * single page did: the first-run flow that is adding the host keeps its page; the next start loads ?host=<id>.
+   */
+  adopt(fromId, toId) {
+    const from = String(fromId ?? ""), to = String(toId ?? "");
+    const page = this.pages.get(from);
+    if (!page || from === to || this.pages.has(to)) return false;
+    this.pages.delete(from);
+    page.hostId = to;
+    this.pages.set(to, page);
+    return true;
   }
 
   /** A removed host's page is destroyed (its runtime is gone too). */
@@ -201,7 +214,7 @@ class HostViews extends EventEmitter {
     const p = pageHost(e);
     if (p === null) return null;
     const sender = e && e.sender;
-    for (const page of this.pages.values()) if (page.wc === sender) return page.hostId === p ? page.hostId : null;
+    for (const page of this.pages.values()) if (page.wc === sender) return page.urlHost === p ? page.hostId : null;
     return null;
   }
 
@@ -285,7 +298,6 @@ class HostViews extends EventEmitter {
    * page that holds finishes with bridge:unload-done). Resolves once every page is gone.
    */
   closeAll() {
-    this.closing = true;
     const waits = [];
     for (const page of this.pages.values()) {
       if (page.wc.isDestroyed()) continue;

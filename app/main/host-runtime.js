@@ -35,6 +35,7 @@ class HostRuntime extends EventEmitter {
     this.protocol = Number.isInteger(deps.protocol) ? deps.protocol : PROTOCOL;
     this.relay = null;
     this.relayStatus = { status: "starting" };
+    this.hello = null; // the current relay connection's hello (main.js: the primary's host versions)
     this.bridge = null;
     this.bridgeStatus = { status: "off" };
     this.phase = "off"; // the direct connection as the pages see it: off | connecting | checking | open | offline | protocol | closed
@@ -82,6 +83,7 @@ class HostRuntime extends EventEmitter {
   stopRelay() {
     const old = this.relay;
     this.relay = null;
+    this.hello = null;
     if (old) { old.removeAllListeners(); old.stop(); }
     this.emit("relay-client", null);
   }

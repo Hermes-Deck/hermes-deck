@@ -302,3 +302,21 @@ test("close: every page unloads before the window goes; a page that holds finish
   await all;
   assert.equal(done, true);
 });
+
+test("first host: the page made before any host was saved becomes that host's page (no reload mid first-run)", () => {
+  const h = harness({ activeHost: "" });
+  h.settings.data.hosts = [];
+  h.views.apply(h.access.paneState());
+  assert.deepEqual(h.views.hostIds(), [""], "the one page of a profile without hosts");
+  const page = h.pageOf("");
+  h.settings.addHost = () => { h.settings.data.hosts = [JSON.parse(JSON.stringify(HOSTS[0]))]; h.settings.data.activeHost = "ha"; };
+  const view = handlersOf(h).get("hosts:add")(h.eventFrom(""), { name: "Atlas" });
+  assert.equal(view.activeHost, "ha");
+  assert.equal(h.views.pageOf("ha"), page, "the same page, now the first host's");
+  assert.equal(h.views.has(""), false);
+  assert.equal(page.wc.destroyed, false);
+  const adopted = { sender: page.wc, senderFrame: { url: "deck://app/index.html?host=", parent: null } };
+  assert.equal(h.views.hostOf(adopted), "ha", "its ?host= stays empty until the next start; it still resolves to its host");
+  assert.ok(h.hosts.has("ha"));
+  assert.deepEqual(h.views.shownHosts(), ["ha"]);
+});

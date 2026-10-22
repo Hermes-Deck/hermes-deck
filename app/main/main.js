@@ -948,7 +948,10 @@ function showHost(hostId) {
   applyPanes(L.select(paneState(), activeOf(), hostId)); // the primary pane takes it
 }
 ipc.handle("hosts:add", (e, spec) => {
+  const was = activeOf();
   settings.addHost(spec);
+  // the first host: the page made before any host existed (?host=) is its page from now on, as before
+  if (was === "" && activeOf() !== "" && views.has("")) views.adopt("", activeOf());
   syncHosts();
   views.apply(paneState()); // the first host becomes the primary page at once
   views.sendAll("desktop", (id) => ({ t: "settings", settings: settings.publicView(id) }));

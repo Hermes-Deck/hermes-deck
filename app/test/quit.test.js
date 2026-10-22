@@ -70,7 +70,7 @@ function harness() {
   vm.runInContext(fs.readFileSync(main, "utf8") + `
 globalThis.access = { setTg: (x) => { wire(x); tg = x; }, setSettings: (x) => { settings = x; }, uploads, attachments,
   setBridge: (x) => { const rt = hosts.ensure({ id: "", name: "", relay: { url: "", token: "" }, bridge: { mode: "local" } }); rt.bridge = x; rt.phase = "open"; },
-  addPage: (wc) => { views.pages.set("", { hostId: "", wc, shown: true, readied: true, ready: Promise.resolve(true), _readyResolve() {}, view: {} }); } };`, sandbox, { filename: main });
+  addPage: (wc) => { views.pages.set("", { hostId: "", urlHost: "", wc, shown: true, readied: true, ready: Promise.resolve(true), _readyResolve() {}, view: {} }); } };`, sandbox, { filename: main });
   sandbox.access.addPage(sender);
   return {
     app, exits, notices, cancelled: () => cancellations, cuaCancelled: () => cuaCancellations, access: sandbox.access,
