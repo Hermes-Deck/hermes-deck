@@ -416,57 +416,52 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     return RS.visibleMax({ top: box.top, bottom: box.bottom }, items);
   }
 
-  // Keep the native select mounted: live status changes must not close its menu or steal keyboard focus.
-  const hostSelect = h("select", { id: "host-select", "aria-describedby": "host-status", dataset: { fk: "host-select" }, onchange: (e) => selectHost(e.target.value) });
-  const hostStatus = h("div", { class: "host-status", id: "host-status" });
-  const hostControl = h("div", { class: "host-control", hidden: true },
-    h("label", { class: "sr-only", for: "host-select" }, i18nNode("hosts.select")), hostSelect, hostStatus);
-  els.crumb.before(hostControl);
-  let hostOptions = "";
-  function renderHosts() {
-    const s = S.settings, hosts = s?.hosts || [];
-    hostControl.hidden = !s?.firstRunDone || !hosts.length;
-    if (hostControl.hidden) return;
-    const options = hosts.map(x => [x.id, x.name]);
-    const sig = JSON.stringify(options);
-    if (sig !== hostOptions) {
-      hostOptions = sig;
-      hostSelect.replaceChildren(...options.map(([id, name]) => h("option", { value: id }, name)));
-    }
-    hostSelect.value = s.activeHost;
-    hostSelect.title = hosts.find(x => x.id === s.activeHost)?.name || "";
-    hostSelect.disabled = hostSwitchPending;
-    const states = [
-      ["hosts.relay", SVM.connectionState(!!(s.relay?.url && s.relay?.hasToken), S.relay.status)],
-      ["hosts.sessions", SVM.connectionState(s.bridge?.mode && s.bridge.mode !== "off", H.status.status)],
-    ];
-    hostStatus.replaceChildren(...states.map(([label, state]) => {
-      const text = `${i18nText(label)}: ${i18nText(`hosts.state.${state}`)}`;
-      return h("span", { title: text, "aria-label": text, class: state === "open" ? "ok" : "" }, `${i18nText(label)}: ${i18nText(`hosts.short.${state}`)}`);
-    }));
-  }
+  // Top bar host switcher (host-switcher.js): numbered buttons with status dots, and the split-view toggle when main offers it.
+  const HSW = window.DeckHostSwitcher.create({
+    doc: document, t: i18nText, icon: (name, size) => SH.icon(name, size),
+    ready: () => !!S.settings?.firstRunDone, hosts: () => S.settings?.hosts || [], active: () => S.settings?.activeHost,
+    pending: () => hostSwitchPending, connectionState: (configured, status) => SVM.connectionState(configured, status), remote: () => remoteHosts,
+    own: () => ({ relay: SVM.connectionState(!!(S.settings?.relay?.url && S.settings?.relay?.hasToken), S.relay.status),
+      sessions: SVM.connectionState(S.settings?.bridge?.mode && S.settings.bridge.mode !== "off", H.status.status) }),
+    select: (id) => selectHost(id),
+    setSplit: deck.hosts?.setSplit ? (on) => deck.hosts.setSplit(on) : undefined, // older main: no split button
+    onError: (e) => MV.toast(i18nText("common.saveFailed", { e: cleanErr(e) })),
+  });
+  els.crumb.before(HSW.root);
+  document.addEventListener("deck-language", () => HSW.render());
+  const renderHosts = () => HSW.render();
+  const shownHost = () => HSW.shown();
+  if (deck.hosts?.layout) deck.hosts.layout().then(v => HSW.setLayout(v)).catch(() => { /* single pane: today's behaviour */ });
+  if (deck.hosts?.onLayout) deck.hosts.onLayout(v => HSW.setLayout(v));
+  if (deck.hosts?.status) deck.hosts.status().then(v => HSW.setStatus(v)).catch(() => { /* own host only */ });
+  /** Show host `id` in this pane. true: main switched; false: refused here (unsaved mail, busy, same host) or failed. */
   async function selectHost(id) {
-    if (hostSwitchPending || id === S.settings?.activeHost) return;
-    if (window.DeckInbox?.mail?.hasUnsaved()) { MV.toast(i18nText("mail.leaveBlocked")); renderHosts(); return; }
-    DR.flush(); // persist the old host's current draft before main reloads this page
+    if (hostSwitchPending || id === shownHost()) return false;
+    if (window.DeckInbox?.mail?.hasUnsaved()) { MV.toast(i18nText("mail.leaveBlocked")); renderHosts(); return false; }
+    DR.flush(); // persist the old host's current draft: the page may be reloaded or kept hidden
     hostSwitchPending = true;
     renderStrip();
     renderHosts();
     publishDesktopView();
     try {
       await deck.hosts.select(id); // existing guarded path owns consent reset and navigation
+      return true;
     } catch (e) {
-      hostSwitchPending = false;
+      MV.toast(i18nText("common.saveFailed", { e: cleanErr(e) }));
+      return false;
+    } finally {
+      hostSwitchPending = false; // the page may live on (hidden): never wait for a reload
       renderStrip();
       renderHosts();
       publishDesktopView();
-      MV.toast(i18nText("common.saveFailed", { e: cleanErr(e) }));
     }
   }
   if (deck.hosts?.onEvent) deck.hosts.onEvent(e => {
+    if (e?.t === "status") return HSW.setStatus(e.hosts);
     if (e?.t !== "requests") return;
     remoteHosts = Array.isArray(e.hosts) ? e.hosts : [];
     SV.refresh();
+    renderHosts();
   });
 
   function renderTop() {
@@ -739,7 +734,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     if (c.agent) kids.push(h("span", { class: "sh-ca" }, c.agent));
     if (c.parent) kids.push(h("span", { class: "sh-cs", "aria-hidden": "true" }, "/"),
       h("button", { type: "button", class: "sh-lnk", title: c.parent.title, dataset: { fk: "crumb-parent" }, onclick: () => hermesSelect(c.parent.sid) }, c.parent.title));
-    if (c.title) kids.push(c.agent || c.parent ? h("span", { class: "sh-cs", "aria-hidden": "true" }, "/") : null, h("span", { class: "sh-ct", title: c.title }, c.title));
+    // the chat title is not repeated here: the chat header right below carries it (published below for the shell)
     if (c.channel && c.id && c.channel.id !== "hermes") { // plain direct Hermes is the default: no chip
       const ICON = { hermes: "hermes", telegram: "telegram", readonly: "lock", bot: "bots", sub: "steer" };
       kids.push(h("span", { class: `sh-chip ${c.channel.id}`, dataset: { channel: c.channel.id } }, SH.icon(ICON[c.channel.id] || "hermes", 11), i18nNode(c.channel.key, c.channel.vars)));

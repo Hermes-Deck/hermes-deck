@@ -27,9 +27,10 @@ and a main area that shows the chat or the [inbox](#inbox-and-fleet). The right 
   footer shows the connections, the fleet summary and the busiest quota window.
   Session filter counts follow the selected profile, source chip and saved sidebar source choices. Agent live
   badges remain profile-wide; **All sessions** still opens the complete stored-session browser.
-- **Top bar.** A native **Host** selector with separate **Relay** and **Sessions** status, then the breadcrumb (agent / title, with the parent for a sub-agent) and a channel chip (**Hermes**,
-  **Telegram**, **<Source> · read-only**, **Bot Chat**, **Sub-agent**), the fleet capsule, search, and the Work pane
-  and Settings buttons.
+- **Top bar.** The breadcrumb (the agent, with the parent for a sub-agent; the chat's own title is in the chat
+  header below, not repeated here) and a channel chip (**Hermes**, **Telegram**, **<Source> · read-only**,
+  **Bot Chat**, **Sub-agent**), the numbered **host switcher** centred on the bar (see [Hosts](#hosts)), the fleet
+  capsule, search, and the Work pane and Settings buttons.
 - **Work pane.** **Session** (the chat's facts and figures with **Steer**, **Stop** and **Model**, then what runs in
   other agents), **Run**, **Plan**, **Diff**, **Sub-agents**, **Browser** and **Screen** (see [Work pane](#work-pane)).
 - **Usage.** Fleet panel › **Usage details** (see [Usage, quotas and Fleet](#usage-quotas-and-fleet)).
@@ -83,21 +84,26 @@ Sessions and Bots alone never start a Telegram client.
 
 ### Hosts
 
-Switch saved hosts from the top bar's **Host** selector, even while Settings is open or the sidebar is hidden.
-Keyboard navigation uses the operating system's select control. Every saved host stays connected while the Deck
-runs, and every host you have opened keeps its page alive in the background, so switching back is instant: the
-scroll position, the open chat and the composer draft are where you left them, and nothing reloads. Notifications
-(replies, finished turns, approvals, questions) come from every saved host, each one opening its own host's chat
-when clicked. Drafts and desktop pairing stay with their host; device hosting permissions reset when the left pane's
-host changes.
+Switch saved hosts with the numbered buttons **1**, **2**, … in the middle of the top bar (settings order, like
+monitors), even while Settings is open or the sidebar is hidden. The number of the host on screen is filled; a small
+dot on each number shows its connection: green when Relay and Sessions are both connected (a part that is not
+configured does not count), amber when connecting or when one of them is down, red when disconnected, grey when
+nothing was observed. Hover or focus a number for "name — Relay: … · Sessions: …". With a single saved host the
+switcher is hidden. **←/→** (and Home/End) move between the numbers, **Enter** or **Space** selects, and
+**Ctrl+1…9** (**Cmd+1…9** on macOS) shows host *N* from anywhere. Switching flushes the current composer draft first.
+Every saved host stays connected while the Deck runs, and every host you have opened keeps its page alive in the
+background, so switching back is instant: the scroll position, the open chat and the composer draft are where you left
+them, and nothing reloads. Notifications (replies, finished turns, approvals, questions) come from every saved host,
+each one opening its own host's chat when clicked. Drafts and desktop pairing stay with their host; device hosting
+permissions reset when the left pane's host changes.
 
-**Split view** shows two hosts side by side (from the top bar's host switcher, which calls `deck.hosts.setSplit`): the left pane
-keeps the host you are on and the right pane opens the next saved host. Each pane is a full Deck with its own top
-bar; pick another host in either pane, and choosing the host the other pane shows swaps the two. Drag the divider to
-resize (each pane keeps at least 360 px); split on/off, the right host and the divider position are remembered
-across restarts. The left pane's host is the primary one: this device's hosting switches (agent browsers, desktop
-control, agent desktops) belong to it and can only be changed from that pane. A conversation visible in either pane
-is not notified about; a hidden page's is.
+**Split view** (the two-pane button next to the numbers) shows two hosts side by side: the left pane keeps the host
+you are on and the right pane opens the next saved host. Each pane is a full Deck with its own top bar and number row
+with its own host filled; pick another host in either pane, and choosing the host the other pane shows swaps the two.
+The button reads **Single view** while split and returns to one pane. Drag the divider to resize (each pane keeps at
+least 360 px); split on/off, the right host and the divider position are remembered across restarts. The left pane's
+host is the primary one: this device's hosting switches (agent browsers, desktop control, agent desktops) belong to it
+and can only be changed from that pane. A conversation visible in either pane is not notified about; a hidden page's is.
 
 Manage hosts in **Settings → Relay → Hermes hosts**. **Add host** has separate **Relay** and **Sessions** sections:
 Relay is optional for device access, activity and usage. Sessions uses **Local (this computer)** on macOS/Linux,

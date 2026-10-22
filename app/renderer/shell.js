@@ -138,7 +138,7 @@
     pin: "M6 2.5h4l-.5 4 2 2.5h-7l2-2.5zM8 9v4.5", chev: "M6 4l4 4-4 4", x: "M4 4l8 8M12 4l-8 8",
     telegram: "M14 2.5 2 7l4.5 1.5L8 13.5zM6.5 8.5l7.5-6", sessions: "M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z", bots: "M4.5 5.5h7v7h-7zM8 2.5v3M6.5 8.5h.01M9.5 8.5h.01",
     agent: "M8 2.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 1 0 0-5zM3 13.5c.5-3 2.5-4 5-4s4.5 1 5 4", hermes: "M3 13 7 3h3L6 13zM8 13l4-10h2l-4 10z",
-    lock: "M4.5 7.5h7v6h-7zM6 7.5v-2a2 2 0 1 1 4 0v2", steer: "M2.5 8h8M7.5 4.5 11 8l-3.5 3.5M13.5 3v10",
+    lock: "M4.5 7.5h7v6h-7zM6 7.5v-2a2 2 0 1 1 4 0v2", split: "M2.5 3.5h4.5v9h-4.5zM9 3.5h4.5v9h-4.5z", steer: "M2.5 8h8M7.5 4.5 11 8l-3.5 3.5M13.5 3v10",
   };
   function icon(doc, name, size = 16) {
     const NS = "http://www.w3.org/2000/svg";

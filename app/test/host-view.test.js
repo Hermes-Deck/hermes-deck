@@ -70,25 +70,43 @@ test("publication clears remembered selections for overlays, panes, hidden pages
   assert.equal(ctx.lastDesktopView, "", "refused publication can retry without an unhandled rejection");
 });
 
-test("host switch persists the draft before guarded selection, serializes clicks, and recovers on refusal", async () => {
+test("host switch persists the draft before guarded selection, serializes clicks, and never waits for a reload", async () => {
+  for (const outcome of ["resolve", "reject"]) {
+    const calls = [];
+    let settle;
+    const ctx = { window: {}, hostSwitchPending: false, S: { settings: { activeHost: "h1" } },
+      shownHost: () => "h1", renderStrip: () => calls.push("activity"), DR: { flush: () => calls.push("draft") }, renderHosts: () => calls.push("render"), publishDesktopView: () => calls.push("view"),
+      deck: { hosts: { select: id => { calls.push(id); return new Promise((resolve, no) => { settle = outcome === "resolve" ? resolve : no; }); } } },
+      MV: { toast: () => calls.push("error") }, i18nText: k => k, cleanErr: String,
+    };
+    vm.createContext(ctx);
+    vm.runInContext(functionSource("  async function selectHost(id)", "  if (deck.hosts?.onEvent)"), ctx);
+    assert.equal(await ctx.selectHost("h1"), false); assert.deepEqual(calls, [], "the shown host is a no-op");
+    const pending = ctx.selectHost("h2");
+    assert.equal(await ctx.selectHost("h3"), false);
+    assert.deepEqual(calls, ["draft", "activity", "render", "view", "h2"]);
+    assert.equal(ctx.hostSwitchPending, true);
+    if (outcome === "resolve") settle(); else settle(new Error("stale page"));
+    assert.equal(await pending, outcome === "resolve");
+    assert.equal(ctx.hostSwitchPending, false, `pending is reset when the promise ${outcome}s`);
+    assert.equal(calls.includes("error"), outcome === "reject");
+    assert.deepEqual(calls.slice(-3), ["activity", "render", "view"], "the status card and the bar repaint once settled");
+  }
+});
+
+test("host switch honours the unsaved-mail guard and compares with the pane's own host", async () => {
   const calls = [];
-  let reject;
-  const ctx = { window: {}, hostSwitchPending: false, S: { settings: { activeHost: "h1" } },
-    renderStrip: () => calls.push("activity"),
-    DR: { flush: () => calls.push("draft") }, renderHosts: () => calls.push("render"), publishDesktopView: () => calls.push("view"),
-    deck: { hosts: { select: id => { calls.push(id); return new Promise((_resolve, no) => { reject = no; }); } } },
-    MV: { toast: () => calls.push("error") }, i18nText: k => k, cleanErr: String,
-  };
+  const ctx = { window: { DeckInbox: { mail: { hasUnsaved: () => true } } }, hostSwitchPending: false, shownHost: () => "h2", renderStrip() {},
+    DR: { flush: () => calls.push("draft") }, renderHosts: () => calls.push("render"), publishDesktopView() {},
+    deck: { hosts: { select: id => calls.push(id) } }, MV: { toast: () => calls.push("toast") }, i18nText: k => k, cleanErr: String };
   vm.createContext(ctx);
   vm.runInContext(functionSource("  async function selectHost(id)", "  if (deck.hosts?.onEvent)"), ctx);
-  await ctx.selectHost("h1"); assert.deepEqual(calls, []);
-  const pending = ctx.selectHost("h2");
-  await ctx.selectHost("h3");
-  assert.deepEqual(calls, ["draft", "activity", "render", "view", "h2"]);
-  assert.equal(ctx.hostSwitchPending, true);
-  reject(new Error("stale page")); await pending;
-  assert.equal(ctx.hostSwitchPending, false);
-  assert.equal(calls.at(-1), "error");
+  assert.equal(await ctx.selectHost("h1"), false);
+  assert.deepEqual(calls, ["toast", "render"], "no draft flush, no switch");
+  ctx.window.DeckInbox.mail.hasUnsaved = () => false;
+  assert.equal(await ctx.selectHost("h2"), false, "h2 is what this pane already shows, whatever the saved active host says");
+  assert.equal(await ctx.selectHost("h1"), true);
+  assert.deepEqual(calls.slice(-4), ["draft", "render", "h1", "render"]);
 });
 
 // Exercise the real desktop callback, navigation functions, and feed callbacks together.
@@ -123,7 +141,7 @@ function sourceWorld({ host = "h1", storage = new Map(), ready = true } = {}) {
     SV: { close() {}, refresh() {} }, UD: { close() {} }, SH: { setMain: v => calls.push(["main", v]) },
     SB: { isOpen: () => false, close() {} }, allSessionsView: () => ctx.SB,
     RG: { leave() {} }, BT: null, AG: null, GC: null,
-    renderStrip() {}, renderHosts() {}, publishDesktopView() {}, mark() {}, renderNote() {}, renderMsgs() {}, hermesPoll() {},
+    renderStrip() {}, shownHost: () => ctx.S.settings.activeHost, renderHosts() {}, publishDesktopView() {}, mark() {}, renderNote() {}, renderMsgs() {}, hermesPoll() {},
     hermesLoadHistory: sid => calls.push(["history", sid, ctx.H.nodes.get(sid)?.profile || ctx.H.hist.get(sid)?.profile]),
     MV: { toast: () => calls.push(["error"]) }, i18nText: k => k, cleanErr: String,
     refreshSettingsPane() {}, setRailView: v => calls.push(["rail", v]),
@@ -388,4 +406,28 @@ test("view publication is wired to render completion, navigation, visibility and
   assert.match(functionSource("  function renderMsgs(", "  \/\/ ---------------------------------------------------------------- first-run"), /displayedChat =/);
   assert.match(functionSource("  function renderHermesMsgs(", "  async function hermesSend("), /return true/);
   assert.match(src, /selectHost,\n    hostStates:/, "Settings Switch reuses the same draft-safe path");
+});
+
+test("top bar crumb no longer repeats the chat title, keeps agent, parent, chip and needs pill, and still publishes the session record", () => {
+  const published = [];
+  const node = (tag, attrs, kids) => ({ tag, cls: attrs?.class || "", text: kids.flat(Infinity).filter(k => k !== null && k !== undefined && k !== false).map(k => (typeof k === "string" ? k : k.text || "")).join("") });
+  const crumb = { kids: [], replaceChildren(...k) { this.kids = k; } };
+  const chat = { id: "c1", kind: "hermes", mode: "sessions", sid: "s1", key: null, profile: "work", title: "Fix the build", agent: "Atlas",
+    parent: { sid: "p1", title: "Parent chat" }, channel: { id: "sub", key: "shell.chip.sub", vars: {} }, subagent: true, readOnly: false, source: "" };
+  const ctx = { els: { crumb }, h: (tag, attrs, ...kids) => node(tag, attrs, kids), i18nNode: k => ({ text: k }), currentChat: () => chat,
+    hermesSelect() {}, hermesMode: () => true, H: { requests: [{ sid: "c1" }] }, SH: { icon: () => ({ text: "" }), publish: (k, v) => published.push([k, v]) } };
+  vm.createContext(ctx);
+  vm.runInContext(functionSource("  function renderCrumb()", "  /** Work › Session"), ctx);
+  ctx.renderCrumb();
+  const text = crumb.kids.map(k => k.text).join("|");
+  assert.ok(!crumb.kids.some(k => /sh-ct/.test(k.cls)), "no title span");
+  assert.ok(!text.includes("Fix the build"), "the chat header owns the title");
+  assert.deepEqual(crumb.kids.map(k => k.cls), ["sh-ca", "sh-cs", "sh-lnk", "sh-chip sub", "sh-pill waiting"]);
+  assert.equal(published[0][0], "session");
+  assert.equal(published[0][1].id, "c1");
+  // an untitled-agent chat with nothing else leaves an empty crumb: no stray separator
+  Object.assign(chat, { agent: "", parent: null, channel: { id: "hermes", key: "k", vars: {} }, subagent: false });
+  ctx.H.requests = [];
+  ctx.renderCrumb();
+  assert.deepEqual(crumb.kids, []);
 });
