@@ -10,13 +10,14 @@ beforeEach(() => I18N.setLanguage("en"));
 
 function settings(raw, secure = false, decryptFails = false) {
   let saved;
+  let encryptionChecks = 0;
   const context = {
     module: { exports: {} }, Buffer, URL, process: { env: {} },
     require: (id) => {
       if (id === "fs") return { readFileSync: () => { if (!raw) throw new Error("missing"); return JSON.stringify(raw); }, lstatSync: () => ({ isFile: () => true }), mkdirSync() {}, writeFileSync: (_p, v) => { saved = JSON.parse(v); }, renameSync() {} };
       if (id === "os") return { homedir: () => "/fixture-home" };
       if (id === "path") return path;
-      if (id === "electron") return { app: { getPath: () => "/fixture-profile" }, safeStorage: { isEncryptionAvailable: () => secure, encryptString: value => Buffer.from(value), decryptString: value => { if (decryptFails) throw new Error("key temporarily unavailable"); return value.toString(); } } };
+      if (id === "electron") return { app: { getPath: () => "/fixture-profile" }, safeStorage: { isEncryptionAvailable: () => { encryptionChecks++; return secure; }, encryptString: value => Buffer.from(value), decryptString: value => { if (decryptFails) throw new Error("key temporarily unavailable"); return value.toString(); } } };
       if (id === "./envfile") return { loadEnvFile() {} };
       if (id === "./bridge") return { normalizeConfig: (v) => v };
       return require(path.join(__dirname, "../main", id));
@@ -24,9 +25,26 @@ function settings(raw, secure = false, decryptFails = false) {
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../main/settings.js"), "utf8"), context);
   const s = new context.module.exports.Settings().load();
-  return { s, saved: () => saved };
+  return { s, saved: () => saved, encryptionChecks: () => encryptionChecks };
 }
 const plain = (x) => JSON.parse(JSON.stringify(x));
+
+test("secret-free settings load, display and save never query Keychain", () => {
+  for (const raw of [null, { firstRunDone: true, bridge: { mode: "off" } }]) {
+    const fixture = settings(raw, true);
+    assert.equal(fixture.s.publicView().plainSecrets, false);
+    fixture.s.update({ language: "tr", desktop: { notificationMode: "banner" } });
+    assert.equal(fixture.s.publicView().plainSecrets, false);
+    assert.equal(fixture.encryptionChecks(), 0, "a synchronous Keychain probe can block the whole main process");
+    assert.equal(fixture.saved().language, "tr");
+  }
+  const secret = settings({ relay: { token: "fixture-secret" } }, true);
+  secret.s.update({ language: "tr" });
+  assert.ok(secret.encryptionChecks() > 0);
+  assert.ok(secret.saved().relay.token.enc, "actual secrets still use encrypted storage");
+  const weak = settings({ relay: { token: "fixture-secret" } }, false);
+  assert.equal(weak.s.publicView().plainSecrets, true, "existing insecure-storage warning remains");
+});
 
 test("unreadable encrypted keys survive unrelated settings changes and can be replaced", () => {
   const raw = { relay: { token: { enc: Buffer.from("fixture-relay").toString("base64") } },

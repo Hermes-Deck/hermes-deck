@@ -118,6 +118,15 @@
     }
   }
 
+  /** Suppress only an actually rendered conversation, never a remembered or not-yet-painted selection. */
+  function notificationView({ current = {}, displayed, visible = false } = {}) {
+    const channel = ["telegram", "sessions", "bots"].includes(current.mode) ? current.mode : "telegram";
+    const same = displayed && ["mode", "id", "key", "sid", "profile"].every(k => (current[k] || null) === (displayed[k] || null));
+    const shown = !!(visible && same && current.id);
+    return { channel, key: shown ? current.key || null : null, sid: shown ? current.sid || null : null,
+      profile: shown ? current.profile || null : null, visible: shown };
+  }
+
   // ---------------------------------------------------------------- icons (16px line set from the Blend mockup)
   const ICONS = {
     side: "M2.5 3.5h11v9h-11zM6.5 3.5v9", search: "M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 1 1 9 0zM10.5 10.5l3 3",
@@ -394,7 +403,7 @@
 
     // ------------------------------------------------------------ the API
     const api = {
-      KINDS, ORDER, FILTERS, legacyTab, channelOf, matchFilter, keyAction, nextRight, pickTab,
+      KINDS, ORDER, FILTERS, legacyTab, channelOf, matchFilter, keyAction, nextRight, pickTab, notificationView,
       icon: (name, size) => icon(doc, name, size),
       on,
       /** The last value of an event ("session", "mode", "right", "main", "needs", "sidebar"), for late subscribers. */
@@ -532,5 +541,5 @@
     return api;
   }
 
-  return { create, KINDS, ORDER, FILTERS, DEFAULT_TAB, legacyTab, restoreRight, nextRight, pickTab, sortTabs, keyAction, channelOf, matchFilter, sourceName, ICONS };
+  return { create, KINDS, ORDER, FILTERS, DEFAULT_TAB, legacyTab, restoreRight, nextRight, pickTab, sortTabs, keyAction, channelOf, matchFilter, notificationView, sourceName, ICONS };
 });

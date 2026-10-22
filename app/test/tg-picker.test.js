@@ -391,18 +391,23 @@ test("Telegram selection/head refresh synchronizes both chips and Stop even with
 
 test("relay status changes schedule the head/composer alongside session updates", () => {
   const w = world();
-  const marks = [];
+  const marks = [], resumed = [];
   let onRelay;
-  Object.assign(w.ctx, { AG: null, mark: (...parts) => marks.push(parts), applyDetail() {}, applyDialogs() {} });
+  Object.assign(w.ctx, { AG: null, mark: (...parts) => marks.push(parts), applyDetail() {}, applyDialogs() {},
+    resumeSourceOpen: () => resumed.push([...w.ctx.S.relay.sessions.keys()]) });
   w.ctx.S.tg.bots = [];
   w.ctx.S.relay.sessions = new Map();
   w.ctx.deck.onRelay = (f) => { onRelay = f; };
   const start = src.indexOf("  deck.onRelay((m) => {");
   vm.runInContext(src.slice(start, src.indexOf("\n  });", start) + 6), w.ctx);
-  for (const frame of [{ t: "status", status: "closed" }, { t: "snapshot", sessions: [] }, { t: "evs", sessions: [], evs: [] }]) {
+  for (const frame of [{ t: "status", status: "closed" },
+    { t: "snapshot", sessions: [{ sid: "snapshot-session", profile: "default" }] },
+    { t: "evs", sessions: [{ sid: "event-session", profile: "default" }], evs: [] }]) {
     onRelay(frame);
     assert.ok(marks.pop().includes("head"), frame.t);
   }
+  assert.deepEqual(resumed, [["snapshot-session"], ["snapshot-session", "event-session"]],
+    "only session feeds resume navigation, after updating the relay identity map");
 });
 
 test("bridge snapshots refresh Telegram Stop without requiring Hermes mode", () => {

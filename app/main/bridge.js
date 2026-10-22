@@ -91,12 +91,12 @@ const TIMING = {
 // live transcript tail) and deck.plan (a stored session's latest plan, rebuilt read-only from state.db by the plugin);
 // and two click-driven writes on one child: subagent.steer and subagent.interrupt. Hermes checks that the child belongs
 // to the session this connection addresses; the plugin checks the shapes again (observer.py subagent_params_ok).
-const READS = ["deck.version", "session.list", "deck.session_index", "session.messages", "session.usage", "model.options", "profiles.list", "profiles.get_asset", "deck.transcribe", "deck.file_read", "deck.file_grant", "subagent.list", "subagent.tail", "deck.plan", "commands.catalog"];
+const READS = ["deck.drafts_list", "deck.draft_get", "deck.version", "session.list", "deck.session_index", "session.messages", "session.usage", "model.options", "profiles.list", "profiles.get_asset", "deck.transcribe", "deck.file_read", "deck.file_grant", "subagent.list", "subagent.tail", "deck.plan", "commands.catalog"];
 // commands.catalog (Hermes' own slash-command palette: registry, quick commands, plugin commands, skills) feeds the
 // composer's "/" suggestions; the Deck asks it for one profile only, never with a session (no resume as a side effect).
 // deck.reasoning_view ("Show thinking") flips the in-memory show_reasoning flag of one runtime session this Deck created
 // or resumed (the plugin checks the session's transport is its own socket); it writes no file and no other session.
-const MUTATIONS = ["session.create", "session.resume", "deck.takeover", "prompt.submit", "deck.attach_submit", "deck.attach_staged", "native.steer", "native.redirect", "native.interrupt", "session.interrupt", "config.set", "request.answer", "session.title", "session.delete", "session.close", "deck.session_update", "session.archive", "session.branch_stored", "deck.reasoning_view", "subagent.steer", "subagent.interrupt"];
+const MUTATIONS = ["deck.draft_edit", "deck.draft_sender", "deck.draft_prepare", "deck.draft_commit", "session.create", "session.resume", "deck.takeover", "prompt.submit", "deck.attach_submit", "deck.attach_staged", "native.steer", "native.redirect", "native.interrupt", "session.interrupt", "config.set", "request.answer", "session.title", "session.delete", "session.close", "deck.session_update", "session.archive", "session.branch_stored", "deck.reasoning_view", "subagent.steer", "subagent.interrupt"];
 const METHODS = new Set([...READS, ...MUTATIONS]);
 // Hermes Desktop's canonical per-bot chat: its identity is this exact title in the profile's state.db
 // (desktop plugin hermes-bots/canonical-chat.ts), never a stored id pointer.
@@ -437,6 +437,7 @@ function checkRequest(method, params) {
   if (!isPlainObject(params)) throw new Error(i18nText("U0047"));
   const big = method === ATTACH_METHOD ? ATTACH_PARAMS_LIMIT : method === TRANSCRIBE_METHOD ? TRANSCRIBE_PARAMS_LIMIT : PARAMS_LIMIT;
   if (Buffer.byteLength(JSON.stringify(params)) > big) throw new Error(i18nText(method === ATTACH_METHOD ? "attach.hermesRequestTooLarge" : method === TRANSCRIBE_METHOD ? "voice.tooLarge" : "appshot.requestTooLarge"));
+  if (["deck.drafts_list", "deck.draft_get", "deck.draft_edit", "deck.draft_sender", "deck.draft_prepare", "deck.draft_commit"].includes(method) && !require("./mail-drafts").validRequest(method, params)) throw new Error(i18nText("mail.invalid"));
   if (method === ATTACH_METHOD && !validAttach(params)) throw new Error(i18nText("attach.hermesInvalid"));
   if (method === STAGED_METHOD && !validStaged(params)) throw new Error(i18nText("attach.hermesInvalid"));
   if (method === TRANSCRIBE_METHOD && !validTranscribe(params)) throw new Error(i18nText("voice.invalid"));
@@ -494,6 +495,7 @@ const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const REASONING_RE = /^[a-z][a-z0-9_.-]{0,23}$/;
 const keepLines = (v, max) => (typeof v === "string" ? v.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, " ").slice(0, max) : "");
 const sessionKey = (profile, sid) => JSON.stringify([profile, sid]);
+const eventIdentity = v => typeof v === "string" && v.length <= 512 && !/[\x00-\x1f\x7f]/.test(v) ? v : "";
 
 function normalizeNode(n) {
   if (!isPlainObject(n)) return null;
@@ -1016,7 +1018,17 @@ function normalizeServerRequest(frame, refFor) {
   if (frame.method === "approval") {
     let choices = Array.isArray(p.choices) ? APPROVAL_CHOICES.filter((c) => p.choices.includes(c)) : ["once", "deny"];
     if (!choices.length) choices = ["once", "deny"];
-    return { ...base, kind: "approval", command: keepLines(p.command, 4000), description: keepLines(p.description, 2000), choices };
+    const req = { ...base, kind: "approval", command: keepLines(p.command, 4000), description: keepLines(p.description, 2000), choices };
+    // Main-process-only evidence. Never infer execution context from a prose description,
+    // the Deck's own cwd, or an SSH connection (a tool may target a container/remote host).
+    // Non-enumerable: listRequests() spreads requests before sending them to the renderer.
+    Object.defineProperty(req, "notification", { value: {
+      command: typeof p.command === "string" && p.command.length <= 4000 ? p.command : "",
+      cwd: typeof p.cwd === "string" && p.cwd.length <= 1000 ? p.cwd : "",
+      target: typeof p.execution_target === "string" && p.execution_target.length <= 200 ? p.execution_target : "",
+      complete: p.command_complete === true && p.command_truncated !== true && p.context_complete === true,
+    } });
+    return req;
   }
   if (frame.method === "clarify") {
     const questions = [];
@@ -1120,6 +1132,7 @@ class BridgeClient extends EventEmitter {
     this.snapshotKey = "";
     this.nodes = new Map();
     this.openRequests = new Map();
+    this.answering = new Set(); // epoch + request ID: duplicate frames cannot unlock an in-flight answer
     this.bindings = new Map(); // [profile, stored session id] -> {rpcId, epoch}
     this.rpcToStored = new Map(); // runtime id -> {sid, profile}
     // sessions this Deck created that the stream has not reported yet (Hermes stores a new session lazily,
@@ -1369,7 +1382,7 @@ class BridgeClient extends EventEmitter {
       const p = isPlainObject(frame.params) ? frame.params : null;
       if (!p || typeof p.type !== "string") return;
       const payload = isPlainObject(p.payload) ? p.payload : {};
-      if (p.replay === true || payload.replay === true || payload.historical === true) return;
+      if ([p, payload].some(v => v.replay === true || v.historical === true || v.initial === true)) return;
       const type = p.type.slice(0, 64);
       const rpcId = str(p.session_id, 512);
       if (type === "deck.plan" || type === "deck.tools") {
@@ -1400,7 +1413,9 @@ class BridgeClient extends EventEmitter {
           this._emitSnapshot();
         }
       }
-      this.emit("event", { type, rpcId, ...ref, payload });
+      this.emit("event", { type, rpcId, ...ref, payload,
+        turnId: eventIdentity(p.turn_id ?? payload.turn_id), eventId: eventIdentity(p.event_id ?? payload.event_id),
+        source: str(p.source ?? payload.source, 48), platform: str(p.platform ?? payload.platform, 32) });
       return;
     }
     const req = normalizeServerRequest(frame, (rpcId, params) => this._sessionRef(rpcId, params));
@@ -2013,6 +2028,8 @@ class BridgeClient extends EventEmitter {
 
   // ------------------------------------------------------------ bots (Hermes Desktop's Bot Mode)
 
+  mailDrafts() { return this._mailDrafts ||= new (require("./mail-drafts").MailDrafts)(this); }
+
   /** The bot roster: one row per Hermes profile (profiles.list, as Hermes Desktop polls it). */
   async profiles() {
     return projectProfiles(await this.request("profiles.list", {}));
@@ -2298,6 +2315,31 @@ class BridgeClient extends EventEmitter {
     return { effort: REASONING_EFFORTS.includes(v) ? v : effort };
   }
 
+  /** A main-process notification capability bound to this arrival and connection, never an ID alone. */
+  captureApproval(id) {
+    const matches = [...this.openRequests.values()].filter(r => r.id === id);
+    const req = matches.length === 1 ? matches[0] : null;
+    if (!req || req.kind !== "approval" || !validProfileParam(req.profile)) return null;
+    const conn = this.conn;
+    const epoch = this.epoch;
+    const fingerprint = JSON.stringify([req, req.notification]);
+    let used = false;
+    const current = () => !used && !this.stopped && !!conn && conn.ready && !conn.closed
+      && this.conn === conn && this.epoch === epoch && [...this.openRequests.values()].includes(req)
+      && JSON.stringify([req, req.notification]) === fingerprint
+      && !this.answering.has(JSON.stringify([epoch, id])) && this.listRequests().filter(r => r.id === id).length === 1;
+    return {
+      preview: req.notification,
+      choices: [...req.choices],
+      current,
+      answer: choice => {
+        if (!current() || !["once", "deny"].includes(choice)) return Promise.reject(new Error(MSG.notOpen));
+        used = true; // consume before writing; failure is never retried from a stale banner
+        return this.answerApproval(id, choice, { profile: req.profile });
+      },
+    };
+  }
+
   answerApproval(id, choice, { profile } = {}) {
     const matches = this.listRequests().filter((r) => r.id === id);
     const req = matches.length === 1 ? matches[0] : null;
@@ -2329,14 +2371,25 @@ class BridgeClient extends EventEmitter {
       && this._sessionRef(prior.rpcId, prior.profile ? { profile: prior.profile } : {}).profile === req.profile);
     if (!captured) throw new Error(MSG.notOpen);
     const [key, arrival] = captured;
-    const r = await this.request("request.answer", { id: req.id, result });
-    const status = isPlainObject(r) && typeof r.status === "string" ? r.status.slice(0, 64) : "unknown";
-    // ok: delivered; expired: already ended elsewhere. Either way the card is done (Desk: hermes.ts:982-987).
-    if (this.openRequests.get(key) === arrival) {
-      this.openRequests.delete(key);
-      this._emitRequests();
+    const conn = this.conn;
+    const epoch = this.epoch;
+    const answerKey = JSON.stringify([epoch, req.id]);
+    if (!conn || !conn.ready || conn.closed || this.stopped || this.answering.has(answerKey)
+      || req.at !== arrival.at || req.kind !== arrival.kind || req.command !== arrival.command
+      || req.description !== arrival.description || JSON.stringify(req.choices) !== JSON.stringify(arrival.choices)
+      || JSON.stringify(req.questions) !== JSON.stringify(arrival.questions)) throw new Error(MSG.notOpen);
+    this.answering.add(answerKey); // synchronous: native action and open card cannot both write
+    try {
+      const r = await this.request("request.answer", { id: req.id, result });
+      const status = isPlainObject(r) && typeof r.status === "string" ? r.status.slice(0, 64) : "unknown";
+      if (this.conn === conn && this.epoch === epoch && this.openRequests.get(key) === arrival) {
+        this.openRequests.delete(key);
+        this._emitRequests();
+      }
+      return { status };
+    } finally {
+      this.answering.delete(answerKey);
     }
-    return { status };
   }
 
   _profileOf(sessionId, profile) {

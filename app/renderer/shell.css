@@ -173,6 +173,22 @@ body.mac .app.side-hidden .topbar { padding-left: 80px; }
 .topbar .topbar-gear[aria-pressed="true"] { background: var(--press); color: var(--t1); }
 .topbar .hostver-banner { flex: 0 1 auto; min-width: 0; }
 
+/* The persistent host control reuses shell layers; a native menu keeps keyboard navigation familiar. */
+.host-control { display: flex; flex-direction: column; gap: 3px; flex: 0 1 240px; min-width: 120px; max-width: 240px; -webkit-app-region: no-drag; }
+.host-control select { width: 100%; min-width: 0; height: 26px; padding: 2px 6px; border: 1px solid var(--line2); border-radius: 7px; background: var(--l2); color: var(--t1); font: 500 12px var(--sans); text-overflow: ellipsis; }
+.host-control select:hover { border-color: var(--line3); }
+.host-control select:focus-visible { outline: 2px solid var(--patina); outline-offset: 1px; }
+.host-control select:disabled { opacity: .6; cursor: wait; }
+.host-status { display: flex; gap: 8px; color: var(--t2); font: 11px var(--sans); }
+.host-status span { min-width: 0; flex: 0 1 auto; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.host-status .ok { color: var(--teal); }
+.topbar:has(.host-control:not([hidden])) .crumb { min-width: 0; }
+@media (max-width: 1100px) {
+  .host-control { flex-basis: 190px; }
+  .topbar:has(.host-control:not([hidden])) .findbtn { flex: none; width: 30px; padding: 0; justify-content: center; }
+  .topbar:has(.host-control:not([hidden])) .find-label, .topbar:has(.host-control:not([hidden])) .find-kbd { display: none; }
+}
+
 /* ---------- main area: chat or inbox ---------- */
 .body { position: relative; min-width: 0; min-height: 0; display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
 .body > .chat, .body > .inbox { grid-area: 1 / 1; min-width: 0; min-height: 0; }

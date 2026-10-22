@@ -79,6 +79,15 @@
 .sv-msg.out { opacity: 0; }
 .form-actions > .sv-msg { align-self: center; }
 
+/* Host management stays in the existing settings rows, with distinct Relay and Sessions sections. */
+.sv-host-label { min-width: 0; flex: 1 1 220px; overflow-wrap: anywhere; }
+.sv-host-state { display: block; margin-top: 4px; color: var(--marble-dim); font-size: 12px; line-height: 1.5; }
+.sv-hosts .sv-ctl { flex-wrap: wrap; max-width: 100%; }
+.sv-host-add > summary { cursor: pointer; color: var(--marble); font-size: 13.5px; }
+.sv-host-add > .sv-group-title { margin: 20px 14px 6px; color: var(--marble); font-size: 13.5px; font-weight: 550; }
+.sv-host-add > .sv-hint { margin: 0 14px 8px; }
+.sv-host-add [hidden] { display: none; }
+
 /* ---------- chat modes inside a group: rows, not cards ---------- */
 .sv .chat-mode-editor { margin: 0; gap: 0; }
 .sv .chat-mode-card { padding: 10px 0; border: 0; border-radius: 0; background: none; }

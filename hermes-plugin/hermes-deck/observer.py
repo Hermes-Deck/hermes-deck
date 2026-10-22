@@ -1337,6 +1337,144 @@ AVATAR_EXTS = ("png", "jpg", "webp")  # Hermes' own lookup order (tui_gateway/me
 PROFILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 
 
+# --- Draft Cards: fixed producer routes and the existing Gmail sender only ---------------------------------
+DRAFT_METHODS = {"deck.drafts_list", "deck.draft_get", "deck.draft_edit", "deck.draft_sender", "deck.draft_prepare", "deck.draft_commit"}
+DRAFT_ID = re.compile(r"d_[0-9a-f]{8}")
+DRAFT_FIELDS = {"from": 320, "to": 16050, "cc": 16050, "bcc": 16050, "subject": 300, "body": 20000}
+
+
+@contextmanager
+def draft_target(profile, plugin_name="draft-cards"):
+    """Reuse Hermes' consent-gated, profile-isolated plugin host; never import user code here."""
+    from hermes_cli.web_server_profiles import _config_profile_scope
+    from hermes_cli.web_server_plugin_profiles import profile_dashboard_plugins
+    from hermes_cli.web_server_dashboard import _plugin_consent_withheld
+    from hermes_cli.plugins import get_plugin_manager
+    from hermes_constants import get_hermes_home
+    with _config_profile_scope(profile):
+        home = Path(get_hermes_home()).resolve()
+        plugin = next((p for p in profile_dashboard_plugins(home)
+                       if p.get("name") == plugin_name and p.get("source") == "user"), None)
+        if not plugin or not plugin.get("_api_file") or _plugin_consent_withheld(plugin):
+            raise ValueError("Mail plugin is not installed and enabled in this profile")
+        host = get_plugin_manager()._plugin_host()
+        if Path(host.home).resolve() != home:
+            raise ValueError("Draft Cards profile owner mismatch")
+
+        def call(method, path, payload=None):
+            response = host.asgi_request(plugin_name, str(plugin["_dir"]), str(plugin["_api_file"]),
+                                         method, path, "", [("content-type", "application/json")],
+                                         json.dumps(payload).encode() if payload is not None else b"", timeout=45,
+                                         authenticated=True)
+            if response.get("status") != 200:
+                # Do not forward plugin tracebacks, paths, or credentials to the renderer.
+                code = response.get("status")
+                if plugin_name == "gmail" and path == "/actions/commit":
+                    raise ValueError("Send result unavailable. Refresh to read the stored receipt; do not send again automatically.")
+                raise ValueError("Draft changed or unavailable; refresh before retrying" if code in (404, 409)
+                                 else "Draft Cards refused the request; refresh before retrying")
+            return json.loads(response["body"])
+        yield home, call
+
+
+def draft_record(record):
+    """Only the current and previous real versions cross the bridge. Never normalize reviewed content."""
+    if (not isinstance(record, dict) or not DRAFT_ID.fullmatch(str(record.get("id", "")))
+            or record.get("kind") != "email" or not isinstance(record.get("versions"), list)
+            or not record["versions"] or record["versions"][-1].get("v") != record.get("latest_version")):
+        raise ValueError("Unsupported Draft Cards record")
+    versions = []
+    for version in record["versions"][-2:]:
+        fields = version.get("fields", {})
+        for key, maximum in DRAFT_FIELDS.items():
+            value = fields.get(key)
+            if key in ("to", "cc", "bcc"):
+                valid = isinstance(value, list) and len(value) <= 50 and all(isinstance(x, str) and len(x) <= 320 for x in value)
+            else:
+                valid = isinstance(value, str) and len(value) <= maximum
+            if not valid:
+                raise ValueError("Unsupported Draft Cards fields")
+        versions.append({k: version[k] for k in ("v", "card", "author", "note", "created_at")} |
+                        {"fields": {k: fields[k] for k in DRAFT_FIELDS}})
+    return {k: record[k] for k in ("id", "kind", "platform", "session_id", "status", "status_detail",
+                                  "latest_version", "latest_card", "approved_version", "updated_at")} | {
+        "versions": versions, "send_protocol": record.get("send_protocol"), "send_receipt": record.get("send_receipt")}
+
+
+def draft_operation(method, params, target=None):
+    """Fixed named operations; no arbitrary REST proxy and no prompt-based sending."""
+    import sqlite3
+    from contextlib import closing
+    p = params
+    keys = {"profile", "offset"} if method == "deck.drafts_list" else {"profile", "id"}
+    if method == "deck.draft_edit":
+        keys |= {"base_version", "card", "fields"}
+    if method == "deck.draft_prepare":
+        keys |= {"version", "scope"}
+    if method == "deck.draft_commit":
+        keys |= {"scope", "version", "confirmationToken", "confirmed"}
+    if (method not in DRAFT_METHODS or not isinstance(p, dict) or set(p) != keys
+            or not isinstance(p.get("profile"), str) or not PROFILE_NAME.fullmatch(p["profile"])):
+        raise ValueError("Invalid Draft Cards request")
+    if method == "deck.drafts_list":
+        if type(p["offset"]) is not int or not 0 <= p["offset"] <= 100000:
+            raise ValueError("Invalid draft page")
+    elif not isinstance(p["id"], str) or not DRAFT_ID.fullmatch(p["id"]):
+        raise ValueError("Invalid draft id")
+    if method == "deck.draft_edit":
+        if (type(p["base_version"]) is not int or p["base_version"] < 1 or type(p["card"]) is not int or p["card"] < 1
+                or not isinstance(p["fields"], dict) or set(p["fields"]) != set(DRAFT_FIELDS)
+                or any(not isinstance(v, str) or len(v) > DRAFT_FIELDS[k] for k, v in p["fields"].items())):
+            raise ValueError("Invalid draft edit")
+    if method in ("deck.draft_prepare", "deck.draft_commit"):
+        if not isinstance(p["scope"], str) or not re.fullmatch(r"[A-Za-z0-9_-]{20,256}", p["scope"]):
+            raise ValueError("Invalid sender scope")
+        if type(p["version"]) is not int or p["version"] < 1:
+            raise ValueError("Invalid draft version")
+        if method == "deck.draft_commit" and (p["confirmed"] is not True or not isinstance(p["confirmationToken"], str)
+                or not re.fullmatch(r"dc_[A-Za-z0-9_-]{20,100}", p["confirmationToken"])):
+            raise ValueError("Explicit final confirmation required")
+    if method in ("deck.draft_sender", "deck.draft_prepare", "deck.draft_commit"):
+        with (target or draft_target)(p["profile"]) as (_, producer):
+            record = producer("GET", "/drafts/" + p["id"])
+            if record.get("send_protocol") != 1 or record.get("kind") != "email":
+                raise ValueError("This producer is review-only")
+        with (target or draft_target)(p["profile"], "gmail") as (_, sender):
+            if method == "deck.draft_sender":
+                result = sender("GET", "/status")
+                if result.get("draft_send_protocol") != 1:
+                    raise ValueError("This sender is review-only")
+                return result
+            if method == "deck.draft_prepare":
+                return sender("POST", "/actions/prepare", {"action": "draft-send", "scope": p["scope"],
+                              "draftId": p["id"], "version": p["version"]})
+            result = sender("POST", "/actions/commit", {k: p[k] for k in ("scope", "confirmationToken", "confirmed", "version")} | {"draftId": p["id"]})
+            if result.get("draftId") != p["id"]:
+                raise ValueError("Sender receipt identity mismatch")
+            return result
+    with (target or draft_target)(p["profile"]) as (home, call):
+        if method == "deck.drafts_list":
+            # No second store and no recent(100) completeness claim. Fixed schema, bounded page, read-only.
+            path = Path(home) / "plugin-data" / "draft-cards" / "drafts.db"
+            if not path.exists():
+                return {"drafts": [], "has_more": False, "send_available": False}
+            with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)) as db:
+                rows = db.execute("SELECT id FROM drafts WHERE kind = 'email' AND status != 'discarded' "
+                                  "ORDER BY created_at DESC, id DESC LIMIT 21 OFFSET ?", (p["offset"],)).fetchall()
+            return {"drafts": [r[0] for r in rows[:20]], "has_more": len(rows) > 20, "send_available": False}
+        path = "/drafts/" + p["id"]
+        if method == "deck.draft_edit":
+            current = draft_record(call("GET", path))
+            if current["latest_version"] != p["base_version"] or current["status"] not in ("draft", "failed", "approved"):
+                raise ValueError("Draft changed; refresh before retrying")
+            result = call("POST", path + "/edit", {k: p[k] for k in ("base_version", "card", "fields")})
+        else:
+            result = call("GET", path)
+        if result.get("id") != p["id"]:
+            raise ValueError("Draft Cards identity mismatch")
+        return draft_record(result)
+
+
 # --- session browser: deck.session_index (read) and deck.session_update (rename / pin) ------------------------
 # session.list has no paging, no last-activity field, no archived view and no pin flag, and session.title needs a
 # live runtime session. So the browser reads one page of a profile's stored sessions through Hermes' own
@@ -2832,6 +2970,12 @@ class Observer:
                             context = contextvars.copy_context()
                             threading.Thread(target=context.run, args=(staged_reply, request, connection_fanout, peer.write, server),
                                              name="hermes-deck-staged", daemon=True).start()
+                        elif method in DRAFT_METHODS:
+                            context = contextvars.copy_context()
+                            handler = lambda p, _db=None, m=method: draft_operation(m, p)
+                            threading.Thread(target=context.run,
+                                             args=(lambda r=request, f=handler: peer.write(session_reply(r, f)),),
+                                             daemon=True).start()
                         elif method in {INDEX_METHOD, UPDATE_METHOD, PLAN_METHOD}:
                             # a store read can take seconds on a big state.db: off the connection's reader thread
                             handler = (session_index if method == INDEX_METHOD else session_update if method == UPDATE_METHOD

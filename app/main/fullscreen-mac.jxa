@@ -1,0 +1,23 @@
+// Read only the frontmost app's AXFullScreen flag. No System Events, window titles,
+// screenshots, private Space APIs or permission prompts. Unknown is not windowed.
+ObjC.import('AppKit');
+ObjC.import('ApplicationServices');
+
+function run(argv) {
+  const app = $.NSWorkspace.sharedWorkspace.frontmostApplication;
+  if (!app || app.isTerminated) return 'null';
+  if (Number(app.processIdentifier) === Number(argv[0])) return 'false';
+  // A positive system presentation flag is useful even without Accessibility access.
+  // Zero is NOT proof of windowed mode: fullscreen Spaces can report zero here.
+  const options = Number($.NSApplication.sharedApplication.currentSystemPresentationOptions);
+  if ((options & Number($.NSApplicationPresentationFullScreen)) !== 0) return 'true';
+  if (!$.AXIsProcessTrusted()) return 'null';
+  const element = $.AXUIElementCreateApplication(app.processIdentifier);
+  const focused = Ref();
+  if ($.AXUIElementCopyAttributeValue(element, $('AXFocusedWindow'), focused) !== 0) return 'null';
+  const fullscreen = Ref();
+  // AX returns generic CFTypeRef values; bridge them before reusing/unwrapping in JXA.
+  if ($.AXUIElementCopyAttributeValue(ObjC.castRefToObject(focused[0]), $('AXFullScreen'), fullscreen) !== 0) return 'null';
+  const value = ObjC.unwrap(ObjC.castRefToObject(fullscreen[0]));
+  return value === true || value === 1 ? 'true' : value === false || value === 0 ? 'false' : 'null';
+}

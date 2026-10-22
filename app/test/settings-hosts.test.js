@@ -5,8 +5,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs"), path = require("node:path"), vm = require("node:vm");
 const repo = path.join(__dirname, "../..");
 const plain = value => JSON.parse(JSON.stringify(value));
-function fixture(raw = { firstRunDone: true }) {
-  let saved;
+function fixture(raw = { firstRunDone: true }, { secure = true, decryptFails = false, platform = "darwin" } = {}) {
+  let saved, encryptionChecks = 0;
   const context = { module: { exports: {} }, Buffer, URL, process: { env: {} }, require(id) {
     if (id === "fs") return {
       readFileSync: () => JSON.stringify(raw), statSync: () => ({ size: 0 }),
@@ -17,18 +17,59 @@ function fixture(raw = { firstRunDone: true }) {
     if (id === "path") return path;
     // "encryption" reverses the text, so a stored plain token is visible as a failure
     if (id === "electron") return { app: { getPath: () => "/fixture-profile" }, safeStorage: {
-      isEncryptionAvailable: () => true, encryptString: v => Buffer.from([...v].reverse().join("")),
-      decryptString: b => [...b.toString()].reverse().join(""),
+      isEncryptionAvailable: () => { encryptionChecks++; return secure; }, encryptString: v => Buffer.from([...v].reverse().join("")),
+      decryptString: b => { if (decryptFails) throw new Error("fixture key unavailable"); return [...b.toString()].reverse().join(""); },
     } };
     if (id === "./envfile") return { loadEnvFile() {} };
-    if (id === "./bridge") return { normalizeConfig: value => ({ ...value }) };
+    if (id === "./bridge") return { normalizeConfig: value => require("../main/bridge").normalizeConfig(value, platform) };
     return require(path.join(repo, "app/main", id));
   } };
   vm.runInNewContext(fs.readFileSync(path.join(repo, "app/main/settings.js"), "utf8"), context);
-  return { settings: new context.module.exports.Settings().load(), saved: () => saved };
+  return { settings: new context.module.exports.Settings().load(), saved: () => saved, encryptionChecks: () => encryptionChecks };
 }
 const enc = t => ({ enc: Buffer.from([...t].reverse().join("")).toString("base64") });
 const TOKEN_A = "a".repeat(32), TOKEN_B = "b".repeat(32);
+
+test("direct-only host validation is platform-aware and invalid adds are atomic", () => {
+  for (const platform of ["darwin", "win32"]) {
+    const { settings, encryptionChecks } = fixture(undefined, { platform });
+    const validMode = platform === "win32" ? "wsl" : "local";
+    const bridge = { mode: validMode, python: "python3", stream: "~/.hermes/hermes-deck/stream.py", target: "", distribution: "" };
+    const before = JSON.stringify(settings.data);
+    for (const bad of [{ ...bridge, mode: platform === "win32" ? "local" : "wsl" }, { ...bridge, mode: "ssh", target: "" }, { ...bridge, python: "" }, { ...bridge, stream: "relative.py" }]) {
+      assert.throws(() => settings.addHost({ name: "Invalid", bridge: bad }));
+      assert.equal(JSON.stringify(settings.data), before);
+    }
+    const id = settings.addHost({ name: "Direct only", bridge });
+    assert.equal(settings.data.activeHost, id);
+    assert.deepEqual(plain(settings.data.bridge), bridge);
+    assert.equal(encryptionChecks(), 0);
+  }
+});
+
+test("inactive host secrets still encrypt and warn; unreadable per-host ciphertext survives a preference save", () => {
+  const hosts = [
+    { id: "h1", name: "Local", relay: { url: "", token: "" }, bridge: { mode: "local" } },
+    { id: "h2", name: "Remote", relay: { url: "ws://192.0.2.2:9330", token: enc(TOKEN_B) }, botscreen: { agents: [], deviceToken: enc(TOKEN_A) } },
+  ];
+  for (const secure of [true, false]) {
+    const { settings, saved, encryptionChecks } = fixture({ firstRunDone: true, hosts, activeHost: "h1" }, { secure });
+    assert.equal(settings.publicView().plainSecrets, !secure);
+    settings.update({ language: "tr" });
+    assert.ok(encryptionChecks() > 0, "inactive host needs storage security too");
+    assert.deepEqual(saved().hosts[1].relay.token, secure ? enc(TOKEN_B) : { plain: TOKEN_B });
+    assert.deepEqual(saved().hosts[1].botscreen.deviceToken, secure ? enc(TOKEN_A) : { plain: TOKEN_A });
+    assert.ok(!JSON.stringify(settings.publicView()).includes(TOKEN_B));
+  }
+  const { settings, saved, encryptionChecks } = fixture({ firstRunDone: true, hosts, activeHost: "h1" }, { decryptFails: true });
+  settings.update({ desktop: { notificationMode: "banner" } });
+  assert.deepEqual(saved().hosts[1].relay.token, enc(TOKEN_B));
+  assert.deepEqual(saved().hosts[1].botscreen.deviceToken, enc(TOKEN_A));
+  assert.equal(encryptionChecks(), 0, "preserving sealed ciphertext needs no encryption probe");
+  settings.selectHost("h2");
+  assert.deepEqual(saved().relay.token, enc(TOKEN_B));
+  assert.deepEqual(saved().botscreen.deviceToken, enc(TOKEN_A));
+});
 
 test("an existing single connection becomes the first host and keeps working", () => {
   const { settings } = fixture({ firstRunDone: true, relay: { url: "ws://192.0.2.10:9330", token: enc(TOKEN_A) } });

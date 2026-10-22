@@ -32,6 +32,8 @@ async function world(t, remote = []) {
       hosts: { onEvent: fn => { events.hosts = fn; }, requests: async () => remote, answer: async () => ({ status: "ok" }) } },
   };
   ctx.window = ctx;
+  ctx.addEventListener = win.addEventListener.bind(win);
+  ctx.removeEventListener = win.removeEventListener.bind(win);
   ctx.DeckShell = SH;
   vm.createContext(ctx);
   for (const [start, end] of [["  function pendingCount(", "  function desktopSync("],

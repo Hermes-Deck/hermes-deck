@@ -73,6 +73,8 @@ nsis:
 mac:
   icon: build/icon.png
   category: public.app-category.productivity
+  extendInfo:
+    NSUserNotificationAlertStyle: alert # signed macOS builds expose native action buttons
   target:
     - target: dmg
       arch: [arm64, x64]

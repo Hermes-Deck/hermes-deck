@@ -89,6 +89,15 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
     return [b.relay ? "hostupd.bannerRelay" : null, b.bridge ? "hostupd.bannerBridge" : null].filter(Boolean);
   }
 
+  /** Saved config is not evidence of a live connection. Inactive relay clients are not watched. */
+  function connectionState(configured, status) {
+    if (!configured) return "unconfigured";
+    if (status === "open") return "open";
+    if (["starting", "connecting"].includes(status)) return "connecting";
+    if (["offline", "setup", "closed", "error", "protocol"].includes(status)) return "offline";
+    return "saved";
+  }
+
   // ---------------------------------------------------------------- the view
   function create(ctx) {
     const { h } = ctx;
@@ -412,28 +421,66 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
       const token = input("s-relay-token", { type: "password", placeholder: r.hasToken ? T("U0485") : T("A0237") });
       const save = () => ctx.save({ relay: { url: url.value, token: token.value } }, T("U0486"));
       for (const el of [url, token]) el.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); save(); } });
-      kids.push(group(null, row(node("A0236"), url, { id: "s-relay-url" }), row("Token", token, { id: "s-relay-token" })),
+      kids.push(group(node("hosts.relay"), row(node("A0236"), url, { id: "s-relay-url" }), row("Token", token, { id: "s-relay-token" })),
         h("div", { class: "form-actions sv-actions" }, h("button", { class: "btn primary", type: "button", dataset: { fk: "relay:save" }, onclick: save }, node("U0487"))),
         secretWarning(), hostGroup("relay"), hostsGroup());
     };
 
-    /** Saved Hermes hosts: switch, add (relay address + token), remove. A host's direct connection is set in the Hermes
-     * section while that host is active. Tokens go in and never come back (publicView shows hasToken only). */
+    /** Hosts have independent Relay and Sessions connections. Tokens only enter through password inputs. */
     function hostsGroup() {
       const s = st(), hosts = Array.isArray(s.hosts) ? s.hosts : [], api = ctx.deck && ctx.deck.hosts;
       if (!api) return null;
-      const rows = hosts.map((x) => h("div", { class: "sv-row" },
-        h("span", { class: "sv-label" }, x.name, x.id === s.activeHost ? h("small", null, ` · ${T("hosts.active")}`) : null),
-        h("div", { class: "sv-ctl" }, h("span", { class: "sv-path" }, x.relay.url || (x.bridge.mode !== "off" ? T("hosts.direct") : "")),
-          x.id === s.activeHost ? null : h("button", { class: "btn mini", type: "button", dataset: { fk: `hosts:use:${x.id}` }, onclick: () => ctx.saveCall(() => api.select(x.id), T("hosts.switched")) }, node("hosts.use")),
+      const observed = ctx.hostStates?.() || {};
+      const states = x => {
+        const active = x.id === s.activeHost;
+        const remote = (observed.remote || []).find(v => v.id === x.id);
+        return [
+          ["hosts.relay", connectionState(!!(x.relay?.url && x.relay?.hasToken), active ? observed.relay : null)],
+          ["hosts.sessions", connectionState(x.bridge?.mode && x.bridge.mode !== "off", active ? observed.sessions : remote?.status)],
+        ].map(([label, status]) => `${T(label)}: ${T(`hosts.state.${status}`)}`).join(" · ");
+      };
+      const rows = hosts.map(x => h("div", { class: "sv-row" },
+        h("div", { class: "sv-host-label" }, h("span", { class: "sv-label" }, x.name, x.id === s.activeHost ? h("small", null, T("hosts.active")) : null),
+          h("span", { class: "sv-host-state" }, states(x))),
+        h("div", { class: "sv-ctl" },
+          x.id === s.activeHost && (!x.bridge?.mode || x.bridge.mode === "off") ? h("button", { class: "btn mini", type: "button", onclick: () => show("hermes") }, node("hosts.configureSessions")) : null,
+          x.id === s.activeHost ? null : h("button", { class: "btn mini", type: "button", dataset: { fk: `hosts:use:${x.id}` }, onclick: () => ctx.selectHost(x.id) }, node("hosts.use")),
           x.id === s.activeHost ? null : h("button", { class: "linkbtn sv-link", type: "button", dataset: { fk: `hosts:rm:${x.id}` }, onclick: () => ctx.saveCall(() => api.remove(x.id), T("set.saved")) }, node("hosts.remove")))));
       const name = input("s-host-name", { placeholder: T("hosts.namePlaceholder"), maxlength: "40" });
       const url = input("s-host-url", { placeholder: "ws://<relay-host>:9330" });
       const token = input("s-host-token", { type: "password", placeholder: T("A0237") });
-      const add = () => ctx.saveCall(() => api.add({ name: name.value, relay: { url: url.value, token: token.value } }), T("hosts.added"));
-      return group(node("hosts.title"), ...rows,
-        row(node("hosts.name"), name, { id: "s-host-name" }), row(node("A0236"), url, { id: "s-host-url" }), row("Token", token, { id: "s-host-token" }),
-        h("div", { class: "form-actions sv-actions" }, h("button", { class: "btn mini", type: "button", dataset: { fk: "hosts:add" }, onclick: add }, node("hosts.add"))));
+      const mode = h("select", { id: "s-host-mode" },
+        [["off", T("hosts.state.unconfigured")], ["ssh", T("U0631")], ctx.windows() ? ["wsl", T("A0286")] : ["local", T("A0287")]]
+          .map(([value, label]) => h("option", { value }, label)));
+      const target = input("s-host-target", { placeholder: T("U0633") });
+      const python = input("s-host-python", { placeholder: "~/.hermes/hermes-agent/venv/bin/python" });
+      const stream = input("s-host-stream", { value: "~/.hermes/hermes-deck/stream.py" });
+      const distribution = input("s-host-dist", { placeholder: T("U0638") });
+      const targetRow = row(node("A0288"), target, { id: "s-host-target", title: T("U0634") });
+      const distRow = row(node("U0637"), distribution, { id: "s-host-dist" });
+      const paths = h("div", null, row(node("A0289"), python, { id: "s-host-python", title: T("U0635") }),
+        row(node("A0291"), stream, { id: "s-host-stream", title: T("U0636") }), distRow);
+      const sync = () => { targetRow.hidden = mode.value !== "ssh"; paths.hidden = mode.value === "off"; distRow.hidden = mode.value !== "wsl"; };
+      mode.value = "off";
+      mode.addEventListener("change", sync);
+      sync();
+      const addButton = h("button", { class: "btn mini", type: "button", dataset: { fk: "hosts:add" }, onclick: async () => {
+        if (addButton.disabled) return;
+        addButton.disabled = true;
+        try {
+          const ok = await ctx.saveCall(() => api.add({ name: name.value, relay: { url: url.value, token: token.value },
+            bridge: { mode: mode.value, target: mode.value === "ssh" ? target.value : "", python: python.value, stream: stream.value, distribution: mode.value === "wsl" ? distribution.value : "" } }), T("hosts.added"));
+          if (ok) { token.value = ""; rebuild("relay"); }
+        } finally { addButton.disabled = false; }
+      } }, node("hosts.add"));
+      return h("div", { class: "sv-hosts" }, group(node("hosts.title"), ...rows),
+        h("details", { class: "sv-host-add", open: !hosts.length ? true : null }, h("summary", null, node("hosts.add")),
+          row(node("hosts.name"), name, { id: "s-host-name" }),
+          h("h3", { class: "sv-group-title" }, node("hosts.relay")), h("p", { class: "sv-hint" }, node("hosts.relayHelp")),
+          row(node("A0236"), url, { id: "s-host-url" }), row("Token", token, { id: "s-host-token" }),
+          h("h3", { class: "sv-group-title" }, node("hosts.sessions")), h("p", { class: "sv-hint" }, node("hosts.sessionsHelp")),
+          row(node("U0632"), mode, { id: "s-host-mode" }), targetRow, paths,
+          h("div", { class: "form-actions sv-actions" }, addButton)));
     }
 
     BUILDERS.telegram = (kids) => {
@@ -494,7 +541,8 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
     BUILDERS.hermes = (kids) => {
       const box = [];
       ctx.hermes(box);
-      kids.push(h("div", { class: "sv-legacy" }, box), hostGroup("hermes"));
+      kids.push(h("h3", { class: "sv-group-title" }, node("hosts.sessions")), h("p", { class: "sv-hint" }, node("hosts.sessionsHelp")),
+        h("div", { class: "sv-legacy" }, box), hostGroup("hermes"));
     };
 
     // Reading saves share ctx.save with all other settings. Serialize rapid choices so an older
@@ -547,6 +595,8 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
         window.PetCatalog.SKINS.map(({ id, label }) => h("option", { value: id, selected: id === (d.petSkin || "character") ? true : null }, T(label))));
       const size = h("select", { id: "s-desk-petSize", disabled: d.pet ? null : true, dataset: { fk: "desk:petSize" }, onchange: (e) => ctx.save({ desktop: { petSize: Number(e.target.value) } }, T("set.petSizeSaved")) },
         [[0.75, T("set.petSizeS")], [1, T("set.petSizeM")], [1.25, T("set.petSizeL")], [1.5, T("set.petSizeXL")]].map(([v, l]) => h("option", { value: String(v), selected: v === (d.petSize || 1) ? true : null }, l)));
+      const notificationMode = h("select", { id: "s-desk-notificationMode", disabled: d.notifications ? null : true, dataset: { fk: "desk:notificationMode" }, onchange: (e) => ctx.save({ desktop: { notificationMode: e.target.value } }, T("U0544")) },
+        ["auto", "pet", "banner"].map(value => h("option", { value, selected: value === (d.notificationMode || "auto") ? true : null }, T(`notify.${value}`))));
       const test = h("button", { class: "btn mini", type: "button", dataset: { fk: "desk:test" }, onclick: (e) => ctx.testNotification(e.currentTarget) }, node("A0254"));
       const winNote = ctx.windows() ? (info.packaged ? T("U0559") : `${T("U0560")}npm run shortcuts${T("U0561")}`) : null;
       const theme = h("select", { id: "s-theme", dataset: { fk: "set:theme" }, onchange: (e) => ctx.save({ theme: e.target.value }, T("set.themeSaved")) },
@@ -593,6 +643,10 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
       kids.push(group(node("wall.label"), ...["telegram", "sessions", "bots"].map(wallRow)));
       kids.push(group(node("A0186"),
         flag("notifications", node("A0186"), { title: winNote }),
+        row(node("notify.mode"), notificationMode, { id: "s-desk-notificationMode", title: T("notify.modeHelp") }),
+        h("div", { class: "sv-row sv-block" },
+          h("p", { class: "sv-hint" }, T("notify.modeHelp")),
+          h("p", { class: "sv-hint" }, T("notify.autoLimit"))),
         flag("sound", node("A0253"), { off: !d.notifications }),
         flag("taskbarBadge", node("set.badge"), { title: T("set.badgeHelp") }),
         h("div", { class: "sv-row sv-end" }, test)));
@@ -1066,7 +1120,7 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
     return { open, close, toggle: (s) => (V.open ? close() : open(s)), isOpen: () => V.open, refresh, notify, section: () => V.section, icon, updateHiddenBots, _builders: BUILDERS };
   }
 
-  const api = { create, SECTIONS, BUSY_SEND, SOUND_PRESETS, SOUND_DEFAULTS, soundsOf, screenTabVisible, tabFor, busySendOf, sectionOf, hostLines, hostBanners, sizeText, DOCKER_URL };
+  const api = { create, SECTIONS, BUSY_SEND, SOUND_PRESETS, SOUND_DEFAULTS, soundsOf, screenTabVisible, tabFor, busySendOf, sectionOf, hostLines, hostBanners, connectionState, sizeText, DOCKER_URL };
   if (typeof window !== "undefined") window.DeckSettingsView = Object.freeze(api);
   if (typeof module === "object" && module.exports) module.exports = api; // Node unit tests
 })();

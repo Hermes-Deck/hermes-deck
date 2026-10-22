@@ -158,20 +158,20 @@ function notifier(opts = {}) {
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../main/notify.js"), "utf8"), context);
   const { Notifier } = context.module.exports;
   const state = { enabled: true, sound: true, active: false, ...opts };
-  const n = new Notifier({ enabled: () => state.enabled, sound: () => state.sound, active: () => state.active, describe: () => ({}), onClick() {}, chime: (e) => chimes.push(e), icon: null });
+  const n = new Notifier({ enabled: () => state.enabled, sound: () => state.sound, active: () => state.active, describe: () => ({}), route: (kind) => kind === "subagent" ? "pet" : "banner", onClick() {}, chime: (e) => chimes.push(e), icon: null });
   return { n, shown, chimes, state };
 }
 
-test("toasts ask for their event's sound; quiet ones and a muted deck play nothing", () => {
+test("native sound follows OS policy; banners never play renderer chimes", () => {
   const { n, shown, chimes, state } = notifier();
   for (const k of ["reply", "done", "approval", "question", "ask", "test"]) n.notify(k, { title: "t", body: "b" });
-  assert.deepEqual(chimes, ["reply", "done", "approval", "question", "question", "reply"]);
-  assert.ok(shown.every((o) => o.silent === true), "the OS toast itself is always silent");
+  assert.deepEqual(chimes, [], "native banners never bypass Focus with a renderer chime");
+  assert.ok(shown.every((o) => o.silent === false), "native sound follows OS policy");
   n.notify("update", { title: "t", body: "b", quiet: true });
-  assert.equal(chimes.length, 6);
+  assert.equal(chimes.length, 0);
   state.sound = false;
   n.notify("approval", { title: "t" });
-  assert.equal(chimes.length, 6);
+  assert.equal(chimes.length, 0);
 });
 
 test("a finished sub-agent: a sound only, in the background, once per burst", () => {

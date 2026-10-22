@@ -23,7 +23,7 @@ const DEFAULTS = {
   // last screen position (DIP), kept here so it survives restarts. autostart (G2) mirrors the OS login
   // item: desktop.js re-reads the real state on every start (main/autostart.js). petSkin: the pet's look
   // (character = Character, orb = Orb, agent = Agent); petMotion: its animations (off = stills).
-  desktop: { notifications: true, sound: true, pet: true, petAlwaysOnTop: true, closeToTray: true, autostart: false, petPos: null, petSkin: "character", petMotion: true, petSize: 1, taskbarBadge: true },
+  desktop: { notificationMode: "auto", notifications: true, sound: true, pet: true, petAlwaysOnTop: true, closeToTray: true, autostart: false, petPos: null, petSkin: "character", petMotion: true, petSize: 1, taskbarBadge: true },
   // notification sounds (main/sounds.js), heard while desktop.sound is on: volume 0..100 and, per event, a built-in
   // sound ("preset:<id>"), "" for none, or a stored file of the user's own
   sounds: JSON.parse(JSON.stringify(notifySounds.DEFAULTS)),
@@ -102,6 +102,7 @@ function normalizeDesktops(v) {
   for (const [k, ok] of Object.entries(DESKTOP_RULES)) out[k] = ok(o[k]) ? o[k] : DEFAULTS.desktops[k];
   return out;
 }
+const NOTIFICATION_MODES = ["auto", "pet", "banner"];
 const DESKTOP_FLAGS = ["notifications", "sound", "pet", "petAlwaysOnTop", "closeToTray", "autostart", "petMotion", "taskbarBadge"];
 const PET_SKINS = require("../renderer/pets/catalog").IDS;
 const PET_SIZES = [0.75, 1, 1.25, 1.5]; // Small / Medium / Large / Extra large (pet-model.js scales by it)
@@ -297,10 +298,18 @@ class Settings {
     return this.isConfigured() || !!this.data.telegram.apiId || this.data.bridge.mode !== "off";
   }
 
+  // Include inactive hosts: their tokens still need encryption and the weak-storage warning.
+  hasSecrets() {
+    return SECRETS.some(([sec, key]) => !!this.data[sec][key]) ||
+      this.data.hosts.some(h => !!(h.relay.token || h.botscreen.deviceToken));
+  }
+
   save() {
     const out = clone(this.data);
-    const enc = this.canEncrypt();
-    this.plainSecrets = !enc;
+    // A secret-free preference save must not block on a synchronous Keychain probe.
+    const hasSecrets = this.hasSecrets();
+    const enc = hasSecrets && this.canEncrypt();
+    this.plainSecrets = hasSecrets && !enc;
     for (const [sec, key] of SECRETS) {
       const v = out[sec][key];
       if (!v) {
@@ -361,7 +370,7 @@ class Settings {
       hiddenBots: d.hiddenBots,
       readReceipts: d.readReceipts !== false,
       downloads: { dir: typeof d.downloads.dir === "string" ? d.downloads.dir : "", ask: d.downloads.ask === true },
-      desktop: { ...Object.fromEntries(DESKTOP_FLAGS.map((k) => [k, !!d.desktop[k]])), petSkin: PET_SKINS.includes(d.desktop.petSkin) ? d.desktop.petSkin : "character", petSize: PET_SIZES.includes(d.desktop.petSize) ? d.desktop.petSize : 1 },
+      desktop: { notificationMode: NOTIFICATION_MODES.includes(d.desktop.notificationMode) ? d.desktop.notificationMode : "auto", ...Object.fromEntries(DESKTOP_FLAGS.map((k) => [k, !!d.desktop[k]])), petSkin: PET_SKINS.includes(d.desktop.petSkin) ? d.desktop.petSkin : "character", petSize: PET_SIZES.includes(d.desktop.petSize) ? d.desktop.petSize : 1 },
       bridge: { ...d.bridge },
       chatChannel: d.chatChannel,
       chat: clone(d.chat),
@@ -376,7 +385,7 @@ class Settings {
       spaces: { defaultLevel: SPACE_LEVELS.includes(d.spaces && d.spaces.defaultLevel) ? d.spaces.defaultLevel : "watch" },
       desktops: normalizeDesktops(d.desktops),
       botscreen: { agents: Array.isArray(d.botscreen.agents) ? [...d.botscreen.agents] : [], hasDeviceToken: !!d.botscreen.deviceToken, deviceKeyUnreadable: !!this.unreadableSecrets["botscreen.deviceToken"] },
-      plainSecrets: this.plainSecrets || this.weakStorage(),
+      plainSecrets: this.hasSecrets() && (this.plainSecrets || this.weakStorage()),
       hosts: d.hosts.map((x) => ({ id: x.id, name: x.name, relay: { url: x.id === d.activeHost ? d.relay.url : x.relay.url, hasToken: !!(x.id === d.activeHost ? d.relay.token : x.relay.token) }, bridge: { mode: (x.id === d.activeHost ? d.bridge : x.bridge).mode } })),
       activeHost: d.activeHost,
     };
@@ -481,6 +490,7 @@ class Settings {
     }
     // the generic save moves the volume and built-in sounds; an own file comes only through sounds:pick
     if (patch.sounds !== undefined && !notifySounds.patchOk(patch.sounds)) throw new Error(i18nText("sound.invalid"));
+    if (patch.desktop && patch.desktop.notificationMode !== undefined && !NOTIFICATION_MODES.includes(patch.desktop.notificationMode)) throw new Error(i18nText("notify.invalidMode"));
     if (patch.desktop && patch.desktop.petSize !== undefined && !PET_SIZES.includes(patch.desktop.petSize)) throw new Error(i18nText("settings.invalidPetSize"));
     if (patch.composer !== undefined && (!patch.composer || typeof patch.composer !== "object" || Array.isArray(patch.composer) ||
         (patch.composer.busySend !== undefined && !BUSY_SEND.includes(patch.composer.busySend)))) throw new Error(i18nText("set.busySendInvalid"));
@@ -540,6 +550,7 @@ class Settings {
         d.desktop.petSkin = patch.desktop.petSkin;
       }
       if (patch.desktop.petSize !== undefined) d.desktop.petSize = patch.desktop.petSize;
+      if (patch.desktop.notificationMode !== undefined) d.desktop.notificationMode = patch.desktop.notificationMode;
       const p = patch.desktop.petPos;
       // v: the position format (pet-model.js POS_V); an untagged one is from the 88 px coin and gets migrated
       if (p !== undefined) d.desktop.petPos = p && Number.isFinite(p.x) && Number.isFinite(p.y) ? { x: Math.round(p.x), y: Math.round(p.y), ...(Number.isInteger(p.v) ? { v: p.v } : {}) } : null;

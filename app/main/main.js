@@ -152,7 +152,7 @@ function writeDiagnostics() {
 
 const send = (ch, msg) => {
   if (win && !win.isDestroyed()) win.webContents.send(ch, msg);
-  desktop.observe(ch, msg); // desktop shell: notifications watch the same feed (also while the window is hidden)
+  desktop.observe(ch, msg, { hostId: activeOf(), client: ch === "bridge" ? bridge : null });
 };
 const httpUrl = (u) => {
   try {
@@ -245,6 +245,7 @@ function setBridge(s) {
 }
 
 function startBridge() {
+  desktop.dropHost(activeOf(), false);
   const old = bridge;
   bridge = null;
   bridgeSessions = [];
@@ -282,8 +283,8 @@ function startBridge() {
 }
 
 // --- shared approvals from the other hosts ----------------------------------------------------
-// One BridgeClient per saved, non-active host with a direct connection, used ONLY for its approval and question
-// list and for answering them. An answer goes to the host the request came from, never to the active one.
+// Reuse one BridgeClient per saved, non-active direct host for requests AND completions.
+// Native answers capture this client's arrival, never the currently selected host's client.
 // ponytail: relay-only hosts are not watched here (their approvals reach the Deck through the direct bridge only).
 const HOST_PROTOCOL = require("./host-versions").PROTOCOL;
 const watchers = new Map(); // hostId -> {client, name, status, requests}
@@ -291,23 +292,45 @@ function pushWatchers() {
   send("hosts", { t: "requests", hosts: [...watchers].map(([id, w]) => ({ id, name: w.name, status: w.status, requests: w.requests })) });
 }
 function startWatchers() {
-  for (const w of watchers.values()) { w.client.removeAllListeners(); w.client.stop(); }
+  for (const [id, w] of watchers) { desktop.dropHost(id); w.client.removeAllListeners(); w.client.stop(); }
   watchers.clear();
   if (!settings || FIXTURE || SHOT) return pushWatchers();
   for (const h of settings.data.hosts) {
     if (h.id === settings.data.activeHost || !h.bridge || h.bridge.mode === "off") continue;
     const client = new BridgeClient(h.bridge, {});
-    const w = { client, name: h.name, status: "connecting", requests: [] };
+    const w = { client, name: h.name, status: "connecting", requests: [], pending: [], check: 0 };
     watchers.set(h.id, w);
     const mine = (fn) => (...a) => watchers.get(h.id) === w && fn(...a);
     // a plugin on another wire protocol is not answered (the same rule as the active connection's version check)
     const checked = (st) => (st.status !== "open" ? Promise.resolve(st) : client.version().then((v) =>
       v && Number.isInteger(v.protocol) && v.protocol !== HOST_PROTOCOL ? { status: "protocol" } : st, () => st));
-    client.on("status", mine((st) => checked(st).then(mine((s) => {
-      if (s.status === "protocol") { client.removeAllListeners(); client.stop(); }
-      w.status = s.status; if (s.status !== "open") w.requests = []; pushWatchers();
-    }))));
-    client.on("requests", mine((list) => { w.requests = list; pushWatchers(); }));
+    const observe = m => desktop.observe("bridge", m, { hostId: h.id, client });
+    const feed = m => {
+      if (w.status === "open") observe(m);
+      else if (w.status === "checking") {
+        w.pending.push(m);
+        // Bound the protocol-handshake queue; overflowing drops history, never replays mutations.
+        if (w.pending.length > 64) w.pending.shift();
+      }
+    };
+    client.on("status", mine((st) => {
+      const check = ++w.check;
+      w.status = st.status === "open" ? "checking" : st.status;
+      if (st.status !== "open") { w.requests = []; w.pending = []; observe({ t: "status", ...st }); }
+      pushWatchers();
+      checked(st).then(mine((s) => {
+        if (check !== w.check) return; // a late version reply cannot resurrect a disconnected client
+        w.status = s.status;
+        if (s.status === "protocol") { client.removeAllListeners(); client.stop(); }
+        if (s.status === "open") for (const m of w.pending) observe(m);
+        else { w.requests = []; observe({ t: "status", ...s }); }
+        w.pending = [];
+        pushWatchers();
+      }));
+    }));
+    client.on("snapshot", mine(snapshot => feed({ t: "snapshot", snapshot })));
+    client.on("event", mine(e => feed({ t: "event", ...e })));
+    client.on("requests", mine((list) => { w.requests = list; feed({ t: "requests", list }); pushWatchers(); }));
     client.start();
   }
   pushWatchers();
@@ -347,6 +370,13 @@ ipc.handle("bridge:status", () => ({
   sessions: bridgeSessions,
   platform: process.platform,
 }));
+// Draft operations capture this exact bridge and use the existing mutation lifecycle.
+ipc.handle("bridge:drafts-list", (_e, profile, offset) => needBridge().mailDrafts().list(profile, offset));
+ipc.handle("bridge:draft-get", (_e, profile, id) => needBridge().mailDrafts().get(profile, id));
+ipc.handle("bridge:draft-act", (_e, review, action, value) => {
+  const drafts = needBridge().mailDrafts();
+  return trackMutation(() => drafts.act(review, action, value));
+});
 // reads
 ipc.handle("bridge:sessions", (_e, o) => needBridge().sessions({ limit: bInt(bObj(o).limit, 50), profile: bProfile(o) }));
 ipc.handle("bridge:history", async (_e, sid, o) => {
@@ -802,6 +832,7 @@ async function startLogin(phone) {
 }
 
 // --- IPC (every input from the renderer is validated here) -----------------------------------
+ipc.handle("desktop:view", (_e, value) => desktop.setView(value, activeOf()));
 ipc.handle("ready", () => {
   if (relay) relay.resync();
   return {
@@ -860,6 +891,8 @@ ipc.handle("hosts:select", (_e, id) => {
   const was = settings.data.activeHost;
   settings.selectHost(String(id ?? ""));
   if (settings.data.activeHost === was) return settings.publicView();
+  desktop.setView(null, settings.data.activeHost);
+  desktop.dropHost(was);
   // device permissions were given to the old host: off before the new host connects (the old relay hears it)
   if (presence) for (const cap of ["browser", "desktop"]) if (presence.hosting[cap] && presence.capabilities.has(cap)) { try { presence.setHosting(cap, false); } catch {} }
   if (desktopsHost) desktopsHost.hostOff().catch(() => {});
@@ -1314,6 +1347,9 @@ function createWindow() {
   });
   win.webContents.on("will-navigate", (e, url) => {
     if (!url.startsWith("deck://")) e.preventDefault();
+  });
+  win.webContents.on("did-start-navigation", (_e, _url, inPlace, isMainFrame) => {
+    if (isMainFrame && !inPlace) desktop.setView(null, activeOf());
   });
   require("./context-menu").attachContextMenu(win); // cut/copy/paste on right-click in text fields
   theme.attach(win);

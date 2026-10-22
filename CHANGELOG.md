@@ -6,6 +6,13 @@ The desktop app, relay and Hermes plugin share one version number.
 
 ## [Unreleased]
 
+- Needs you can review/edit Draft Cards email drafts, compare actual versions and request revision. Matching Draft Cards + Gmail source extensions add verified primary-account review and a separate exact-version, single-use send confirmation with persistent receipts. Old or disabled plugins stay review-only; no plugin is installed or enabled automatically.
+
+- The top bar now has a keyboard-friendly host selector with separate Relay and Sessions status. Host setup accepts Local, SSH or WSL direct connections, or an explicitly relay-only host; saved configuration is not labelled connected.
+- Desktop notification display offers Auto, Pet and Native banner without changing pet visibility. Auto uses native banners over another fullscreen macOS app, or when fullscreen state is unknown.
+- Notifications follow the conversation actually displayed, not a hidden selection in another mode or behind Settings, Usage or a workspace pane. Notification clicks return to their source conversation.
+- Secret-free preference changes no longer query the macOS Keychain. Inactive-host secrets remain encrypted, and unreadable ciphertext survives unrelated saves.
+
 - Status pet has a persistent **Always on top** checkbox. It changes only the pet window, immediately and without taking focus.
 - Session filter counts use the same saved source choices, source chip and profile as the session list. Running and Waiting no longer advertise sessions hidden by those filters.
 

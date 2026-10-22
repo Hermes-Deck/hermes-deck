@@ -5,15 +5,15 @@ const { t: i18nText, getLocale: i18nLocale } = require("../renderer/i18n");
 // renderer (observe), asks startHidden() before making the window, calls init() once the window exists
 // and applySettings() after a settings save.
 //
-// For other features: notify(kind, {title, body, key}) shows a toast while the deck is in the background.
+// For other features: notify(kind, {title, body, key, source}) suppresses only the visible conversation.
 // The bridge uses kind "approval" or "question" for things that wait for the user's answer (second chime,
 // the toast stays until dismissed); key is the chat to open on click ("u<botId>" or "t<topicId>").
-const { app, ipcMain, nativeImage, Notification } = require("electron");
+const { app, ipcMain, nativeImage, Notification, powerMonitor, systemPreferences } = require("electron");
 const fs = require("fs");
 const path = require("path");
-const { Notifier, clip, textOf } = require("./notify");
+const { Notifier, clip, approvalNotice } = require("./notify");
 const { Pet, statusParts, SKINS: PET_SKINS } = require("./pet");
-const { PetFeed } = require("./pet-model"); // pet events: replies, questions, finished runs
+const { notificationRoute, fullscreenProbe } = require("./notification-route");
 const { DeckTray } = require("./tray");
 const autostart = require("./autostart"); // G2: "Start at login"
 const { createUpdateNotice } = require("./updates");
@@ -43,7 +43,7 @@ const S = {
   quitting: false,
   dialogs: null, // latest Telegram dialogs: chat names for the toasts
   agents: {}, // latest relay agents: which bot belongs to which agent
-  live: new Map(), // session id -> running (and not stale), to spot a session that just finished
+  agentsHost: null,
   avatars: {}, // chat key ("group" for the forum group) -> data: URL
   summary: { running: 0, subs: 0, unread: 0, pending: 0, offline: true }, // from the renderer
   hidden: false, // G2: this run started at login straight into the tray (window not shown)
@@ -51,7 +51,6 @@ const S = {
 };
 let notifier = null;
 let pet = null;
-let petFeed = null;
 let tray = null;
 let updates = null;
 const icons = new Map(); // chat key -> {url, img}
@@ -59,8 +58,40 @@ const icons = new Map(); // chat key -> {url, img}
 const flags = () => (S.settings ? S.settings.data.desktop : {});
 const toRenderer = (msg) => S.win && !S.win.isDestroyed() && S.win.webContents.send("desktop", msg);
 const inFront = () => !!(S.win && !S.win.isDestroyed() && S.win.isVisible() && !S.win.isMinimized() && S.win.isFocused());
+let locked = false;
+function unlocked() {
+  if (locked) return false;
+  try { return ["active", "idle"].includes(powerMonitor.getSystemIdleState(1)); }
+  catch { return false; }
+}
 const isLive = (s) => s.state === "running" && !s.stale;
 const count = (v) => Math.max(0, Math.min(99999, Math.floor(Number(v)) || 0));
+let view = null;
+const bounded = (s, max) => s === null || (typeof s === "string" && s.length > 0 && s.length <= max && !/[\x00-\x1f\x7f]/.test(s));
+function setView(value, hostId) {
+  view = null; // invalid/stale visibility must fail toward a notification, never a remembered selection
+  if (value === null) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || Object.keys(value).some(k => !["channel", "key", "sid", "profile", "visible"].includes(k))
+    || !["telegram", "sessions", "bots"].includes(value.channel) || typeof value.visible !== "boolean"
+    || !bounded(value.key ?? null, 200) || !bounded(value.sid ?? null, 512) || !bounded(value.profile ?? null, 64)
+    || typeof hostId !== "string" || !hostId || hostId !== S.settings?.data.activeHost) return false;
+  view = { channel: value.channel, key: value.key ?? null, sid: value.sid ?? null, profile: value.profile ?? null, visible: value.visible, hostId };
+  notifier?.clear();
+  return true;
+}
+function viewing(source) {
+  if (!inFront() || !view?.visible || !source?.hostId || source.hostId !== view.hostId || !source.channel || source.channel !== view.channel) return false;
+  if (source.channel === "telegram") return !!source.key && source.key === view.key;
+  return !!source.sid && !!source.profile && source.sid === view.sid && source.profile === view.profile;
+}
+function openSource(source, request) {
+  if (Array.isArray(S.settings?.data.hosts) && !S.settings.data.hosts.some(h => h.id === source?.hostId)) return;
+  showDeck(null);
+  if (source?.hostId) toRenderer({ t: "source-open", ...source, ...(request ? { id: request.id } : {}) });
+}
+const petTargets = new Map();
+let petTargetId = 0;
 
 function showDeck(key) {
   const w = S.win;
@@ -98,13 +129,18 @@ function chatTitle(key) {
 }
 
 /** The chat a finished session belongs to: its group topic, else the agent's bot DM. */
-function sessionKey(s) {
+function sessionKey(s, hostId) {
   const d = S.dialogs;
   if (!d) return null;
-  if (s.thread && d.group && String(s.chat) === String(d.group.id)) return `t${String(s.thread).replace(/^t/, "")}`;
-  const a = S.agents[s.agent];
+  // Native observer nodes have no chat fields; only the same host/profile/session relay row may supply them.
+  if (!s.chat && !s.thread && !s.agent) s = relayLive.get(hostId)?.get(sessionIdentity(s)) || s;
+  if (s.thread && d.group && String(s.chat) === String(d.group.id)) {
+    const key = `t${String(s.thread).replace(/^t/, "")}`;
+    return bounded(key, 200) && /^t\d+$/.test(key) ? key : null;
+  }
+  const a = S.agentsHost === hostId && S.agents[s.agent];
   const bot = a && a.bot ? (d.bots || []).find((b) => b.username && b.username.toLowerCase() === a.bot.toLowerCase()) : null;
-  return bot ? bot.key : null;
+  return bot && bounded(bot.key, 200) && /^u\d+$/.test(bot.key) ? bot.key : null;
 }
 
 function avatarIcon(key) {
@@ -130,92 +166,192 @@ function petWho(key, m) {
 }
 
 /** A pet event goes to the pet; its agent becomes the one the Agent skin shows. */
-function petEvent(ev) {
+function petEvent(ev, onClick) {
   if (!pet) return;
+  if (onClick) {
+    const key = `hs:notice:${++petTargetId}`;
+    petTargets.set(key, onClick);
+    while (petTargets.size > 24) petTargets.delete(petTargets.keys().next().value);
+    ev = { ...ev, key };
+  }
   pet.event(ev);
   if (ev.agent) pet.setAgent({ name: ev.agent, avatar: ev.avatar });
 }
 
 // --- what main sends the renderer, seen on its way --------------------------------------------------
-function observe(ch, msg) {
+function observe(ch, msg, context = {}) {
   if (!notifier || !msg || typeof msg !== "object") return;
   try {
-    if (ch === "tg") fromTelegram(msg);
-    else if (ch === "relay") fromRelay(msg);
-    else if (ch === "bridge") fromBridge(msg);
+    if (ch === "tg") fromTelegram(msg, context);
+    else if (ch === "relay") fromRelay(msg, context);
+    else if (ch === "bridge") fromBridge(msg, context);
   } catch (e) {
     console.error(`desktop: ${e.message}`); // a notification problem never breaks the deck's own feed
   }
 }
 
-function fromTelegram(m) {
+function fromTelegram(m, { hostId = null } = {}) {
+  const source = { hostId, channel: "telegram", key: m.m?.key || null, sid: null, profile: null };
   if (m.t === "dialogs") S.dialogs = m;
   else if (m.t === "avatar" && typeof m.key === "string") S.avatars[m.key] = m.url;
   else if (m.t === "msg") {
-    notifier.message(m.m);
-    petFeed.message(m.m); // the pet hops and says who replied
+    notifier.message(m.m, source);
   } else if (m.t === "edit") {
-    notifier.edit(m.m);
-    petFeed.edit(m.m);
+    notifier.edit(m.m, source);
   }
 }
 
-function fromRelay(m) {
+const relayLive = new Map();
+const directLive = new Map();
+const completions = new Set();
+const sessionIdentity = s => JSON.stringify([s.profile || null, s.sid || null]);
+const completionId = value => bounded(value, 512) ? value : null;
+function sourceOf(s, hostId) {
+  // A missing source is not the user's default chat mode. Keep it unknown.
+  const channel = s.title === "Bot Chat" ? "bots" : s.platform === "telegram" || s.source === "telegram" ? "telegram"
+    : ["cli", "tui", "deck", "desktop", "webui", "api", "discord", "slack", "ios"].includes(s.source || s.platform) ? "sessions" : null;
+  const key = channel === "telegram" ? sessionKey(s, hostId) : null;
+  // No mapped chat: retain an exact session review destination, never an invalid Telegram target.
+  return { hostId, channel: channel === "telegram" && !key ? null : channel, key, sid: s.sid || null, profile: s.profile || null };
+}
+function completion(s, hostId, identity) {
+  if (identity && hostId && s.sid && s.profile) {
+    const id = JSON.stringify([hostId, s.profile, s.sid, identity]);
+    if (completions.has(id)) return;
+    completions.add(id);
+    while (completions.size > 1000) completions.delete(completions.values().next().value);
+  }
+  sessionDone(s, sourceOf(s, hostId));
+}
+function fromRelay(m, { hostId = null } = {}) {
   if (m.t === "hello" && updates) updates.available(m.v);
-  if (m.agents && typeof m.agents === "object") S.agents = m.agents;
+  if (m.agents && typeof m.agents === "object") { S.agents = m.agents; S.agentsHost = hostId; }
   if (m.t === "snapshot") {
-    S.live = new Map((m.sessions || []).map((s) => [s.sid, isLive(s)]));
+    relayLive.set(hostId, new Map((m.sessions || []).slice(-3000).map((s) => [sessionIdentity(s), s])));
     return;
   }
   if (m.t !== "evs") return;
+  if (m.replay || m.historical || m.initial) return;
+  const live = relayLive.get(hostId) || new Map();
+  relayLive.set(hostId, live);
   for (const s of m.sessions || []) {
-    const was = S.live.get(s.sid);
+    const id = sessionIdentity(s);
+    const prior = live.get(id);
+    const was = prior && isLive(prior);
     const now = isLive(s);
-    S.live.delete(s.sid); // re-insert: the map stays in last-seen order, so trimming drops the oldest
-    S.live.set(s.sid, now);
+    live.delete(id); // re-insert: trim the oldest observation, not an arbitrary session
+    live.set(id, s);
     // a top-level session that stopped running. Not: a sub-agent, a cron job (its result arrives as a
     // message), a context-compression hand-over to a new session id, or a session that only went quiet.
-    if (was && !now && !s.parent && !s.cron && !s.splitInto && !s.stale) sessionDone(s);
+    const turnId = completionId(s.turnId) || completionId(s.turn_id);
+    if (was && !now && !s.parent && !s.cron && !s.splitInto && !s.stale) completion(s, hostId, turnId ? ["turn", turnId] : null);
     // a sub-agent that finished: its own sound (Settings > Desktop > Notifications), no toast
-    else if (was && !now && s.parent && !s.cron && !s.splitInto && !s.stale) notifier.subagent();
+    else if (was && !now && s.parent && !s.cron && !s.splitInto && !s.stale) notifier.subagent(sourceOf(s, hostId));
     // the pet's Agent skin shows the agent that started working last
-    if (!was && now && !s.parent && s.agent && pet) pet.setAgent({ name: s.agent, avatar: petWho(sessionKey(s)).avatar });
+    if (!was && now && !s.parent && s.agent && pet) pet.setAgent({ name: s.agent, avatar: petWho(sessionKey(s, hostId)).avatar });
   }
-  while (S.live.size > 3000) S.live.delete(S.live.keys().next().value);
+  while (live.size > 3000) live.delete(live.keys().next().value);
 }
 
-// bridge: an approval or a question that waits for the user. One toast per request, never repeated.
-const asked = new Set();
-function fromBridge(m) {
+// One route per arrival. Revocation closes native actions before a replacement can be shown.
+const asked = new Map();
+const requestSignature = ({ at: _arrivalTime, ...request }) => JSON.stringify(request);
+function fromBridge(m, { hostId = null, client = null } = {}) {
+  if (m.t === "status" && m.status !== "open") {
+    dropHost(hostId, false);
+    return;
+  }
+  if (m.replay || m.historical || m.initial || m.payload?.replay || m.payload?.historical || m.payload?.initial) return;
+  if (m.t === "snapshot" && Array.isArray(m.snapshot?.nodes)) {
+    const old = directLive.get(hostId);
+    const nodes = new Map(m.snapshot.nodes.map(n => [sessionIdentity(n), n]));
+    directLive.set(hostId, { connectionId: m.snapshot.connectionId, nodes });
+    if (old && old.connectionId === m.snapshot.connectionId) for (const [key, n] of nodes) {
+      const prior = old.nodes.get(key);
+      // Native-hook producers publish terminal snapshots even for externally started CLI/Telegram turns.
+      // Idle without a terminal marker is NOT a completion (quiet process, stale heartbeat, etc.).
+      if (prior && !prior.terminalAt && n.terminalAt && (!prior.turnId || prior.turnId === n.turnId)
+        && !n.parent && n.source !== "subagent" && n.source !== "cron") {
+        completion(n, hostId, n.turnId ? ["turn", n.turnId] : ["terminal", n.terminalAt]);
+      }
+    }
+    return;
+  }
+  if (m.t === "event" && m.type === "message.complete") {
+    const node = directLive.get(hostId)?.nodes.get(sessionIdentity(m));
+    const p = m.payload || {};
+    if (node?.parent || node?.source === "subagent" || node?.source === "cron") return;
+    const turnId = completionId(m.turnId) || completionId(p.turn_id), eventId = completionId(m.eventId) || completionId(p.event_id);
+    const messageId = completionId(p.message_id);
+    const identity = turnId ? ["turn", turnId] : eventId ? ["event", eventId] : messageId ? ["message", messageId] : null;
+    completion({ ...node, source: m.source || node?.source, platform: m.platform || node?.platform,
+      sid: m.sid, profile: m.profile, state: "finished", lastMsg: p.text }, hostId, identity);
+    return;
+  }
   if (m.t !== "requests" || !Array.isArray(m.list)) return;
-  const open = new Set();
-  for (const r of m.list) {
-    if (!r || typeof r.id !== "string") continue;
-    open.add(r.id);
-    if (asked.has(r.id)) continue;
-    asked.add(r.id);
-    const q = r.kind === "question" && Array.isArray(r.questions) && r.questions[0] ? r.questions[0].question : "";
-    notifier.notify(r.kind === "approval" ? "approval" : "question", {
-      title: r.kind === "approval" ? i18nText("U0216") : i18nText("A0138"),
-      body: clip(r.kind === "approval" ? r.description || r.command : q, 120),
-      key: typeof r.sid === "string" && r.sid ? `hs:${r.sid}` : null,
-    });
-    petFeed.ask(r); // the pet shakes and asks too
+  const open = new Map(m.list.filter(r => r && typeof r.id === "string")
+    .map(r => [JSON.stringify([hostId, r.id, r.profile, r.rpcId]), r]));
+  for (const [id, entry] of asked) {
+    if (entry.hostId !== hostId) continue;
+    if (!open.has(id) || requestSignature(open.get(id)) !== entry.signature) {
+      entry.notice?.close();
+      asked.delete(id);
+    } else if (entry.captured && !entry.captured.current()) {
+      // Same request replayed by the host: withdraw old authority, do not notify twice.
+      entry.notice?.close();
+    }
   }
-  for (const id of asked) if (!open.has(id)) asked.delete(id); // answered or gone: forget it
+  for (const [id, r] of open) {
+    if (asked.has(id)) continue;
+    const entry = { hostId, signature: requestSignature(r), notice: null, captured: null };
+    asked.set(id, entry);
+    const current = () => asked.get(id) === entry;
+    // Capture only the originating client. A switch must never redirect a native answer to getBridge().
+    const captured = entry.captured = r.kind === "approval" ? client?.captureApproval(r.id) : null;
+    const node = directLive.get(hostId)?.nodes.get(sessionIdentity(r));
+    const source = sourceOf({ ...node, sid: r.sid, profile: r.profile }, hostId);
+    const q = r.kind === "question" && Array.isArray(r.questions) && r.questions[0] ? r.questions[0].question : "";
+    const host = S.settings?.data.hosts?.find(h => h.id === hostId);
+    const approval = r.kind === "approval" ? approvalNotice(r, captured, unlocked, host) : null;
+    entry.notice = notifier.notify(r.kind === "approval" ? "approval" : "question", {
+      source,
+      title: i18nText("A0138"), body: q, ...approval,
+      // Only macOS has the verified native action API; the request card works on every platform.
+      ...(process.platform !== "darwin" ? { actions: [] } : {}),
+      key: typeof r.sid === "string" && r.sid ? `hs:${r.sid}` : null,
+      current: () => current() && (!captured || captured.current()),
+      onClick: () => {
+        if (!current()) return;
+        openSource(source, r);
+      },
+    });
+  }
 }
 
-function sessionDone(s) {
-  const key = sessionKey(s);
+function dropHost(hostId, relay = true) {
+  directLive.delete(hostId);
+  if (relay) relayLive.delete(hostId);
+  if (relay && S.agentsHost === hostId) { S.agents = {}; S.agentsHost = null; }
+  for (const [id, entry] of asked) if (entry.hostId === hostId) {
+    entry.notice?.close();
+    asked.delete(id);
+  }
+}
+
+function sessionDone(s, source) {
+  const key = source?.channel === "telegram" ? source.key : s.sid ? `hs:${s.sid}` : null;
   const topic = key && key[0] === "t" ? chatTitle(key) : null;
-  const verb = s.state === "failed" ? i18nText("A0139") : s.state === "stopped" ? i18nText("A0140") : i18nText("U0217");
+  const verb = ["failed", "error"].includes(s.state) ? i18nText("A0139") : s.state === "stopped" ? i18nText("A0140") : i18nText("U0217");
   notifier.finished({
+    source,
+    onClick: () => openSource(source),
     key,
-    title: topic ? `${s.agent} · ${topic}` : s.agent || "Hermes",
+    title: topic ? `${s.agent} · ${topic}` : s.agent || s.name || s.profile || "Hermes",
     body: s.lastMsg ? `${verb}: ${clip(s.lastMsg, 90)}` : verb,
     icon: avatarIcon(key),
+    petEligible: !["failed", "error", "stopped"].includes(s.state),
+    pet: { agent: s.agent, avatar: petWho(key).avatar, snippet: i18nText("U0217") },
   });
-  petFeed.done({ agent: s.agent, key, state: s.state, avatar: petWho(key).avatar }); // a happy hop when it went well
 }
 
 // --- taskbar badge ----------------------------------------------------------------------------------
@@ -338,15 +474,31 @@ function cleanSummary(s) {
 function init({ win, settings, icon, shot }) {
   Object.assign(S, { win, settings, icon, shot: !!shot });
   if (S.shot) return devScroll(win); // screenshot runs: no tray, no pet, no toasts
+  const fullscreen = process.platform === "darwin" ? fullscreenProbe(systemPreferences) : null;
   notifier = new Notifier({
     enabled: () => !!flags().notifications,
     sound: () => !!flags().sound,
-    active: inFront,
+    active: viewing,
     describe: (key) => ({ title: chatTitle(key), icon: avatarIcon(key) }),
-    onClick: showDeck,
+    onClick: (key, source) => source ? openSource(source) : showDeck(key),
     chime: (kind) => toRenderer({ t: "chime", kind }),
     icon,
+    route: kind => ["reply", "done", "approval", "question", "ask", "subagent"].includes(kind) ? notificationRoute(flags, { fullscreen: () => fullscreen.get() }) : "banner",
+    onPet: petEvent,
+    describePet: petWho,
+    unlocked,
   });
+  const lock = () => { locked = true; petTargets.clear(); notifier.closeAll(); };
+  powerMonitor.on("lock-screen", lock);
+  powerMonitor.on("suspend", lock);
+  powerMonitor.on("user-did-resign-active", lock);
+  powerMonitor.on("unlock-screen", () => { locked = false; });
+  const recheckLock = () => {
+    try { locked = !["active", "idle"].includes(powerMonitor.getSystemIdleState(1)); }
+    catch { locked = true; }
+  };
+  powerMonitor.on("resume", recheckLock);
+  powerMonitor.on("user-did-become-active", recheckLock);
   updates = createUpdateNotice({ file: path.join(app.getPath("userData"), "updates.json"), version: app.getVersion(),
     legacyProfile: settings.data.firstRunDone === true,
     notify: (key, vars) => notifier.notify("update", { title: i18nText("updates.title"), body: i18nText(key, vars), quiet: true }),
@@ -354,12 +506,13 @@ function init({ win, settings, icon, shot }) {
   pet = new Pet({
     loadPos: () => flags().petPos || null,
     savePos: (pos) => S.settings.update({ desktop: { petPos: pos } }),
-    onOpen: (key) => showDeck(key), // the pet itself: null; a speech bubble: its chat
+    onOpen: (key) => {
+      if (key?.startsWith("hs:notice:")) { const open = petTargets.get(key); petTargets.delete(key); open?.(); }
+      else showDeck(key);
+    },
     onHide: () => setFlag("pet", false),
     options: petOptions,
   });
-  // replies, questions and finished runs become pet events; no bubble while the deck is in front
-  petFeed = new PetFeed({ emit: petEvent, describe: petWho, textOf, quiet: inFront });
   try {
     tray = new DeckTray({ icon, onShow: () => showDeck(null), onToggle: setFlag, onSkin: setSkin, onQuit: quit });
     tray.status(statusParts(S.summary).map((p) => p.text).join(" · "));
@@ -384,7 +537,8 @@ function init({ win, settings, icon, shot }) {
   });
   win.on("closed", () => {
     // the deck itself is gone: the pet and the tray icon go too, so the app quits as before
-    if (petFeed) petFeed.stop();
+    notifier.closeAll();
+    fullscreen?.stop();
     if (pet) pet.hide();
     if (tray) tray.destroy();
     tray = null;
@@ -412,7 +566,7 @@ function init({ win, settings, icon, shot }) {
   applySettings();
 }
 
-/** Entry point for other features; see the header. Returns the Notification or null. */
+/** Entry point for other features; see the header. Returns a cancellable notice handle or null. */
 function notify(kind, payload) {
   return notifier ? notifier.notify(kind, payload) : null;
 }
@@ -509,4 +663,4 @@ function devScroll(win) {
   win.webContents.once("did-finish-load", () => setTimeout(() => win.webContents.executeJavaScript(js).catch(() => {}), 2500));
 }
 
-module.exports = { observe, init, applySettings, notify, quit, cancelQuit, shotPet, startHidden, info, trayAlert, openSettings };
+module.exports = { observe, setView, dropHost, init, applySettings, notify, quit, cancelQuit, shotPet, startHidden, info, trayAlert, openSettings };

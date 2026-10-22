@@ -97,6 +97,11 @@ function avatarUrl(u) {
   return typeof u === "string" && /^data:image\/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(u) && u.length < 400000 ? u : undefined;
 }
 
+function isAgentMessage(m) {
+  return !!(m && typeof m === "object" && !m.out && !m.service && typeof m.key === "string"
+    && /^[ut]\d+$/.test(m.key) && (m.key[0] !== "t" || m.fromBot));
+}
+
 class PetFeed {
   /**
    * @param {object} o
@@ -116,8 +121,7 @@ class PetFeed {
 
   /** Telegram "msg": an agent's new message in a bot DM or a group topic becomes a "reply". */
   message(m) {
-    if (!m || typeof m !== "object" || m.out || m.service || typeof m.key !== "string" || !/^[ut]\d+$/.test(m.key)) return;
-    if (m.key[0] === "t" && !m.fromBot) return; // a topic: only bots' messages are agent replies
+    if (!isAgentMessage(m)) return;
     const id = `${m.key}:${m.id}`;
     if (this.seen.has(id)) return;
     this.seen.add(id);
@@ -175,4 +179,4 @@ class PetFeed {
   }
 }
 
-module.exports = { SLOT_W, SLOT_H, BAND_H, W, H, MARGIN, POS_V, COIN_V1, SIZES, dims, corner, resize, savedPos, fromV1, place, windowAt, PetFeed, avatarUrl, clip };
+module.exports = { SLOT_W, SLOT_H, BAND_H, W, H, MARGIN, POS_V, COIN_V1, SIZES, dims, corner, resize, savedPos, fromV1, place, windowAt, PetFeed, isAgentMessage, avatarUrl, clip };

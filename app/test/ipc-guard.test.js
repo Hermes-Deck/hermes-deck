@@ -94,7 +94,7 @@ test("ipc: every main-window channel refuses a foreign frame (bridge, settings, 
   // its window in its own wrapper) and the desktop shell's (desktop.js: e.sender === win.webContents), which are
   // registered later, in their own modules
   const preload = fs.readFileSync(PRELOAD, "utf8");
-  const used = [...new Set([...preload.matchAll(/ipcRenderer\.(?:invoke|send)\("([^"]+)"/g)].map((m) => m[1]))].filter((ch) => !/^(bs|desktop):/.test(ch));
+  const used = [...new Set([...preload.matchAll(/ipcRenderer\.(?:invoke|send)\("([^"]+)"/g)].map((m) => m[1]))].filter((ch) => (!/^(bs|desktop):/.test(ch) || ch === "desktop:view"));
   const missing = used.filter((ch) => !byChannel.has(ch));
   assert.deepEqual(missing, [], "registered before desktop.init");
   for (const ch of used) {

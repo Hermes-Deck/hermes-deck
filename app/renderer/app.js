@@ -10,6 +10,13 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   const CM = window.DeckChatModes;
   const CHAT_TEXT = CM.TEXT;
   let activeChatMode = null;
+  let displayedChat = null;
+  let lastDesktopView = "";
+  let hostSwitchPending = false;
+  let pendingSourceOpen = null;
+  let sourceOpenReady = false;
+  let sourceRequestsReady = false;
+  let remoteHosts = [];
   let firstRunChat = null;
   let firstRunStep = 0;
   let firstRunDevice = null;
@@ -420,6 +427,57 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     return RS.visibleMax({ top: box.top, bottom: box.bottom }, items);
   }
 
+  // Keep the native select mounted: live status changes must not close its menu or steal keyboard focus.
+  const hostSelect = h("select", { id: "host-select", "aria-describedby": "host-status", dataset: { fk: "host-select" }, onchange: (e) => selectHost(e.target.value) });
+  const hostStatus = h("div", { class: "host-status", id: "host-status" });
+  const hostControl = h("div", { class: "host-control", hidden: true },
+    h("label", { class: "sr-only", for: "host-select" }, i18nNode("hosts.select")), hostSelect, hostStatus);
+  els.crumb.before(hostControl);
+  let hostOptions = "";
+  function renderHosts() {
+    const s = S.settings, hosts = s?.hosts || [];
+    hostControl.hidden = !s?.firstRunDone || !hosts.length;
+    if (hostControl.hidden) return;
+    const options = hosts.map(x => [x.id, x.name]);
+    const sig = JSON.stringify(options);
+    if (sig !== hostOptions) {
+      hostOptions = sig;
+      hostSelect.replaceChildren(...options.map(([id, name]) => h("option", { value: id }, name)));
+    }
+    hostSelect.value = s.activeHost;
+    hostSelect.title = hosts.find(x => x.id === s.activeHost)?.name || "";
+    hostSelect.disabled = hostSwitchPending;
+    const states = [
+      ["hosts.relay", SVM.connectionState(!!(s.relay?.url && s.relay?.hasToken), S.relay.status)],
+      ["hosts.sessions", SVM.connectionState(s.bridge?.mode && s.bridge.mode !== "off", H.status.status)],
+    ];
+    hostStatus.replaceChildren(...states.map(([label, state]) => {
+      const text = `${i18nText(label)}: ${i18nText(`hosts.state.${state}`)}`;
+      return h("span", { title: text, "aria-label": text, class: state === "open" ? "ok" : "" }, `${i18nText(label)}: ${i18nText(`hosts.short.${state}`)}`);
+    }));
+  }
+  async function selectHost(id) {
+    if (hostSwitchPending || id === S.settings?.activeHost) return;
+    if (window.DeckInbox?.mail?.hasUnsaved()) { MV.toast(i18nText("mail.leaveBlocked")); renderHosts(); return; }
+    DR.flush(); // persist the old host's current draft before main reloads this page
+    hostSwitchPending = true;
+    renderHosts();
+    publishDesktopView();
+    try {
+      await deck.hosts.select(id); // existing guarded path owns consent reset and navigation
+    } catch (e) {
+      hostSwitchPending = false;
+      renderHosts();
+      publishDesktopView();
+      MV.toast(i18nText("common.saveFailed", { e: cleanErr(e) }));
+    }
+  }
+  if (deck.hosts?.onEvent) deck.hosts.onEvent(e => {
+    if (e?.t !== "requests") return;
+    remoteHosts = Array.isArray(e.hosts) ? e.hosts : [];
+    SV.refresh();
+  });
+
   function renderTop() {
     const agents = agentList();
     const running = agents.reduce((n, a) => n + (a.running ? 1 : 0), 0);
@@ -668,6 +726,22 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       channel: SH.channelOf({ mode, subagent: sub, readOnly, source: n && n.source }) };
   }
 
+  function publishDesktopView() {
+    if (!S.settings || !deck.desktop?.view) return;
+    const visible = S.settings.firstRunDone && !hostSwitchPending && !document.hidden &&
+      SH.main() === "chat" && !SV.isOpen() && !UD.isOpen() && !allSessionsView()?.isOpen() &&
+      !["browser", "screen"].includes(SH.right().tab) && document.getElementById("detail").hidden &&
+      !["setup", "login", "error"].includes(hermesMode() ? "" : S.tg.status);
+    const view = SH.notificationView({ current: currentChat(), displayed: displayedChat, visible });
+    const sig = JSON.stringify(view);
+    if (sig === lastDesktopView) return;
+    lastDesktopView = sig;
+    Promise.resolve(deck.desktop.view(view)).catch(() => {
+      // A stale page may be refused during a host switch; allow the next publication to retry.
+      if (lastDesktopView === sig) lastDesktopView = "";
+    });
+  }
+
   function renderCrumb() {
     const c = currentChat();
     const kids = [];
@@ -754,7 +828,13 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     }
     DR.sync(); // the message box shows this chat's draft
     AT.render(); // attachment tray for this chat, or the "not in this channel" bar (A7)
-    if (hermesMode()) return renderHermesMsgs();
+    if (hermesMode()) {
+      if (renderHermesMsgs()) {
+        displayedChat = H.hist.get(H.sel)?.loaded && !BT?.isDraft(H.sel) ? currentChat() : null;
+        publishDesktopView();
+      }
+      return;
+    }
     if (holdRegion(els.msgs)) return; // typing an answer in a Hermes request card
     const box = els.msgs;
     const kids = [];
@@ -800,6 +880,8 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     if (scrollToEnd) box.scrollTop = 0; // column-reverse: 0 is the newest message
     scrollToEnd = false;
     MV.afterRender(); // reply bar for this chat
+    displayedChat = S.loaded.has(S.sel) && t.status !== "error" ? currentChat() : null;
+    publishDesktopView();
     reads.check(); // C5: what is on screen now may be newly seen
   }
 
@@ -1118,6 +1200,8 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     hasSection: (id) => (id === "device" ? !!(workspace || botscreen) : id === "desktop" ? !!desk : true),
     save: (patch, okText) => saveSettings(patch, okText),
     saveCall: (call, okText) => saveSettingsCall(call, okText),
+    selectHost,
+    hostStates: () => ({ relay: S.relay.status, sessions: H.status.status, remote: remoteHosts }),
     saveChat: (draft) => saveChatModes(draft),
     readReceiptsChanged: () => { reads.forget(); reads.check(); },
     logout: async () => {
@@ -1142,6 +1226,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     onToggle: (open) => {
       if (open) { SH.setMain("chat"); UD.close(false); } // Settings draws over the chat column (and replaces the Usage view)
       renderGear();
+      publishDesktopView();
     },
   });
   /** A small modal consent / confirmation sheet for Settings: resolves true only on its OK button (Esc, Cancel: false). */
@@ -1207,6 +1292,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   SH.on("right", (r) => {
     S.tab = tabIdOf(r);
     renderGear();
+    publishDesktopView();
   });
 
   function renderTabs() {
@@ -1358,8 +1444,11 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       S.settings = await call();
       applyWallpaper();
       settingsMessage(true, okText);
+      mark("top", "panel", true);
+      return true;
     } catch (e) {
       settingsMessage(false, i18nText("common.saveFailed", { e: cleanErr(e) }));
+      return false;
     }
   }
 
@@ -1611,6 +1700,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     fill: (kids) => { paneFleet(kids); paneTokens(kids); window.DeckI18n.apply(document); },
     canOpen: () => !!(S.settings && S.settings.firstRunDone),
     onToggle: (open) => {
+      publishDesktopView();
       if (!open) return;
       SV.close(); // one view over the chat at a time (an open All sessions browser stays under it, as with Settings)
       SH.setMain("chat");
@@ -1632,6 +1722,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     if (force) for (const p of parts) lastAt[p] = 0;
     if (!raf) raf = requestAnimationFrame(flush);
     desktopSync(); // desktop shell: the pet and tray follow every state change (debounced, only on change)
+    publishDesktopView(); // clear a changed selection now, before the throttled render
   }
 
   function flush() {
@@ -1646,7 +1737,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       }
       dirty.delete(p);
       lastAt[p] = t;
-      if (p === "top") renderTop();
+      if (p === "top") { renderTop(); renderHosts(); }
       else if (p === "rail") renderRail();
       else if (p === "head") {
         renderHead();
@@ -1935,6 +2026,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
         if (!S.sel && S.tg.bots.length) applyDialogs(S.tg);
         if (AG) AG.onRelay(m);
         mark("top", "rail", "head", "strip", "panel", true);
+        resumeSourceOpen();
         break;
       case "evs":
         for (const s of m.sessions || []) S.relay.sessions.set(s.sid, s);
@@ -1942,6 +2034,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
         for (const e of m.evs || []) applyDetail(e);
         if (AG) AG.onRelay(m); // B1: live steps of the open session
         mark("top", "rail", "head", "strip", "panel");
+        resumeSourceOpen();
         break;
       case "fleet":
         S.relay.fleet = m.fleet;
@@ -1966,11 +2059,13 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
         if (m.status === "open" && S.sel && !S.loaded.has(S.sel)) select(S.sel);
         mark("top", "rail", "msgs", "head");
         renderNote();
+        resumeSourceOpen();
         break;
       case "dialogs":
         applyDialogs(m);
         refreshSettingsPane();
         mark("rail", "head", "msgs", "panel", true);
+        resumeSourceOpen();
         break;
       case "msg":
       case "edit": {
@@ -2068,6 +2163,91 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     SV.notify(r === "ok", r === "ok" ? i18nText("U0541") : r === "unsupported" ? i18nText("U0542") : i18nText("U0543"), { anchor: btn });
   }
 
+  function validSourceOpen(e) {
+    const text = (s, max) => typeof s === "string" && s.length > 0 && s.length <= max && !/[\x00-\x1f\x7f]/.test(s);
+    return !!e && text(e.hostId, 200) && [null, "telegram", "sessions", "bots"].includes(e.channel) &&
+      (e.key == null || text(e.key, 200)) && (e.sid == null || text(e.sid, 512)) &&
+      (e.profile == null || text(e.profile, 64)) && (e.id == null || text(e.id, 512)) &&
+      (e.channel === "telegram" ? /^(u|t)\d+$/.test(e.key) : text(e.sid, 512) && text(e.profile, 64)) &&
+      (e.id == null || (text(e.sid, 512) && text(e.profile, 64)));
+  }
+  function clearSourceOpen() {
+    pendingSourceOpen = null;
+    try { sessionStorage.removeItem("deck.source-open"); } catch { /* no reload intent available */ }
+  }
+  function restoreSourceOpen() {
+    if (!pendingSourceOpen) {
+      try { pendingSourceOpen = JSON.parse(sessionStorage.getItem("deck.source-open")); } catch { /* invalid/blocked storage */ }
+      // Only the requested destination may resume a reload; never bounce a stale page to another host.
+      if (pendingSourceOpen?.hostId !== pageHost) clearSourceOpen();
+    }
+    resumeSourceOpen();
+  }
+  function openSource(e) {
+    if (hostSwitchPending || !validSourceOpen(e)) return;
+    pendingSourceOpen = { hostId: e.hostId, channel: e.channel, key: e.key, sid: e.sid, profile: e.profile, id: e.id,
+      expiresAt: Date.now() + 60000 }; // a delayed feed may resolve intent, not replay an old click indefinitely
+    resumeSourceOpen();
+  }
+  async function resumeSourceOpen() {
+    const e = pendingSourceOpen;
+    if (!e || !sourceOpenReady || hostSwitchPending) return;
+    if (!validSourceOpen(e) || !Number.isFinite(e.expiresAt) || e.expiresAt <= Date.now() ||
+      pageHost !== S.settings?.activeHost || !S.settings?.hosts?.some(h => h.id === e.hostId)) return clearSourceOpen();
+    if (e.hostId !== pageHost) {
+      // Session storage is window-scoped and survives the existing guarded host reload.
+      try { sessionStorage.setItem("deck.source-open", JSON.stringify(e)); } catch { return clearSourceOpen(); }
+      await selectHost(e.hostId);
+      if (pendingSourceOpen === e && !hostSwitchPending) clearSourceOpen(); // refused selection
+      return;
+    }
+    const mode = e.channel || "sessions"; // unknown source may only use an exact known session
+    if (!S.settings.firstRunDone || !chatModes().includes(mode)) return clearSourceOpen();
+    if (e.id && !sourceRequestsReady) return;
+    const request = e.id && H.requests.find(r => r.id === e.id && r.sid === e.sid && r.profile === e.profile);
+    if (e.id && !request) return clearSourceOpen();
+    const node = H.nodes.get(e.sid) || H.stored.get(e.sid) || (H.hist.get(e.sid)?.loaded ? H.hist.get(e.sid) : null);
+    if (node && e.profile && node.profile !== e.profile) return clearSourceOpen();
+    const relayOnly = mode !== "telegram" && H.status.status === "off" && !e.id;
+    if (relayOnly) {
+      const session = S.relay.sessions.get(e.sid);
+      if (session && session.profile !== e.profile) return clearSourceOpen();
+      if (!AG || !session) return;
+    }
+    if (mode === "telegram") {
+      if (S.tg.status !== "open" || ![...S.tg.bots, ...S.tg.topics].some(x => x.key === e.key)) return;
+    } else if (!relayOnly && (!bridgeOpen() || !node)) return;
+    if (request && (!bridgeOpen() || !node)) return;
+    clearSourceOpen(); // consume before navigation marks/render callbacks can retry
+    DR.flush();
+    AG?.close();
+    setChatChannel(mode);
+    SV.close();
+    UD.close(false);
+    allSessionsView()?.close();
+    SH.setMain("chat");
+    if (mode === "telegram") select(e.key);
+    else if (relayOnly) AG.open(e.sid);
+    else if (H.nodes.has(e.sid)) hermesSelect(e.sid);
+    else hermesOpen(e.sid, e.profile);
+    if (request) {
+      // Telegram request cards live in the direct session review, not in Telegram's transcript.
+      if (mode !== "telegram" || openChatFor(request)) focusRequest(request);
+    }
+  }
+  function focusRequest(request) {
+    const host = S.settings?.activeHost, mode = chatMode(), sid = H.sel;
+    document.activeElement?.blur(); // release the inline editor's render hold; H.answers retains its draft
+    requestAnimationFrame(() => {
+      if (hostSwitchPending || !bridgeOpen() || host !== S.settings?.activeHost || (pageHost && host !== pageHost) ||
+        mode !== chatMode() || sid !== H.sel || !H.requests.some(r => r.id === request.id && r.sid === request.sid && r.profile === request.profile)) return;
+      renderMsgs();
+      const card = [...document.querySelectorAll(".hreq")].find(el => el.dataset.requestId === request.id && el.dataset.requestProfile === request.profile);
+      card?.scrollIntoView({ block: "center" });
+      card?.focus({ preventScroll: true });
+    });
+  }
+
   if (desk) {
     // the open chat counts as read only while the window is in front
     deck.onTelegram((m) => {
@@ -2093,13 +2273,28 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     });
     desk.onEvent((e) => {
       if (!e) return;
-      if (e.t === "select" && /^(u|t)\d+$/.test(String(e.key))) select(e.key);
-      else if (e.t === "select" && String(e.key).startsWith("hs:")) hermesSelect(String(e.key).slice(3));
+      if (e.t === "source-open") openSource(e);
+      else if (e.t === "select" && /^(u|t)\d+$/.test(String(e.key))) {
+        if (!chatModes().includes("telegram")) return;
+        setChatChannel("telegram");
+        SV.close();
+        UD.close(false);
+        allSessionsView()?.close();
+        SH.setMain("chat");
+        select(e.key);
+      }
+      else if (e.t === "select" && String(e.key).startsWith("hs:")) openChatFor({ sid: String(e.key).slice(3), profile: e.profile });
+      else if (e.t === "request-open") {
+        const request = H.requests.find(r => r.id === e.id && r.profile === e.profile && r.sid === e.sid);
+        if (request && openChatFor(request)) focusRequest(request);
+        else if (request) setRailView("needs");
+      }
       else if (e.t === "chime" && typeof window.deckChime === "function") window.deckChime(String(e.kind || "reply"), S.settings); // that event's sound (Settings > Desktop > Notifications)
       else if (e.t === "settings-open") openSettings(typeof e.section === "string" ? e.section : undefined); // an update toast
       else if (e.t === "settings" && e.settings) {
         S.settings = e.settings;
         refreshSettingsPane();
+        resumeSourceOpen();
       }
     });
   }
@@ -3267,6 +3462,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     if (scrollToEnd) els.msgs.scrollTop = 0; // column-reverse: 0 is the newest message
     scrollToEnd = false;
     requestAnimationFrame(maybeLoadOlder); // a short list may still be near its top
+    return true; // the caller can now publish this painted conversation
   }
 
   function renderHermesStrip() {
@@ -3571,7 +3767,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     const head = h("div", { class: "hreq-head" }, h("span", { class: "hreq-kind" }, r.kind === "approval" ? i18nNode("A0276") : i18nNode("A0277")), h("span", { class: "hreq-who" }, who));
     const err = a.error ? h("p", { class: "form-error", role: "alert" }, a.error) : null;
     if (r.kind === "approval") {
-      return h("section", { class: "hreq", dataset: { hold: "1" }, "aria-label": i18nText("U0603") , "data-i18n-aria-label": "U0603"},
+      return h("section", { class: "hreq", tabindex: "-1", dataset: { hold: "1", requestId: r.id, requestProfile: r.profile }, "aria-label": i18nText("U0603") , "data-i18n-aria-label": "U0603"},
         head,
         r.description ? h("p", { class: "hreq-desc" }, r.description) : null,
         r.command ? h("pre", { class: "hreq-cmd" }, r.command) : null,
@@ -3599,7 +3795,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
           },
         }));
     });
-    return h("section", { class: "hreq", dataset: { hold: "1" }, "aria-label": i18nText("U0606") , "data-i18n-aria-label": "U0606"},
+    return h("section", { class: "hreq", tabindex: "-1", dataset: { hold: "1", requestId: r.id, requestProfile: r.profile }, "aria-label": i18nText("U0606") , "data-i18n-aria-label": "U0606"},
       head,
       blocks,
       h("div", { class: "form-actions" }, h("button", { class: "btn primary", type: "button", disabled, dataset: { fk: `hreqsend:${r.id}` }, onclick: () => answerQuestion(r) }, a.busy ? i18nNode("U0464") : i18nNode("U0607"))),
@@ -4268,6 +4464,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   deck.bridge.onEvent((m) => {
     switch (m.t) {
       case "status":
+        if (m.status !== "open") sourceRequestsReady = false;
         applyBridgeStatus(m);
         break;
       case "snapshot":
@@ -4278,6 +4475,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
         break;
       case "requests":
         H.requests = Array.isArray(m.list) ? m.list : [];
+        sourceRequestsReady = true;
         for (const id of H.answers.keys()) if (!H.requests.some((r) => r.id === id)) H.answers.delete(id);
         mark("rail", "msgs", "strip", true);
         break;
@@ -4287,6 +4485,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       default:
         break;
     }
+    resumeSourceOpen();
   });
   document.addEventListener("visibilitychange", () => hermesPoll());
   deck.bridge
@@ -4296,7 +4495,9 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       applyBridgeSessions(st.sessions);
       if (st.snapshot) applyBridgeSnapshot(st.snapshot);
       H.requests = Array.isArray(st.requests) ? st.requests : [];
+      sourceRequestsReady = st.status?.status === "open";
       applyBridgeStatus(st.status || { status: "off" });
+      resumeSourceOpen();
     })
     .catch(() => {});
 
@@ -4398,6 +4599,9 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
 
   // ---------------------------------------------------------------- boot
   registerShellTabs();
+  SH.on("main", publishDesktopView);
+  document.addEventListener("visibilitychange", publishDesktopView);
+  new MutationObserver(publishDesktopView).observe(document.getElementById("detail"), { attributes: true, attributeFilter: ["hidden"] });
   // what later modules may use without editing this file (contracts.md, Lane A)
   SH.provide("h", h);
   SH.provide("workspace", workspace);
@@ -4413,6 +4617,10 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   (async () => {
     const st = await deck.ready();
     const ui = st.ui || {};
+    if (deck.hosts?.requests) deck.hosts.requests().then(hosts => {
+      remoteHosts = Array.isArray(hosts) ? hosts : [];
+      SV.refresh();
+    }).catch(() => { /* no observed watcher state: keep the saved/not-checked label */ });
     // --tab=<id> (screenshot runs) opens that tab in the right slot; the slot itself remembers its last state. Main-area
     // views (Settings, Usage) open at the end, once settings say first run is done.
     const wantTab = ui.tab && ui.tab.split(":")[0];
@@ -4454,6 +4662,8 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     else if (oldView === "usage" && !wantTab) UD.open();
     // --tab=settings[:<section>] (screenshot runs) opens the Settings view, at a section if one is named
     if (typeof ui.tab === "string" && ui.tab.split(":")[0] === "settings") openSettings(ui.tab.split(":")[1] || undefined);
+    sourceOpenReady = true;
+    restoreSourceOpen();
     deck.rendered();
   })();
 })();

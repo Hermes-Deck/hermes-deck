@@ -206,7 +206,7 @@
     return e.target?.tagName === "BUTTON" && !["next", "previous"].includes(intent) ? null : intent;
   }
   function createInbox(ctx) {
-    const { h, t, store, shell, doc } = ctx;
+    const { h, t, store, shell, doc, mail } = ctx;
     const el = h("div", { class: "te-inbox", tabindex: "0", "aria-label": t("triage.inbox") });
     const forms = new Map(), rows = new Map(), leaving = new Map(); // leaving: key -> {row, index, node} while it animates out
     let selected = null, toast = null, toastTimer, notice = null, shown = [];
@@ -237,7 +237,7 @@
     }
     function redraw() {
       // Do not detach a question field while the user types. Action and blur redraws retain form values.
-      if (el.contains(doc.activeElement) && doc.activeElement?.matches("input[data-hold]")) return;
+      if (el.contains(doc.activeElement) && doc.activeElement?.dataset.hold) return;
       const focus = el.contains(doc.activeElement) ? doc.activeElement?.dataset.fk : null;
       const items = store.items(), all = exits(items);
       if (!items.some(x => x.key === selected)) selected = items[0]?.key || null;
@@ -245,7 +245,8 @@
       rows.clear(); shown = items;
       const kids = [h("header", { class: "te-inbox-head" }, h("h1", null, t("triage.inbox")), h("span", null, t("triage.openCount", { n: items.filter(x => x.request).length }))),
         h("p", { class: "te-inbox-sub" }, t("triage.inboxSub"))];
-      if (!items.length) kids.push(h("div", { class: "te-all-clear", role: "status" }, h("b", null, t("triage.allClear")), h("p", null, t("triage.nothingWaiting"))));
+      if (mail) kids.push(mail.root);
+      if (!items.length && !mail) kids.push(h("div", { class: "te-all-clear", role: "status" }, h("b", null, t("triage.allClear")), h("p", null, t("triage.nothingWaiting"))));
       for (const [name, types] of [["needs", ["approval", "question"]], ["failed", ["failed"]], ["done", ["done"]]]) {
         const group = all.filter(x => types.includes(x.type));
         if (!group.length) continue;
@@ -276,7 +277,7 @@
       if (focus) [...el.querySelectorAll("[data-fk]")].find(x => x.dataset.fk === focus && !ghosts.some(g => g.contains(x)))?.focus({ preventScroll: true });
     }
     function keydown(e) {
-      if (shell.main() !== "inbox" || doc.querySelector('.tf-panel.show') || doc.activeElement?.closest("#right, .sv, .sb")) return;
+      if (shell.main() !== "inbox" || doc.querySelector('.tf-panel.show') || doc.activeElement?.closest("#right, .sv, .sb, .te-mail")) return;
       const intent = keyIntent(e), items = store.items();
       if (!intent || !items.length) return;
       const index = Math.max(0, items.findIndex(x => x.key === selected)), row = items[index];
@@ -289,7 +290,7 @@
       else return;
       e.preventDefault();
     }
-    el.addEventListener("focusout", e => { if (e.target.matches("input[data-hold]")) setTimeout(redraw, 0); });
+    el.addEventListener("focusout", e => { if (e.target.dataset.hold) setTimeout(redraw, 0); });
     store.subscribe(redraw);
     redraw();
     return { root: el, redraw, keydown };
@@ -325,11 +326,14 @@
       if (railRow) { railRow.click(); shell.setMain("chat"); return true; }
       return false;
     };
-    const view = createInbox({ h, t, store, shell, doc, openChat: api.openChat });
+    const mail = api.mail = root.DeckMailDrafts?.create({ h, t, deck, doc });
+    const view = createInbox({ h, t, store, shell, doc, mail, openChat: api.openChat });
+    root.addEventListener("beforeunload", e => { if (mail?.hasUnsaved()) { e.preventDefault(); e.returnValue = ""; } });
     shell.mount("inbox", view.root);
-    shell.on("main", () => { view.redraw(); if (shell.main() === "inbox") view.root.focus({ preventScroll: true }); });
+    shell.on("main", () => { view.redraw(); if (shell.main() === "inbox") { view.root.focus({ preventScroll: true }); if (!mail?.hasUnsaved()) mail?.load(); } });
+    if (shell.main() === "inbox") mail?.load();
     doc.addEventListener("keydown", view.keydown);
-    doc.addEventListener("deck-language", view.redraw);
+    doc.addEventListener("deck-language", () => { view.redraw(); mail?.redraw(); });
   }
   const api = { LIMIT, cap, collect, sessions, sessionKey, requestKey, createStore, requestBody, questionAnswers, moveIndex, keyIntent, createInbox, connect, boot };
   if (typeof module === "object" && module.exports) module.exports = api;

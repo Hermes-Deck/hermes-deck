@@ -135,6 +135,7 @@ contextBridge.exposeInMainWorld("deck", {
   // ({t: "select", key}), sounds ({t: "chime", kind: reply|done|approval|question|subagent}) and tray-made
   // settings changes come back
   desktop: {
+    view: (value) => ipcRenderer.invoke("desktop:view", value),
     petState: (summary) => ipcRenderer.send("desktop:pet-state", summary),
     testNotification: () => ipcRenderer.invoke("desktop:test"),
     onEvent: listen("desktop"),
@@ -173,6 +174,9 @@ contextBridge.exposeInMainWorld("deck", {
     answerApproval: (id, choice, o) => ipcRenderer.invoke("bridge:answer-approval", id, choice, o),
     answerQuestion: (id, answers, o) => ipcRenderer.invoke("bridge:answer-question", id, answers, o),
     // Botlar: profile roster + avatars, the read-only Bot Chat lookup, and its create (first message only)
+    draftsList: (profile, offset) => ipcRenderer.invoke("bridge:drafts-list", profile, offset),
+    draftGet: (profile, id) => ipcRenderer.invoke("bridge:draft-get", profile, id),
+    draftAct: (review, action, value) => ipcRenderer.invoke("bridge:draft-act", review, action, value),
     profiles: () => ipcRenderer.invoke("bridge:profiles"),
     commands: (profile) => ipcRenderer.invoke("bridge:commands", profile),
     avatar: (name) => ipcRenderer.invoke("bridge:avatar", name),

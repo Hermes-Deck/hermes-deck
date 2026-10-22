@@ -53,6 +53,20 @@ test("pet size: 1 by default, the four presets save, other numbers are refused o
   assert.equal(settings({ desktop: { petSize: 3 } }).s.publicView().desktop.petSize, 1);
 });
 
+test("notification mode defaults to auto, validates saves and preserves pet visibility", () => {
+  const { s, saved } = settings({ desktop: { pet: false } });
+  assert.equal(s.publicView().desktop.notificationMode, "auto");
+  for (const mode of ["pet", "banner", "auto"]) {
+    s.update({ desktop: { notificationMode: mode } });
+    assert.equal(saved().desktop.notificationMode, mode);
+    assert.equal(s.publicView().desktop.notificationMode, mode);
+    assert.equal(saved().desktop.pet, false);
+  }
+  assert.throws(() => s.update({ desktop: { notificationMode: "both", pet: true } }));
+  assert.equal(s.publicView().desktop.pet, false, "invalid mode rejected before mutation");
+  assert.equal(settings({ desktop: { notificationMode: "both" } }).s.publicView().desktop.notificationMode, "auto");
+});
+
 /** A rig skin's spec (pets/skins/<id>.js calls PetRig or PetCatRig), its validation errors and image names; null for
  * a sprite skin. The skin files are browser scripts: they run here against a stub window. */
 function rigSpec(root, id, src) {

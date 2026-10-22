@@ -27,7 +27,7 @@ and a main area that shows the chat or the [inbox](#inbox-and-fleet). The right 
   footer shows the connections, the fleet summary and the busiest quota window.
   Session filter counts follow the selected profile, source chip and saved sidebar source choices. Agent live
   badges remain profile-wide; **All sessions** still opens the complete stored-session browser.
-- **Top bar.** Breadcrumb (agent / title, with the parent for a sub-agent) and a channel chip (**Hermes**,
+- **Top bar.** A native **Host** selector with separate **Relay** and **Sessions** status, then the breadcrumb (agent / title, with the parent for a sub-agent) and a channel chip (**Hermes**,
   **Telegram**, **<Source> · read-only**, **Bot Chat**, **Sub-agent**), the fleet capsule, search, and the Work pane
   and Settings buttons.
 - **Work pane.** **Session** (the chat's facts and figures with **Steer**, **Stop** and **Model**, then what runs in
@@ -79,6 +79,23 @@ later in **Settings → General → Chat modes**. **Ctrl+Shift+H** switches betw
 | **Bots** | One bot chat for each Hermes profile. |
 
 Sessions and Bots alone never start a Telegram client.
+
+### Hosts
+
+Switch saved hosts from the top bar's **Host** selector, even while Settings is open or the sidebar is hidden.
+Keyboard navigation uses the operating system's select control. Switching flushes the current composer draft before
+reloading the page for that host. Drafts and desktop pairing stay with their host; device hosting permissions reset.
+
+Manage hosts in **Settings → Relay → Hermes hosts**. **Add host** has separate **Relay** and **Sessions** sections:
+Relay is optional for device access, activity and usage. Sessions uses **Local (this computer)** on macOS/Linux,
+**WSL (this computer)** on Windows, or **SSH (another machine)**. Enter the Python and `stream.py` paths for a direct
+connection. SSH target is only needed for SSH; WSL distribution is only shown for WSL. Tokens use password fields
+and are never returned to the page. After adding a host, use **Switch** to select it.
+
+A relay-only host is valid. Its Sessions state is **Not configured**; **Configure Sessions** opens the direct
+connection settings for the selected host. **Connected** means the client reported an open connection, not merely
+that an address was saved. Inactive hosts show observed direct-watcher status, but their unmonitored relay state
+stays **Saved · not checked**. Use **Settings → Hermes → Test connection** to probe the direct form.
 
 ### Sessions
 
@@ -258,25 +275,40 @@ Claude subscription are shown as **API list-price equivalent**, not as an invoic
 
 ## Notifications and badge
 
-**What it is.** OS notifications while the Deck window is in the background: new chat messages (one toast per chat,
+**What it is.** Notifications for conversations you are not viewing, including another host or chat mode while
+Deck is foreground: new chat messages (one notification per chat,
 grouped), finished top-level agent sessions, approvals and questions that wait for you (these stay until dismissed),
-and update notices. When **Sound** is on, each event plays its own sound: **New reply**, **Task finished**, **Approval
-needed**, **Agent asks a question** and **Sub-agent finished** (a sub-agent plays only its sound, no toast, and
-sub-agents that finish together play it once). The taskbar (Windows) or dock icon shows how many chats wait for you.
+and update notices. When **Sound** is on, Pet delivery uses the selected sound for **New reply**, **Task finished**,
+**Approval needed** and **Agent asks a question**. **Sub-agent finished** plays only its selected sound on the Pet
+route, with no toast; sub-agents that finish together play it once. On the Native banner route, sub-agent completion
+is silent. Native banners use the operating system's notification sound, subject to its notification and Focus
+settings, not a renderer chime. The taskbar (Windows) or dock icon shows how many chats wait for you.
 
-**Settings.** **Settings → Desktop**: **Notifications** (with **Test notification**), **Sound**, **Badge on the
-taskbar icon**. On Windows, notifications need the Start menu shortcut that the installer adds (source runs: `npm run
+A remembered selection behind Settings, Usage, All sessions, the inbox, Browser or Screen does not suppress a
+notification. A new selection is not treated as viewed until its transcript is rendered.
+
+**Settings.** **Settings → Desktop**: **Notifications** (with **Test notification**), **Notification display**,
+**Sound**, **Badge on the taskbar icon**. **Notification display** offers **Auto**, **Pet** and **Native banner**.
+Auto normally uses the pet; on macOS it uses a native banner when another app is fullscreen or fullscreen state is
+unknown. This choice does not change the pet's visibility setting. macOS controls notification delivery, layout
+and Focus; Deck does not request Accessibility permission automatically. On Windows, notifications need the Start menu shortcut that the installer adds (source runs: `npm run
 shortcuts` in `app/`).
 
-**Notification sounds** (also under **Settings → Desktop**): a **Volume** slider and, for each event, **None**, one of
-the built-in sounds (Bell, Rise, Chord, Pop, Marimba, Glass, Knock, Tick, Alert; synthesized by the app, no audio files)
-or **Choose sound file…** for your own MP3, WAV, OGG, Opus, M4A, AAC, FLAC or WebM file of up to 5 MB. A new choice
+**Notification sounds** (also under **Settings → Desktop**) apply to Pet delivery, not native banners. The **Volume**
+slider, per-event **None**, built-in sounds and custom files do not change the operating system's banner sound.
+Choose one of the built-in sounds (Bell, Rise, Chord, Pop, Marimba, Glass, Knock, Tick, Alert; synthesized by the app,
+no audio files) or **Choose sound file…** for your own MP3, WAV, OGG, Opus, M4A, AAC, FLAC or WebM file of up to 5 MB. A new choice
 plays once; the **▶** button plays it again. Your file is copied into the Deck's profile (`sounds/` in the app's data
 folder), so the original can be moved or deleted; only its first 10 seconds play. A file no event uses any more is
 removed.
 
-**Needs.** Telegram messages need Telegram mode; finished sessions and sub-agents need the relay; approvals and
-questions need the direct connection.
+**Needs.** Telegram messages need Telegram mode. Completion events can arrive through the active relay or a direct
+connection; inactive-host completion monitoring requires a configured direct connection. Approvals and questions
+need the direct connection. A relay-only inactive host has no direct background monitoring.
+
+Native approval buttons are limited to verified, short requests with complete execution context. They offer only
+**Approve once** and **Reject**, bound to the original request and host; expired or disconnected requests cannot be
+answered. Other requests offer **Review in Hermes Deck**. An answer is never replayed after reconnecting.
 
 ## Status pet, themes, wallpapers and languages
 
@@ -353,6 +385,46 @@ the card on every other Deck connected to the same Hermes. Sessions, agents, cos
 relay snapshot. Nothing is inferred from tool arguments; a relay-only session has no inline approval.
 
 **Needs.** Direct connection for approvals and questions; relay for the fleet, costs, quotas and finished sessions.
+
+### Email draft review (Draft Cards)
+
+Needs you includes a separate email section for the active direct host and selected Hermes profile. It lists
+non-discarded drafts in pages of 20 and opens full sender text, To/Cc/Bcc, subject and body. Native fields save
+through Draft Cards’ existing edit API; the returned normalized version is shown. The previous actual version
+can be compared, including routing fields. Unsaved edits retain their edit-start version across refresh.
+Switching hosts/profiles or leaving the window is blocked while edits or a revision request are pending.
+
+**Request agent revision** submits once to the draft’s originating session. This is not approval to send or proof
+that a revised draft exists. Refresh to read the persisted result. Connection loss invalidates the review; no
+mutation is automatically replayed. Native approval keyboard shortcuts do not apply to email cards.
+
+**Account-bound sending (requires matching source extensions).** Verify Gmail sender reads the authenticated
+account for this profile. From must exactly match it; choose that account and save any change as a new version.
+Review this version for sending freezes all saved fields. A separate Confirm and send once action binds the
+host/profile, actual version (not card number), account, From, To/Cc/Bcc, subject and body. Credentials and sender
+tickets stay outside the renderer. The existing Gmail API consumes a persistent producer claim atomically with
+edit/version checks before one provider call. The sender verifies the sent message and persists its receipt.
+Edits invalidate prepared tickets; duplicate confirmation, stale versions and reconnects cannot replay them.
+An uncertain response locks the draft against sending or editing; inspect Gmail rather than retrying. A known
+provider rejection permits a fresh explicit review, never an automatic retry. Old agent-reported Sent is not
+a verified receipt, and email agent tools cannot authorize or overwrite sender-owned outcomes.
+
+**Limits.** Old producers/senders remain review-only; a protocol-capable producer alone does not enable a sender.
+Only the authenticated primary Gmail identity is supported, not aliases, attachments or threading. Drafts are
+not included in the fleet’s native approval count. Discovery is manual on open or Refresh, not a live cross-host
+mailbox; offset pages can move when new records arrive. Only the last two retained versions are compared. The
+producer keeps at most 60 versions; attempted-send records are retained so receipt/unknown tombstones survive.
+
+**Needs.** Updated Deck plugin on the direct host, Hermes with profile-isolated plugin-host APIs, and an explicitly
+installed/enabled Draft Cards backend in the selected profile. Missing/disabled support fails closed; Deck does
+not install plugins or grant consent. Tested producer: `arsiktech/hermes-draft-cards` at
+`6e6ca659ece59b0ce1c28b3b188393491ee5a415` (MIT); unmodified synthetic-test source is under
+`hermes-plugin/hermes-deck/testdata/draft-cards`. Account-bound sends require the isolated Draft Cards candidate
+extension and the matching `guberm/hermes-gmail-desktop-plugin` candidate based on
+`c8cd0c2d140561a1dffb7432c6d02b63b2374888`, both exposing send protocol 1. Those upstream candidates are not
+installed or vendored by Deck; deployment needs separate approval. No new mailbox client or arbitrary command
+transport is added. Optional native synthetic integration runs with `DECK_TEST_MAIL_FIXTURE` pointing to the
+candidate evidence bundle's `native_fixture.py`; ordinary CI retains old-producer review-only coverage.
 
 ## Agent browsers (Browser tab)
 

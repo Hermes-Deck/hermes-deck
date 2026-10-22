@@ -175,6 +175,86 @@ function mount(over = {}) {
   return { sv, saves, builds, store, ctx, root: () => doc.body.querySelector(".sv"), setSettings: (s) => { settings = s; } };
 }
 
+test("host form submits separate Relay and direct configs for Local, SSH, WSL and relay-only", async () => {
+  for (const [windows, mode] of [[false, "local"], [false, "ssh"], [true, "wsl"], [false, "off"]]) {
+    let spec;
+    const { sv, root } = mount({ windows: () => windows, deck: { hosts: { add: async s => { spec = s; } } },
+      saveCall: async call => { await call(); return true; } });
+    sv.open("relay");
+    const get = id => root().querySelector(`#s-host-${id}`);
+    assert.equal(get("token").type, "password");
+    assert.deepEqual(get("mode").children.map(n => n.getAttribute("value")), ["off", "ssh", windows ? "wsl" : "local"]);
+    get("name").value = "Fixture host";
+    get("url").value = "ws://192.0.2.1:9330";
+    get("token").value = "fixture-token";
+    get("mode").value = mode; get("mode").dispatch("change");
+    assert.equal(get("target").closest(".sv-row").hidden, mode !== "ssh");
+    assert.equal(get("dist").closest(".sv-row").hidden, mode !== "wsl");
+    get("target").value = "fixture-alias";
+    get("python").value = "python3";
+    get("dist").value = "FixtureLinux";
+    root().querySelector('[data-fk="hosts:add"]').dispatch("click");
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(spec, { name: "Fixture host", relay: { url: "ws://192.0.2.1:9330", token: "fixture-token" },
+      bridge: { mode, target: mode === "ssh" ? "fixture-alias" : "", python: "python3", stream: "~/.hermes/hermes-deck/stream.py", distribution: mode === "wsl" ? "FixtureLinux" : "" } });
+    assert.equal(get("token").value, "", "successful add clears the secret field");
+    sv.close();
+  }
+});
+
+test("host list separates saved and observed state, switches through the shared draft-safe path", () => {
+  const picked = [];
+  const hosts = [
+    { id: "h1", name: "Relay only", relay: { url: "ws://192.0.2.1", hasToken: true }, bridge: { mode: "off" } },
+    { id: "h2", name: "Remote", relay: { url: "ws://192.0.2.2", hasToken: true }, bridge: { mode: "ssh" } },
+  ];
+  const { sv, root } = mount({ settings: () => ({ hosts, activeHost: "h1", relay: hosts[0].relay }),
+    deck: { hosts: {} }, selectHost: id => picked.push(id),
+    hostStates: () => ({ relay: "open", sessions: "off", remote: [{ id: "h2", status: "open" }] }) });
+  sv.open("relay");
+  const rows = root().querySelectorAll(".sv-host-label");
+  assert.match(rows[0].text, /Relay: Connected · Sessions: Not configured/);
+  assert.match(rows[1].text, /Relay: Saved · not checked · Sessions: Connected/);
+  root().querySelector('[data-fk="hosts:use:h2"]').dispatch("click");
+  assert.deepEqual(picked, ["h2"]);
+  const configure = root().querySelectorAll("button").find(b => b.text === "Configure Sessions");
+  configure.dispatch("click");
+  assert.equal(sv.section(), "hermes");
+});
+
+test("real direct failure status stays disconnected in active and inactive host rows", () => {
+  const { BridgeClient } = require("../main/bridge");
+  const client = new BridgeClient({ mode: "off" }, { retry: false });
+  client.stopped = false;
+  client._afterFailure({}, { code: "fixture", text: "Disconnected fixture" });
+  assert.equal(client.status.status, "offline");
+  assert.equal(SVM.connectionState(true, client.status.status), "offline");
+  const hosts = [{ id: "h1", name: "Active", bridge: { mode: "local" } }, { id: "h2", name: "Remote", bridge: { mode: "ssh" } }];
+  const { sv, root } = mount({ settings: () => ({ hosts, activeHost: "h1" }), deck: { hosts: {} },
+    hostStates: () => ({ sessions: client.status.status, remote: [{ id: "h2", ...client.status }] }) });
+  sv.open("relay");
+  for (const row of root().querySelectorAll(".sv-host-label")) assert.match(row.text, /Sessions: Disconnected/);
+  for (const [status, expected] of [["off", "saved"], ["setup", "offline"], ["connecting", "connecting"], ["open", "open"]]) {
+    assert.equal(SVM.connectionState(true, status), expected);
+  }
+});
+
+test("notification surface is labelled in both languages, saves one preference, and disables with notifications", () => {
+  for (const language of ["en", "tr"]) for (const notifications of [true, false]) {
+    i18n.setLanguage(language);
+    const { sv, root, saves } = mount({ settings: () => ({ desktop: { notifications, pet: false, notificationMode: "banner" } }) });
+    window.PetCatalog = { SKINS: [] };
+    sv.open("desktop");
+    const select = root().querySelector("#s-desk-notificationMode");
+    assert.ok(root().querySelector('[for="s-desk-notificationMode"]'));
+    assert.equal(select.disabled, !notifications);
+    assert.deepEqual(select.children.map(n => n.getAttribute("value")), ["auto", "pet", "banner"]);
+    select.value = "pet"; select.dispatch("change");
+    assert.deepEqual(saves.at(-1), { desktop: { notificationMode: "pet" } });
+    sv.close();
+  }
+});
+
 test("pet Always on top is a labelled checkbox and saves only its boolean in both languages", async () => {
   for (const language of ["en", "tr"]) {
     i18n.setLanguage(language);

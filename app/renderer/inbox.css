@@ -42,6 +42,18 @@
 .te-inbox-keys { margin-top: 28px; font: 11px/1.8 var(--mono); color: var(--t3); white-space: pre-wrap; }
 .te-undo { position: sticky; bottom: 12px; display: flex; gap: 12px; align-items: center; width: fit-content; max-width: 100%; margin: 20px auto 0; padding: 8px 12px; border: 1px solid var(--line2); border-radius: 10px; background: var(--l3); font-size: 12px; }
 .te-undo .te-btn { color: var(--brass); flex: none; }
+.te-mail { margin-block: 24px; }
+.te-mail > .te-actions { align-items: end; }
+.te-mail .te-row-body p { color: var(--t2); }
+.te-mail-field { display: block; margin-block: 12px; color: var(--t2); font: 14px/1.5 var(--sans); }
+.te-mail .te-answer { display: block; margin-top: 4px; font: 14px/1.5 var(--sans); }
+.te-mail textarea { resize: vertical; min-height: 64px; max-height: 60vh; }
+.te-mail .te-mail-source { color: var(--t2); overflow-wrap: anywhere; }
+.te-mail details { margin-block: 16px; }
+.te-mail summary { cursor: pointer; font-size: 14px; }
+.te-mail summary:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+.te-mail .te-error { color: var(--red); }
+.te-mail-confirm { margin-top: 24px; padding: 12px; border: 1px solid var(--brass); border-radius: 8px; overflow-wrap: anywhere; }
 @keyframes te-reveal { from { opacity: 0; transform: translateY(-4px); } }
 @media (max-width: 768px) { #inbox .te-inbox { padding: 20px 16px 32px; } .te-row-head { grid-template-columns: 24px minmax(0,1fr) auto; gap: 8px; } .te-row-agent { display: none; } .te-row-body { padding-left: 12px; } }
 @media (prefers-reduced-motion: reduce) { .te-row { transition: none; } .te-row-body { animation: none; } }
