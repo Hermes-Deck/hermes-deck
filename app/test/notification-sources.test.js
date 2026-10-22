@@ -209,7 +209,8 @@ test("normalized Telegram DMs use only the owning host's relay agent mapping", (
   for (const sameHost of [true, false]) {
     const r = rig(); r.view({ visible: false });
     r.desktop.observe("tg", { t: "dialogs", bots: [{ key: "u101", username: "fixture_bot" }], topics: [] }, { hostId: "host-a" });
-    r.desktop.observe("relay", { t: "snapshot", agents: { Fixture: { bot: "fixture_bot" } }, sessions: [
+    // every host's relay keeps its own agent mapping (split view: several relays at once); host-b's never serves host-a
+    r.desktop.observe("relay", { t: "snapshot", ...(sameHost ? { agents: { Fixture: { bot: "fixture_bot" } } } : {}), sessions: [
       { sid: "s1", profile: "default", platform: "telegram", agent: "Fixture", state: "running" },
     ] }, { hostId: "host-a" });
     if (!sameHost) r.desktop.observe("relay", { t: "agents", agents: { Fixture: { bot: "fixture_bot" } } }, { hostId: "host-b" });
