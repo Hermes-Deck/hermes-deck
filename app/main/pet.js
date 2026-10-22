@@ -17,6 +17,9 @@ const URL = "deck://app/pet.html";
 const PRELOAD = path.join(__dirname, "pet-preload.js");
 const SKINS = require("../renderer/pets/catalog").IDS;
 const KEY_RE = /^(?:(u|t)\d+|hs:[\w.:-]{1,200})$/; // the chat a bubble opens (same as desktop.js)
+// Windows can drop an always-on-top window back among ordinary windows without telling Electron (seen: the pet
+// behind Discord while isAlwaysOnTop() still said true). Re-applying the level restores it; moveTop() does not.
+const KEEP_TOP_MS = 5000;
 
 /** The fleet summary in words, as tagged parts: the pet's bar colours them, the tray tooltip joins them. */
 function statusParts(s) {
@@ -195,12 +198,21 @@ class Pet {
     for (const ev of ["show", "restore"]) win.on(ev, seen(true));
     if (!shot) {
       win.setAlwaysOnTop(this._options().alwaysOnTop, "screen-saver");
+      if (process.platform === "win32") this._keepTop(win);
       if (process.platform === "darwin") win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
       win.setIgnoreMouseEvents(true, { forward: true }); // transparent parts pass clicks through
       win.once("ready-to-show", () => win.showInactive());
       this._hookScreen();
     }
     win.loadURL(URL);
+  }
+
+  /** Windows: while always-on-top is on, re-applies it every KEEP_TOP_MS until the window closes. */
+  _keepTop(win) {
+    const timer = setInterval(() => {
+      if (!win.isDestroyed() && this._options().alwaysOnTop) win.setAlwaysOnTop(true, "screen-saver");
+    }, KEEP_TOP_MS);
+    win.on("closed", () => clearInterval(timer));
   }
 
   /** Default spot: the bottom-right corner of the primary display's work area. */
