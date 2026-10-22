@@ -188,6 +188,9 @@ test("select: the calling pane takes the host, the panes swap when the other pan
   assert.deepEqual(h.views.shownHosts(), ["hb", "ha"]);
   assert.equal(h.pageOf("hc").view.visible, false);
   assert.equal(h.views.hostIds().length, 3, "every opened host keeps its page");
+  const hidden = h.call("hc", "hosts:layout"); // the page that asked to switch away and is now hidden
+  assert.equal(hidden.hostId, "hc", "layout.hostId is always the calling page's own host, hidden or not");
+  assert.equal(hidden.pane, null);
   for (const id of ["hb", "ha", "hc"]) {
     const last = h.sentTo(id, "hosts").filter((m) => m.t === "layout").at(-1);
     assert.equal(last.hostId, id, "onLayout tells each page its OWN host, hidden pages included");

@@ -2165,14 +2165,11 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   }
   function clearSourceOpen() {
     pendingSourceOpen = null;
-    try { sessionStorage.removeItem("deck.source-open"); } catch { /* no reload intent available */ }
   }
+  // Boot: a source-open main delivered before this page was ready resumes now. Main sends a notification's
+  // source-open straight to the target host's own page after showing it (pages stay warm; nothing reloads), so no
+  // intent is carried across pages or reloads.
   function restoreSourceOpen() {
-    if (!pendingSourceOpen) {
-      try { pendingSourceOpen = JSON.parse(sessionStorage.getItem("deck.source-open")); } catch { /* invalid/blocked storage */ }
-      // Only the requested destination may resume a reload; never bounce a stale page to another host.
-      if (pendingSourceOpen?.hostId !== pageHost) clearSourceOpen();
-    }
     resumeSourceOpen();
   }
   function openSource(e) {
@@ -2187,10 +2184,10 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     if (!validSourceOpen(e) || !Number.isFinite(e.expiresAt) || e.expiresAt <= Date.now() ||
       pageHost !== S.settings?.activeHost || !S.settings?.hosts?.some(h => h.id === e.hostId)) return clearSourceOpen();
     if (e.hostId !== pageHost) {
-      // Session storage is window-scoped and survives the existing guarded host reload.
-      try { sessionStorage.setItem("deck.source-open", JSON.stringify(e)); } catch { return clearSourceOpen(); }
+      // Not this page's host (only an older main sends that): show the host through the draft-guarded switch and
+      // leave the opening to that host's own page, which main tells directly. This page keeps no intent.
+      clearSourceOpen();
       await selectHost(e.hostId);
-      if (pendingSourceOpen === e && !hostSwitchPending) clearSourceOpen(); // refused selection
       return;
     }
     const mode = e.channel || "sessions"; // unknown source may only use an exact known session

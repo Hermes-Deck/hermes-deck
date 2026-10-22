@@ -193,9 +193,10 @@ test("relay-only source navigation consumes exact identity on immediate and late
     w.relay(snapshot); assert.equal(opened.length, 1);
   }
 });
-test("relay-only source navigation survives the guarded cross-host reload", async () => {
+test("relay-only source navigation on the target host's page waits for the relay's sessions", async () => {
   const a = sourceWorld(); a.emit(sourceTarget({ hostId: "h2" })); await tick();
-  const b = sourceWorld({ host: "h2", storage: a.storage, ready: false }), opened = [];
+  const b = sourceWorld({ host: "h2", ready: false }), opened = [];
+  b.emit(sourceTarget({ hostId: "h2" })); // main's direct delivery to the target page
   b.ctx.AG = { close() {}, onRelay() {}, open: sid => opened.push(sid) };
   b.ctx.H.status.status = "off";
   b.boot(); await tick(); assert.deepEqual(opened, []);
@@ -217,13 +218,16 @@ test("relay fallback preserves host, profile, mode, connection and request guard
   }
 });
 
-test("source-open cross-host uses draft guard, persists through reload and waits for exact session", async () => {
+test("source-open for another host keeps the draft guard and carries no intent; the target's own page opens it, waiting for the exact session", async () => {
   const a = sourceWorld();
   a.emit(sourceTarget({ hostId: "h2" })); await tick();
   assert.deepEqual(a.calls.slice(0, 2), [["draft"], ["host", "h2"]]);
   assert.equal(a.ctx.H.sel, null);
-  assert.equal(a.storage.size, 1);
-  const b = sourceWorld({ host: "h2", storage: a.storage, ready: false });
+  assert.equal(a.ctx.pendingSourceOpen, null, "this page keeps nothing for another host");
+  assert.equal(a.storage.size, 0, "nothing is stored for a reload: pages stay warm");
+  // main delivers the event straight to h2's own (warm) page after showing it, even before that page is ready
+  const b = sourceWorld({ host: "h2", ready: false });
+  b.emit(sourceTarget({ hostId: "h2" }));
   b.boot(); await tick();
   assert.equal(b.ctx.H.sel, null);
   b.bridge({ t: "snapshot", snapshot: { nodes: [{ sid: "s-one", profile: "other" }] } }); await tick();
@@ -233,6 +237,7 @@ test("source-open cross-host uses draft guard, persists through reload and waits
   assert.equal(b.ctx.H.sel, null);
   b.emit(sourceTarget({ hostId: "h2" })); await tick();
   assert.equal(b.ctx.H.sel, "s-one");
+  assert.ok(b.calls.findIndex(c => c[0] === "draft") >= 0, "the target page flushes its draft before navigating");
   assert.equal(b.storage.size, 0);
 });
 
@@ -259,7 +264,7 @@ test("source-open failed host selection clears intent; overlapping navigation ca
   w.emit(sourceTarget({ hostId: "h2" }));
   w.emit(sourceTarget({ hostId: "h3", sid: "s-other" })); await tick();
   assert.deepEqual(w.calls.filter(c => c[0] === "host"), [["host", "h2"]]);
-  assert.equal(JSON.parse([...w.storage.values()][0]).hostId, "h2");
+  assert.equal(w.ctx.pendingSourceOpen, null);
   reject(new Error("removed")); await tick();
   assert.equal(w.storage.size, 0);
   assert.equal(w.ctx.hostSwitchPending, false);
@@ -286,15 +291,17 @@ test("source-open unknown source uses only an exact known Sessions target, never
   assert.equal(w.ctx.H.sel, "s-one"); assert.equal(w.ctx.activeChatMode, "sessions");
 });
 
-test("source-open reload resumes once after late connection and Telegram dialogs; old host cannot consume it", async () => {
+test("source-open delivered to a page not yet ready resumes once after late connection and Telegram dialogs; old host cannot consume it", async () => {
   const a = sourceWorld();
   a.emit(sourceTarget({ hostId: "h2" })); await tick();
-  const b = sourceWorld({ host: "h2", storage: a.storage, ready: false });
+  assert.equal(a.ctx.H.sel, null, "the old host's page never opens another host's target");
+  const b = sourceWorld({ host: "h2", ready: false });
+  b.emit(sourceTarget({ hostId: "h2" })); // main's direct delivery to the target page
   b.ctx.H.status.status = "connecting";
   b.bridge({ t: "snapshot", snapshot: { nodes: [{ sid: "s-one", profile: "work" }] } });
   b.boot(); await tick(); assert.equal(b.ctx.H.sel, null);
   b.bridge({ t: "status", status: "open" }); await tick();
-  assert.equal(b.ctx.H.sel, "s-one"); assert.equal(b.storage.size, 0);
+  assert.equal(b.ctx.H.sel, "s-one"); assert.equal(b.ctx.pendingSourceOpen, null);
   b.ctx.H.sel = "s-manual";
   b.bridge({ t: "snapshot", snapshot: { nodes: [{ sid: "s-one", profile: "work" }] } });
   assert.equal(b.ctx.H.sel, "s-manual", "consumed intent does not replay");
@@ -309,18 +316,21 @@ test("source-open reload resumes once after late connection and Telegram dialogs
   assert.equal(t.ctx.S.sel, "t202"); assert.equal(t.ctx.activeChatMode, "telegram");
 });
 
-test("source-open reload rejects removed/mismatched hosts, expired targets and blocked persistence", async () => {
+test("source-open delivered before ready rejects removed/mismatched hosts and expired targets; no session storage is used", async () => {
   for (const change of [w => { w.ctx.S.settings.hosts = [{ id: "h1" }]; },
     w => { w.ctx.S.settings.activeHost = "h3"; },
-    w => { const e = JSON.parse([...w.storage.values()][0]); e.expiresAt = 1; w.storage.set("deck.source-open", JSON.stringify(e)); }]) {
-    const a = sourceWorld(); a.emit(sourceTarget({ hostId: "h2" })); await tick();
-    const b = sourceWorld({ host: "h2", storage: a.storage, ready: false });
+    w => { w.ctx.pendingSourceOpen.expiresAt = 1; }]) {
+    const b = sourceWorld({ host: "h2", ready: false });
+    b.emit(sourceTarget({ hostId: "h2" }));
     change(b); b.boot(); await tick();
-    assert.equal(b.calls.length, 0); assert.equal(b.storage.size, 0);
+    assert.equal(b.calls.length, 0); assert.equal(b.ctx.pendingSourceOpen, null);
   }
-  const w = sourceWorld(); w.ctx.sessionStorage.setItem = () => { throw new Error("blocked"); };
+  const w = sourceWorld();
+  w.ctx.sessionStorage = new Proxy({}, { get: () => assert.fail("session storage is not part of source-open") });
   w.emit(sourceTarget({ hostId: "h2" })); await tick();
-  assert.equal(w.calls.length, 0, "never switch if the destination would be lost");
+  assert.deepEqual(w.calls.slice(0, 2), [["draft"], ["host", "h2"]], "blocked storage no longer matters: the switch is draft-guarded");
+  assert.doesNotMatch(functionSource("  function clearSourceOpen(", "  function openSource("), /sessionStorage/);
+  assert.doesNotMatch(functionSource("  async function resumeSourceOpen(", "    const mode = e.channel"), /sessionStorage/);
 });
 
 test("source-open focus cannot cross a later host or conversation navigation; legacy clicks still work", async () => {
