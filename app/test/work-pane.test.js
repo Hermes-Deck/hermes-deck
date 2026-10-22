@@ -303,12 +303,17 @@ test("surface chips safely open existing views and their tab dots track live ser
 
 test("expanded surfaces use the one-pixel gutter, preserve work tabs and respect hidden sidebar", () => {
   const fs = require("node:fs"), path = require("node:path");
+  const shell = fs.readFileSync(path.join(__dirname, "../renderer/shell.css"), "utf8");
+  assert.match(shell, /\.rhead\s*\{[^}]*anchor-name:\s*--work-header;/);
   for (const filename of ["workspace.css", "botscreen.css"]) {
     const css = fs.readFileSync(path.join(__dirname, "../renderer", filename), "utf8");
     assert.doesNotMatch(css, /left:\s*calc\([^;]*\+ 6px\)/);
     assert.match(css, /left:\s*calc\([^;]*\+ 1px\)/);
     assert.match(css, /\.app\.side-hidden\s+\.(ws|sp)\.expanded\s*\{\s*left:\s*0/);
-    assert.match(css, /top:\s*calc\(var\(--top\)\s*\+\s*44px\)/);
+    const expanded = css.match(/\.(ws|sp)\.expanded\s*\{([^}]+)\}/);
+    assert.ok(expanded);
+    assert.match(expanded[2], /top:\s*anchor\(--work-header bottom\);/);
+    assert.doesNotMatch(expanded[2], /var\(--top\)/);
   }
 });
 

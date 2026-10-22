@@ -7,7 +7,7 @@
 .app {
   display: grid; height: 100vh; overflow: hidden;
   grid-template-columns: var(--rail-w, 272px) var(--gl-w, 1px) minmax(0, 1fr) var(--gr-w, 0px) var(--panel-w, 0px);
-  grid-template-rows: var(--top) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   background: var(--bg);
 }
 .app:not([data-right=""]) { --gr-w: 1px; }
@@ -132,11 +132,20 @@ body.mac .side-hdr { padding-left: 80px; } /* macOS traffic lights */
 
 /* ---------- top bar (window drag region) ---------- */
 .app .topbar {
-  display: flex; align-items: center; gap: 8px; height: var(--top); min-width: 0; padding: 0 150px 0 12px; /* right: Windows caption buttons */
+  display: flex; flex-direction: column; justify-content: center; min-height: var(--top); min-width: 0; padding: 0 150px 0 12px; /* right: Windows caption buttons */
+  container: topbar / inline-size;
   border-bottom: 1px solid var(--line2); background: var(--bg); -webkit-app-region: drag; user-select: none;
 }
 body.mac .app .topbar { padding-right: 12px; }
 body.mac .app.side-hidden .topbar { padding-left: 80px; }
+.topbar-layout { display: flex; align-items: center; gap: 12px; width: 100%; min-width: 0; min-height: calc(var(--top) - 1px); }
+.topbar-start, .topbar-end { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.topbar-start { flex: 1; }
+.topbar-end { justify-content: flex-end; }
+.topbar-layout:has(.host-control:not([hidden])) { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(max-content, 1fr); }
+.topbar-layout:has(.host-control:not([hidden])) .findbtn { flex: none; width: 30px; padding: 0; justify-content: center; }
+.topbar-layout:has(.host-control:not([hidden])) .find-label,
+.topbar-layout:has(.host-control:not([hidden])) .find-kbd { display: none; }
 .topbar button, .topbar a, .topbar select, .topbar .crumb, .topbar .capsule, .topbar .crumb-extra { -webkit-app-region: no-drag; }
 .crumb { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 140px; overflow: hidden; font: 13px var(--sans); }
 .sh-ca { color: var(--t3); font-weight: 450; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 30%; }
@@ -171,22 +180,50 @@ body.mac .app.side-hidden .topbar { padding-left: 80px; }
 .topbar .topbar-gear { width: 28px; height: 28px; margin: 0; border-radius: 8px; color: var(--t3); }
 .topbar .topbar-gear:hover { background: var(--lift); color: var(--t1); }
 .topbar .topbar-gear[aria-pressed="true"] { background: var(--press); color: var(--t1); }
-.topbar .hostver-banner { flex: 0 1 auto; min-width: 0; }
+.topbar .hostver-banner { flex: none; width: 100%; min-width: 0; padding: 4px 0; flex-wrap: wrap; }
+.topbar .hostver-banner p { white-space: normal; }
 
-/* The persistent host control reuses shell layers; a native menu keeps keyboard navigation familiar. */
-.host-control { display: flex; flex-direction: column; gap: 3px; flex: 0 1 240px; min-width: 120px; max-width: 240px; -webkit-app-region: no-drag; }
-.host-control select { width: 100%; min-width: 0; height: 26px; padding: 2px 6px; border: 1px solid var(--line2); border-radius: 7px; background: var(--l2); color: var(--t1); font: 500 12px var(--sans); text-overflow: ellipsis; }
-.host-control select:hover { border-color: var(--line3); }
+/* One persistent native menu, with independent connection facts beside it. */
+.host-control { display: flex; align-items: center; width: max-content; min-width: 336px; max-width: 100%; height: 32px; border: 1px solid var(--line2); border-radius: 7px; background: var(--l2); -webkit-app-region: no-drag; }
+.host-choice { display: grid; grid-template-columns: 14px minmax(0, 1fr) 12px; align-items: center; gap: 7px; flex: 1; min-width: 112px; width: 130px; padding: 0 10px; color: var(--t2); }
+.host-choice select { grid-area: 1 / 1 / 2 / 4; }
+.host-choice > svg:first-child { grid-area: 1 / 1; }
+.host-choice > svg:last-child { grid-area: 1 / 3; }
+.host-control svg.i { fill: none; stroke: currentColor; stroke-width: 1.25; stroke-linecap: round; stroke-linejoin: round; flex: none; pointer-events: none; }
+.host-control select { appearance: none; width: 100%; min-width: 0; height: 28px; padding: 0 20px 0 21px; border: 0; border-radius: 4px; background: transparent; color: var(--t1); font: 500 12px var(--sans); text-overflow: ellipsis; cursor: pointer; }
+.host-control:has(select:hover) { border-color: var(--line3); }
 .host-control select:focus-visible { outline: 2px solid var(--patina); outline-offset: 1px; }
 .host-control select:disabled { opacity: .6; cursor: wait; }
-.host-status { display: flex; gap: 8px; color: var(--t2); font: 11px var(--sans); }
-.host-status span { min-width: 0; flex: 0 1 auto; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.host-status .ok { color: var(--teal); }
+.host-status { display: flex; align-items: center; gap: 12px; padding: 0 12px; border-left: 1px solid var(--line2); color: var(--t2); font: 12px/16px var(--sans); }
+.host-status span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.host-status .ok svg { color: var(--teal); }
 .topbar:has(.host-control:not([hidden])) .crumb { min-width: 0; }
-@media (max-width: 1100px) {
-  .host-control { flex-basis: 190px; }
-  .topbar:has(.host-control:not([hidden])) .findbtn { flex: none; width: 30px; padding: 0; justify-content: center; }
-  .topbar:has(.host-control:not([hidden])) .find-label, .topbar:has(.host-control:not([hidden])) .find-kbd { display: none; }
+/* Compress by available header space, not viewport: the rail can be resized independently.
+   At the smallest widths a second row preserves every action/status instead of overlapping captions. */
+@container topbar (max-width: 1000px) {
+  .topbar-layout:has(.host-control:not([hidden])) { grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; }
+  .host-control { min-width: 294px; }
+  .host-status { gap: 8px; padding: 0 10px; }
+}
+@container topbar (max-width: 720px) {
+  .topbar-layout:has(.host-control:not([hidden])) { grid-template-columns: minmax(0, 1fr) auto; padding: 5px 0; row-gap: 6px; }
+  .topbar-layout:has(.host-control:not([hidden])) .host-control { grid-column: 1 / -1; grid-row: 1; justify-self: center; }
+  .topbar-start { grid-column: 1; grid-row: 2; flex-wrap: wrap; }
+  .topbar:has(.host-control:not([hidden])) .crumb { min-width: 140px; }
+  .topbar-end { grid-column: 2; grid-row: 2; }
+}
+/* Long state labels or a busy fleet need more room. Keep the identity legible too. */
+@container topbar (max-width: 900px) {
+  .topbar-layout:has(.host-control:not([hidden])):where(:has(.host-status > :not(.ok)), :has(.tf-need), :has(.tf-avatar:nth-child(3))) { grid-template-columns: minmax(0, 1fr) auto; padding: 5px 0; row-gap: 6px; }
+  .topbar-layout:has(.host-control:not([hidden])):where(:has(.host-status > :not(.ok)), :has(.tf-need), :has(.tf-avatar:nth-child(3))) .host-control { grid-column: 1 / -1; grid-row: 1; justify-self: center; }
+  .topbar-layout:has(.host-control:not([hidden])):where(:has(.host-status > :not(.ok)), :has(.tf-need), :has(.tf-avatar:nth-child(3))) .topbar-start { grid-column: 1; grid-row: 2; }
+  .topbar-layout:has(.host-control:not([hidden])):where(:has(.host-status > :not(.ok)), :has(.tf-need), :has(.tf-avatar:nth-child(3))) .topbar-end { grid-column: 2; grid-row: 2; }
+}
+
+/* At narrow widths the identity and a dense fleet cannot share a row. */
+@container topbar (max-width: 600px) {
+  .topbar-layout:has(.host-control:not([hidden])) .topbar-start { grid-column: 1 / -1; grid-row: 2; }
+  .topbar-layout:has(.host-control:not([hidden])) .topbar-end { grid-column: 1 / -1; grid-row: 3; }
 }
 
 /* ---------- main area: chat or inbox ---------- */
@@ -226,7 +263,8 @@ body.mac .app.side-hidden .topbar { padding-left: 80px; }
 /* ---------- right slot: the work pane ---------- */
 .right { display: flex; min-width: 0; min-height: 0; background: var(--l1); }
 .rpanel { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
-.rhead { flex: none; display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 10px 0 12px; border-bottom: 1px solid var(--line2); }
+/* Expanded Browser/Screen follow this grid-positioned edge, including variable header height. */
+.rhead { anchor-name: --work-header; flex: none; display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 10px 0 12px; border-bottom: 1px solid var(--line2); }
 .rhead .sp { flex: 1; }
 .rtabs {
   display: flex; gap: 2px; min-width: 0; padding: 2px; overflow-x: auto; scrollbar-width: none;

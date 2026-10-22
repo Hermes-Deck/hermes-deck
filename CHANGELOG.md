@@ -6,6 +6,8 @@ The desktop app, relay and Hermes plugin share one version number.
 
 ## [Unreleased]
 
+- The host selector and separate Relay/Sessions states form a compact centered header group. Narrow layouts keep all header actions reachable on a second row, while connection warnings retain explicit text.
+
 - macOS app switching now uses the same main-window restore path as Dock and pet clicks, returning to the main window's fullscreen Space instead of leaving only the pet visible. Hidden and minimized main windows also reopen.
 
 - Source updates use a fresh clone per attempt, leaving old caches and linked checkouts untouched. Source Test builds no longer offer potentially older Test packages. macOS rechecks the source target after staging and removes stale candidates before the swap.

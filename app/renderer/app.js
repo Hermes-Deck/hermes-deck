@@ -431,8 +431,9 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   const hostSelect = h("select", { id: "host-select", "aria-describedby": "host-status", dataset: { fk: "host-select" }, onchange: (e) => selectHost(e.target.value) });
   const hostStatus = h("div", { class: "host-status", id: "host-status" });
   const hostControl = h("div", { class: "host-control", hidden: true },
-    h("label", { class: "sr-only", for: "host-select" }, i18nNode("hosts.select")), hostSelect, hostStatus);
-  els.crumb.before(hostControl);
+    h("label", { class: "sr-only", for: "host-select" }, i18nNode("hosts.select")),
+    h("div", { class: "host-choice" }, SH.icon("server", 14), hostSelect, SH.icon("down", 12)), hostStatus);
+  document.getElementById("topbar-end").before(hostControl);
   let hostOptions = "";
   function renderHosts() {
     const s = S.settings, hosts = s?.hosts || [];
@@ -453,7 +454,8 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     ];
     hostStatus.replaceChildren(...states.map(([label, state]) => {
       const text = `${i18nText(label)}: ${i18nText(`hosts.state.${state}`)}`;
-      return h("span", { title: text, "aria-label": text, class: state === "open" ? "ok" : "" }, `${i18nText(label)}: ${i18nText(`hosts.short.${state}`)}`);
+      return h("span", { title: text, "aria-label": text, class: state === "open" ? "ok" : "" },
+        ...(state === "open" ? [SH.icon("check", 12), i18nText(label)] : [`${i18nText(label)}: ${i18nText(`hosts.short.${state}`)}`]));
     }));
   }
   async function selectHost(id) {
@@ -1261,7 +1263,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   // A relay or plugin older than this app shows in Settings › Relay / › Hermes; a protocol mismatch blocks that one
   // connection and gets a banner in the top bar (its button opens the section with the update command).
   const hostBanner = h("div", { class: "hostver-banner", role: "alert", hidden: true });
-  document.getElementById("capsule").before(hostBanner);
+  document.getElementById("topbar").appendChild(hostBanner);
   function applyHostVersions(state) {
     hostVer = state && typeof state === "object" ? state : null;
     const keys = SVM.hostBanners(hostVer);
@@ -1275,7 +1277,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     SV.notify(ok, text);
   }
   const gear = h("button", { class: "topbar-gear", type: "button", title: i18nText("set.open"), "aria-label": i18nText("A0231"), "data-i18n-title": "set.open", "data-i18n-aria-label": "A0231", dataset: { fk: "sv-gear" }, onclick: () => SV.toggle() }, SV.icon("gear", 15));
-  document.getElementById("topbar").appendChild(gear);
+  document.getElementById("topbar-end").appendChild(gear);
   function renderGear() {
     gear.hidden = !(S.settings && S.settings.firstRunDone);
     gear.setAttribute("aria-pressed", SV.isOpen() ? "true" : "false");

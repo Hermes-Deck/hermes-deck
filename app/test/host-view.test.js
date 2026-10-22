@@ -360,6 +360,67 @@ test("source-open waits for fresh requests after disconnect, and Bots retains it
   assert.equal(w.ctx.H.sel, null);
 });
 
+test("host header keeps its native select and independent, truthful EN/TR connection labels", async () => {
+  const I18N = require("../renderer/i18n");
+  const nodes = new Map(), selected = [], placement = [];
+  const h = (tag, attrs = {}, ...children) => {
+    const node = { tag, attrs, children, replacements: 0,
+      replaceChildren(...kids) { this.children = kids; this.replacements++; } };
+    if (attrs.id) nodes.set(attrs.id, node);
+    return node;
+  };
+  const ctx = { h, i18nNode: key => I18N.t(key), i18nText: key => I18N.t(key),
+    SH: { icon: name => ({ icon: name }) }, SVM: { connectionState }, hostSwitchPending: false,
+    els: { crumb: { before: () => placement.push("before identity") } },
+    document: { getElementById: id => ({ before: node => placement.push([id, node]) }) },
+    selectHost: id => selected.push(id),
+    S: { settings: { firstRunDone: true, activeHost: "h1", hosts: [
+      { id: "h1", name: "Synthetic host with a deliberately long full accessible name" }, { id: "h2", name: "Host 2" }],
+      relay: { url: "fixture", hasToken: true }, bridge: { mode: "ssh" } }, relay: { status: "open" } },
+    H: { status: { status: "open" } },
+  };
+  vm.createContext(ctx);
+  vm.runInContext(functionSource("  const hostSelect =", "  async function selectHost(id)"), ctx);
+  const select = nodes.get("host-select"), status = nodes.get("host-status");
+  assert.equal(placement[0][0], "topbar-end", "host sits between identity and runtime/actions");
+  try {
+    for (const language of ["en", "tr"]) {
+      I18N.setLanguage(language); ctx.renderHosts();
+      assert.equal(select.tag, "select");
+      assert.equal(select.value, "h1");
+      assert.equal(select.title, ctx.S.settings.hosts[0].name);
+      assert.equal(select.children[0].children[0], select.title, "native option retains the whole name");
+      for (const [index, label] of ["hosts.relay", "hosts.sessions"].entries()) {
+        const item = status.children[index];
+        assert.equal(item.attrs["aria-label"], `${I18N.t(label)}: ${I18N.t("hosts.state.open")}`);
+        assert.deepEqual(plain(item.children), [{ icon: "check" }, I18N.t(label)]);
+      }
+      for (const state of ["connecting", "closed", "off", "unexpected"]) {
+        ctx.S.relay.status = state; ctx.renderHosts();
+        const item = status.children[0];
+        assert.notEqual(item.attrs.class, "ok");
+        assert.ok(item.children.some(x => typeof x === "string" && x.includes(":")), "nonready status stays explicit");
+        assert.ok(!item.children.some(x => x?.icon === "check"), "no false ready check");
+        assert.equal(status.children[1].attrs.class, "ok", "Sessions stays independent");
+      }
+      ctx.S.settings.relay.hasToken = false; ctx.S.relay.status = "open"; ctx.renderHosts();
+      assert.ok(status.children[0].attrs["aria-label"].includes(I18N.t("hosts.state.unconfigured")));
+      ctx.S.settings.relay.hasToken = true;
+      ctx.H.status.status = "error"; ctx.renderHosts();
+      assert.equal(status.children[0].attrs.class, "ok", "Relay stays independently connected");
+      assert.ok(status.children[1].attrs["aria-label"].includes(I18N.t("hosts.state.offline")));
+      assert.notEqual(status.children[1].attrs.class, "ok");
+      ctx.H.status.status = "open";
+    }
+    assert.equal(select.replacements, 1, "status/language updates never replace native options");
+    select.attrs.onchange({ target: { value: "h2" } }); assert.deepEqual(selected, ["h2"]);
+    ctx.hostSwitchPending = true; ctx.renderHosts(); assert.equal(select.disabled, true);
+    ctx.hostSwitchPending = false; ctx.renderHosts(); assert.equal(select.disabled, false);
+    ctx.S.settings.firstRunDone = false; ctx.renderHosts(); assert.equal(placement[0][1].hidden, true);
+    ctx.S.settings.firstRunDone = true; ctx.S.settings.hosts = []; ctx.renderHosts(); assert.equal(placement[0][1].hidden, true);
+  } finally { I18N.setLanguage("en"); }
+});
+
 test("connection labels distinguish observed state from config, including unwatched relay", () => {
   assert.equal(connectionState(false, "open"), "unconfigured");
   for (const status of [null, undefined, "off"]) assert.equal(connectionState(true, status), "saved");

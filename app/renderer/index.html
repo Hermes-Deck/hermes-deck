@@ -58,12 +58,18 @@
     </aside>
     <div class="gutter" id="gutter-left" role="separator" aria-orientation="vertical" aria-label="Sidebar width" data-i18n-aria-label="html.sidebarWidth" tabindex="0"></div>
     <header class="topbar" id="topbar">
-      <button class="ib" id="side-open" type="button" hidden title="Show sidebar (Ctrl+B)" data-i18n-title="shell.showSidebarTip" aria-label="Show sidebar" data-i18n-aria-label="shell.showSidebar"></button>
-      <nav class="crumb" id="crumb" aria-label="Current chat" data-i18n-aria-label="shell.crumb"></nav>
-      <div class="crumb-extra" id="crumb-extra" hidden></div>
-      <div class="capsule" id="capsule"></div>
-      <button class="findbtn" id="find-btn" type="button" title="Search all sessions (Ctrl+K)" data-i18n-title="shell.searchTip"><span class="find-label" data-i18n="shell.search">Search sessions</span><kbd class="find-kbd" id="find-kbd">Ctrl K</kbd></button>
-      <button class="ib" id="work-btn" type="button" aria-pressed="false" title="Work pane (Ctrl+\) · Session (Ctrl+Alt+I)" data-i18n-title="shell.workTip" aria-label="Work pane" data-i18n-aria-label="shell.work"></button>
+      <div class="topbar-layout">
+        <div class="topbar-start">
+          <button class="ib" id="side-open" type="button" hidden title="Show sidebar (Ctrl+B)" data-i18n-title="shell.showSidebarTip" aria-label="Show sidebar" data-i18n-aria-label="shell.showSidebar"></button>
+          <nav class="crumb" id="crumb" aria-label="Current chat" data-i18n-aria-label="shell.crumb"></nav>
+          <div class="crumb-extra" id="crumb-extra" hidden></div>
+        </div>
+        <div class="topbar-end" id="topbar-end">
+          <div class="capsule" id="capsule"></div>
+          <button class="findbtn" id="find-btn" type="button" title="Search all sessions (Ctrl+K)" data-i18n-title="shell.searchTip"><span class="find-label" data-i18n="shell.search">Search sessions</span><kbd class="find-kbd" id="find-kbd">Ctrl K</kbd></button>
+          <button class="ib" id="work-btn" type="button" aria-pressed="false" title="Work pane (Ctrl+\) · Session (Ctrl+Alt+I)" data-i18n-title="shell.workTip" aria-label="Work pane" data-i18n-aria-label="shell.work"></button>
+        </div>
+      </div>
     </header>
     <div class="body" id="body">
       <main class="chat" id="chat">
