@@ -48,9 +48,12 @@ class HostRuntime extends EventEmitter {
     this.stopped = false;
   }
 
-  /** The two states the host switcher colours (CONTRACT: `state` is an SVM.connectionState value). */
+  /**
+   * The two states the host switcher colours (CONTRACT `deck.hosts.status()`): the same status strings the page's
+   * own `relay` / `bridge` status frames carry ("open" | "connecting" | "closed" | "off" | "offline" | "unconfigured" ...).
+   */
   status() {
-    return { id: this.id, name: this.name, relay: this.relayStatus, sessions: this.bridgeStatus };
+    return { id: this.id, name: this.name, relay: String(this.relayStatus.status || ""), sessions: String(this.bridgeStatus.status || "") };
   }
 
   /** True when this host's saved configuration differs from the one the runtime runs (the pool restarts it). */

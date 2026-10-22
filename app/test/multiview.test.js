@@ -246,7 +246,9 @@ test("frames: a host's reply reaches its page alone, hidden or not, and the obse
   a.emit("change"); await h.flush();
   const status = h.sentTo("hb", "hosts").filter((m) => m.t === "status").at(-1);
   assert.deepEqual(status.hosts.map((x) => x.id), ["ha", "hb", "hc"], "every page hears every host's state");
-  assert.ok(status.hosts.every((x) => x.relay && x.sessions));
+  assert.ok(status.hosts.every((x) => typeof x.relay === "string" && typeof x.sessions === "string"), "plain status strings");
+  assert.equal(status.hosts.find((x) => x.id === "ha").sessions, "off", "no client was connected in this harness");
+  assert.equal(status.hosts.find((x) => x.id === "hc").relay, "unconfigured");
   assert.deepEqual(h.call("hb", "hosts:status").map((x) => x.id), ["ha", "hb", "hc"]);
 });
 

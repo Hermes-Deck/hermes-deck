@@ -84,19 +84,32 @@ Sessions and Bots alone never start a Telegram client.
 ### Hosts
 
 Switch saved hosts from the top bar's **Host** selector, even while Settings is open or the sidebar is hidden.
-Keyboard navigation uses the operating system's select control. Switching flushes the current composer draft before
-reloading the page for that host. Drafts and desktop pairing stay with their host; device hosting permissions reset.
+Keyboard navigation uses the operating system's select control. Every saved host stays connected while the Deck
+runs, and every host you have opened keeps its page alive in the background, so switching back is instant: the
+scroll position, the open chat and the composer draft are where you left them, and nothing reloads. Notifications
+(replies, finished turns, approvals, questions) come from every saved host, each one opening its own host's chat
+when clicked. Drafts and desktop pairing stay with their host; device hosting permissions reset when the left pane's
+host changes.
+
+**Split view** shows two hosts side by side (from the top bar's host switcher, which calls `deck.hosts.setSplit`): the left pane
+keeps the host you are on and the right pane opens the next saved host. Each pane is a full Deck with its own top
+bar; pick another host in either pane, and choosing the host the other pane shows swaps the two. Drag the divider to
+resize (each pane keeps at least 360 px); split on/off, the right host and the divider position are remembered
+across restarts. The left pane's host is the primary one: this device's hosting switches (agent browsers, desktop
+control, agent desktops) belong to it and can only be changed from that pane. A conversation visible in either pane
+is not notified about; a hidden page's is.
 
 Manage hosts in **Settings → Relay → Hermes hosts**. **Add host** has separate **Relay** and **Sessions** sections:
 Relay is optional for device access, activity and usage. Sessions uses **Local (this computer)** on macOS/Linux,
 **WSL (this computer)** on Windows, or **SSH (another machine)**. Enter the Python and `stream.py` paths for a direct
 connection. SSH target is only needed for SSH; WSL distribution is only shown for WSL. Tokens use password fields
-and are never returned to the page. After adding a host, use **Switch** to select it.
+and are never returned to the page. After adding a host, use **Switch** to select it. Settings opened in a pane edit
+that pane's host's Relay and Sessions settings.
 
 A relay-only host is valid. Its Sessions state is **Not configured**; **Configure Sessions** opens the direct
 connection settings for the selected host. **Connected** means the client reported an open connection, not merely
-that an address was saved. Inactive hosts show observed direct-watcher status, but their unmonitored relay state
-stays **Saved · not checked**. Use **Settings → Hermes → Test connection** to probe the direct form.
+that an address was saved. Every host's relay and direct-connection state is observed live, shown or not. Use
+**Settings → Hermes → Test connection** to probe the direct form.
 
 ### Sessions
 

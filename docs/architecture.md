@@ -80,7 +80,8 @@ The main process (`app/main/`) owns every connection and every secret. The rende
 | `presence.js` | This device's id, its hosting switches and the heartbeat. |
 | `workspace.js`, `agent-browser.js`, `cdp-tunnel.js` | Agent browsers, their live view, and the deck end of the CDP tunnel. |
 | `cua/` | Bot screen, device side: the driver channel (`channel.js`, `wire.js`), the private bounded cua-driver (`driver.js`, `manifest.js`), install and signature checks (`installer.js`, `pins.js`, `unzip.js`), grants, the window list, the activity bar (`bar.js`) and Stop (`index.js`). |
-| `ipc-guard.js` | Sender check for every main-window IPC channel: only Deck's own top-level page may call them. |
+| `ipc-guard.js` | Sender check for every main-window IPC channel: only Deck's own top-level host pages may call them, and the handler gets the sender's host. |
+| `host-runtime.js`, `host-views.js`, `host-layout.js`, `divider-preload.js` | Several hosts live at once: one runtime (relay client + direct connection) per saved host; one kept-warm `WebContentsView` page per opened host; the split view's pane rules and its divider page. |
 | `spaces.js`, `space-proxy.js`, `space-view.js` | Agent spaces: status and control level from the relay, the local viewer proxy, the isolated viewer view. |
 | `browser-transfer.js`, `browser-bundle.js` | Consent-based transfer of an agent browser's tabs, cookies and storage between devices, encrypted for the target. |
 | `update-check.js`, `update-service.js`, `updates.js` | App update check and install (release + `SHA256SUMS.txt`), and the notices driven by the relay's version. |
@@ -190,18 +191,42 @@ Both directions speak newline-delimited JSON-RPC 2.0 on stdio. The host sends `h
 
 ### Several Hermes hosts
 
-Settings keep a list of hosts (`hosts` and `activeHost` in `settings.json`; Settings › Relay › Hermes hosts). One host
-is active: its relay and direct connection are the ones above, and the window loads as `deck://app/index.html?host=<id>`.
-Every main-window IPC channel refuses a page that was loaded for another host, so a reply that lands after a switch
-never reaches the new host's screen. Drafts, the outbox and rail selections are stored per host.
+Settings keep a list of hosts (`hosts` and `activeHost` in `settings.json`; Settings › Relay › Hermes hosts). Every
+saved host with a connection runs for the app's whole lifetime: `app/main/host-runtime.js` gives each one a
+`HostRuntime` that owns its relay client, its direct connection (`BridgeClient`), their statuses, the session list
+and the open requests. The desktop shell observes every host's frames, so replies, completions, approvals and
+questions from any host raise their notification, and an answer always goes back through the client of the host that
+asked (`hosts:answer`), never through another host's. A direct connection publishes nothing until `deck.version`
+confirmed the wire protocol (an older plugin without the method passes); a mismatch stops that connection alone.
 
-A switch turns off this device's hosting switches (agent browsers, desktop control) and agent desktops, because that
-consent was given to the old host. Desktop-control pairing (`botscreen` agents and device key) is saved per host.
+Every opened host has one renderer page, a `WebContentsView` inside the one main window loaded as
+`deck://app/index.html?host=<id>` with the main page's preload, sandbox and CSP (`app/main/host-views.js`). A page is
+made the first time its host is shown and kept alive, hidden, afterwards (background throttling on, its host's events
+still delivered), so switching back is instant with scroll and drafts intact; a removed host's page is destroyed.
+`activeHost` is the **primary** host: the left (or only) pane's. Split view (`settings.panes`: `split`, `right`,
+`ratio`) lays two pages side by side around a thin divider view that takes the drag (`app/renderer/divider.html`,
+`app/main/divider-preload.js`); the pure rules live in `app/main/host-layout.js`. `deck.hosts.select(id)` shows a
+host in the pane that called and swaps the panes when the other one already shows it; `deck.hosts.setSplit(on)`,
+`deck.hosts.layout()` and `deck.hosts.onLayout` tell each page its own placement (`{split, pane, hostId, panes}`;
+`pane` is `null` for a hidden page). Nothing is reloaded on a switch.
 
-Each other host with a direct connection keeps one `BridgeClient` open only for its approvals and questions
-(`hosts:requests`). The inbox shows them with the host's name. An answer goes through `hosts:answer` to the host that
-raised the request, never to the active host, and is refused while that host is not connected. Relay-only hosts are
-not watched.
+Every main-window IPC channel resolves the host from the SENDER page (its `WebContents` must be one of the Deck's
+pages and its `?host=` must be that page's host) and refuses everything else, so a mutation from one page never goes
+to another host and a late reply for one host never reaches another host's page. A page sees `settings.publicView`
+with its own host as `activeHost` and its own relay / direct-connection settings. Drafts, the outbox and rail
+selections are stored per host.
+
+Device hosting (agent browsers, desktop control, agent desktops, browser transfer) follows the primary host only: a
+new primary turns those switches off, because that consent was given to the old host, and only the primary pane's
+page may change them (`device:set-hosting`, `desktops:host`, `ws:transfer-consent`, `spaces:control`). Changing only
+the right pane's host touches none of it. The host-version display (Settings › Relay / › Hermes) and Telegram (one
+account for the device) are shared by every page. Desktop-control pairing (`botscreen` agents and device key) is
+saved per host.
+
+Each other host's runtime feeds the shared inbox (`hosts:requests`: the rows of every host but the page's own; the
+page's own come through its `bridge` channel). The inbox shows them with the host's name. An answer is refused while
+that host is not connected. `deck.hosts.status()` and the `{t: "status", hosts}` frames carry every host's relay and
+direct-connection state for the switcher.
 
 On the first `session.list` of a new control connection, the plugin restores up to 32 still-open native approval
 and question frames. It keeps each request's ID, owning profile and creation time. It does not restore secret
