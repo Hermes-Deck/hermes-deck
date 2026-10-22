@@ -27,8 +27,15 @@ function fromApp(e) {
  * ipcMain for main-window channels: `handle` rejects a foreign sender before the handler runs; `on`
  * (fire-and-forget, nobody to reject to) ignores it.
  */
-let hostGate = null; // (channel, e) => boolean, set by main.js once settings exist (multi-host)
+// (channel, e) => true | false | "<error text>", set by main.js (multi-host: the sender must be one of the Deck's own
+// host pages; a string refuses with that text, e.g. a device-hosting change from a pane that is not the primary one)
+let hostGate = null;
 function setHostGate(fn) { hostGate = fn; }
+const gateError = (channel, e) => {
+  if (!hostGate) return null;
+  const ok = hostGate(channel, e);
+  return ok === true ? null : new Error(typeof ok === "string" && ok ? ok : i18nText("hosts.stalePage"));
+};
 function appIpc(ipcMain) {
   const mark = (wrapper) => Object.defineProperty(wrapper, GUARDED, { value: true }); // tests check every channel
   return {
@@ -37,7 +44,8 @@ function appIpc(ipcMain) {
         channel,
         mark((e, ...args) => {
           fromApp(e);
-          if (hostGate && !hostGate(channel, e)) throw new Error(i18nText("hosts.stalePage"));
+          const refused = gateError(channel, e);
+          if (refused) throw refused;
           return fn(e, ...args);
         })
       );
@@ -46,7 +54,7 @@ function appIpc(ipcMain) {
       ipcMain.on(
         channel,
         mark((e, ...args) => {
-          if (isApp(e) && (!hostGate || hostGate(channel, e))) fn(e, ...args);
+          if (isApp(e) && !gateError(channel, e)) fn(e, ...args);
         })
       );
     },

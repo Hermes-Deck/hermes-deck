@@ -9,7 +9,7 @@ if (process.argv.some((a) => /^--(shot|shot-pet|fixture)(=|$)/.test(a))) {
     process.exit(1);
   });
 }
-const { app, BrowserWindow, ipcMain, protocol, net, shell, dialog, nativeImage } = require("electron");
+const { app, BrowserWindow, WebContentsView, ipcMain, protocol, net, shell, dialog, nativeImage } = require("electron");
 const fs = require("fs");
 const path = require("path");
 const { pathToFileURL } = require("url");
@@ -46,16 +46,23 @@ const { initWorkspace } = require("./workspace");
 // Bot screen (E2–E6): an agent may use this computer's desktop in one handed-over window; consent, Stop
 const botscreen = require("./cua");
 // every main-window channel answers only the Deck's own page (security audit L4; main/ipc-guard.js)
-const { isApp, fromApp, appIpc, samePage, setHostGate } = require("./ipc-guard");
-// every channel also checks the page is the active host's (multi-host: a stale page from before a switch is refused)
-// (presence.js and workspace.js register through appIpc too, so the same gate covers them; cua checks it itself)
-// bridge:unload-done only reloads the page to the active host, so a stale page may call it to finish a switch.
-const HOSTLESS = new Set(["settings:get", "hosts:add", "hosts:remove", "hosts:select", "bridge:unload-done"]);
+const { isApp, fromApp, appIpc, setHostGate } = require("./ipc-guard");
+// multi-host, split view: one live runtime per saved host (main/host-runtime.js) and one kept-warm page per opened
+// host inside the window (main/host-views.js); which host sits in which pane follows main/host-layout.js
+const { HostPool } = require("./host-runtime");
+const { HostViews } = require("./host-views");
+const L = require("./host-layout");
+// every channel also checks the page is one of our own host pages (its sender and its ?host= agree), and the
+// handler resolves that page's host: a late reply for one host never reaches another host's page, and a mutation
+// from page A never goes to host B (presence.js and workspace.js register through appIpc too; cua checks it itself)
+// device hosting (agent browsers, desktop control, agent desktops, browser transfer) is consent given to the primary
+// host: only the primary pane's page may change it; the other pane sees the device's state read-only
+const PRIMARY_ONLY = new Set(["device:set-hosting", "desktops:host", "ws:transfer-consent", "ws:transfer-auto-off", "spaces:control"]);
 const activeOf = () => (settings ? settings.data.activeHost : "");
-setHostGate((ch, e) => HOSTLESS.has(ch) || samePage(e, activeOf()));
+const primaryOf = activeOf; // the left / full pane's host (settings.data.activeHost); device hosting follows it
+const pageUrl = (hostId) => `deck://app/index.html?host=${encodeURIComponent(hostId || "")}`;
+setHostGate((ch, e) => views.owns(e) && (!PRIMARY_ONLY.has(ch) || views.isPrimary(e) || i18nText("mview.primaryOnly")));
 const ipc = appIpc(ipcMain);
-let switchingHost = false; // a host switch navigates even past the rail's beforeunload hold
-const appUrl = () => `deck://app/index.html?host=${encodeURIComponent(activeOf() || "")}`;
 
 const RENDERER = path.join(__dirname, "..", "renderer");
 const IS_MAC = process.platform === "darwin";
@@ -128,12 +135,10 @@ const ICON = path.join(__dirname, "..", "build", "icon.png");
 let win = null;
 let windowClosing = false; // distinguish a window close from a renderer reload during ghost cleanup
 let settings = null;
-let relay = null;
 let tg = null;
 let tgEpoch = 0; // invalidate an in-flight Telegram connection when the mode is disabled
 let login = null; // in-flight interactive login
 let tgStatus = { status: "starting" };
-let relayStatus = { status: "starting" };
 let workspace = null; // Workspace tab (main/workspace.js)
 let desktopsHost = null; // Settings > This device > Agent desktops (main/desktops.js)
 const outboundMutations = new Set();
@@ -146,14 +151,122 @@ function writeDiagnostics() {
     hasRelayKey: !!settings?.data.relay.token, hasDeviceKey: bs.hasToken, unreadableSecrets: Object.keys(settings?.unreadableSecrets || {}),
     driverDirectory: botscreen._test.S.installer?.dir, driver: bs.driver, channel: bs.link, desktop: bs.on,
     cwd: process.cwd(), argv: process.argv.slice(1), loadTrace: settings?.loadTrace || null,
-    deviceKeyLen: (settings?.data.botscreen.deviceToken || "").length };
+    deviceKeyLen: (settings?.data.botscreen.deviceToken || "").length,
+    hosts: hosts.list().map((rt) => ({ relay: rt.relayStatus.status, sessions: rt.phase, shown: views.isShown(rt.id) })), panes: views.state };
   fs.writeFileSync(path.join(app.getPath("userData"), "diagnostics.json"), JSON.stringify(out, null, 2), { mode: 0o600 });
 }
 
-const send = (ch, msg) => {
-  if (win && !win.isDestroyed()) win.webContents.send(ch, msg);
-  desktop.observe(ch, msg, { hostId: activeOf(), client: ch === "bridge" ? bridge : null });
+// --- the hosts' runtimes and pages ----------------------------------------------------------------------------
+// Every saved host with a connection runs for the app's lifetime (its relay client, its direct connection); every
+// opened host has one page, kept warm when hidden. Device-level events (Telegram, updates, this device's hosting)
+// go to every page; a host's own frames go to its page only, and the desktop shell's observer sees them tagged
+// with the host and the client that produced them (notifications from every host, answers to the right one).
+const hosts = new HostPool({ RelayClient, BridgeClient, bridgeOptions: () => (BRIDGE_FAKE ? fakeBridgeOptions() : {}) });
+const views = new HostViews({
+  WebContentsView,
+  pageUrl,
+  webPreferences: () => ({
+    preload: path.join(__dirname, "preload.js"),
+    additionalArguments: [`--deck-language=${i18nLanguage()}`, theme.arg()],
+    contextIsolation: true,
+    sandbox: true,
+    nodeIntegration: false,
+    spellcheck: false,
+  }),
+  dividerUrl: "deck://app/divider.html",
+  dividerPreferences: () => ({ preload: path.join(__dirname, "divider-preload.js"), additionalArguments: [theme.arg()], contextIsolation: true, sandbox: true, nodeIntegration: false }),
+  background: () => theme.windowColors().bg,
+  decorate: (wc, hostId) => {
+    wc.setWindowOpenHandler(({ url }) => {
+      const u = httpUrl(url);
+      if (u) shell.openExternal(u);
+      return { action: "deny" };
+    });
+    wc.on("will-navigate", (e, url) => {
+      if (!url.startsWith("deck://")) e.preventDefault();
+    });
+    require("./context-menu").attachContextMenu({ webContents: wc }); // cut/copy/paste on right-click in text fields
+    wc.on("did-start-navigation", (_e, _url, inPlace, isMainFrame) => {
+      if (isMainFrame && !inPlace) desktop.setView(null, hostId); // a reload: nothing is on screen until it says so again
+    });
+  },
+});
+const sendHost = (hostId, ch, msg) => {
+  views.send(hostId, ch, msg);
+  const rt = hosts.get(hostId);
+  desktop.observe(ch, msg, { hostId, client: ch === "bridge" && rt ? rt.bridge : null });
 };
+const send = (ch, msg) => { // device-level: every page; the observer files it under the primary host
+  views.sendAll(ch, msg);
+  desktop.observe(ch, msg, { hostId: primaryOf(), client: null });
+};
+/** The saved hosts the pool runs: hosts[], or the one legacy entry of a profile that has none (fixture runs, first start). */
+function hostList() {
+  if (!settings) return [];
+  const d = settings.data;
+  if (d.hosts.length) return d.hosts.map((h) => ({ id: h.id, name: h.name, relay: h.relay, bridge: h.bridge }));
+  return settings.isConfigured() || (d.bridge && d.bridge.mode !== "off") ? [{ id: "", name: "", relay: d.relay, bridge: d.bridge }] : [];
+}
+/** Runtimes follow the saved hosts (new ones start, removed ones stop, edited ones restart the changed connection). */
+function syncHosts() {
+  if (!settings || FIXTURE || WS_SHOT) return;
+  const r = hosts.sync(hostList());
+  views.prune(hostList().map((h) => h.id));
+  for (const id of r.removed) desktop.dropHost(id);
+  if (r.added.length || r.removed.length || r.changed.length) pushHostStatus();
+}
+// the two states of every host, for every page (CONTRACT {t: "status"}), and the shared inbox's other-host rows
+// (each page gets the rows of the hosts other than its own: its own come through its bridge channel)
+let statusTimer = null;
+function pushHostStatus() {
+  if (statusTimer) return;
+  statusTimer = setTimeout(() => {
+    statusTimer = null;
+    views.sendAll("hosts", { t: "status", hosts: hosts.statuses() });
+    views.sendAll("hosts", (hostId) => ({ t: "requests", hosts: inboxRows(hostId) }));
+  }, 0);
+  if (statusTimer.unref) statusTimer.unref();
+}
+const inboxRows = (hostId) => hosts.list().filter((rt) => rt.id !== hostId).map((rt) => rt.inboxRow());
+// device hosting (Workspace tab, Bot screen, agent desktops) and the host-version display follow the primary host
+function attachPrimary() {
+  const rt = hosts.get(primaryOf());
+  const r = rt ? rt.relay : null;
+  if (workspace) workspace.attachRelay(r);
+  botscreen.attachRelay(r);
+  if (desktopsHost && !SHOT) desktopsHost.attachRelay(r);
+  if (hostVersions) {
+    hostVersions.relayGone();
+    if (rt && rt.hello) hostVersions.relayHello(rt.hello);
+    hostVersions.bridgeVersion(rt ? rt.version : null);
+  }
+}
+hosts.on("added", (rt) => {
+  rt.on("frame", (ch, m) => (ch === "relay" ? onRelayFrame(rt, m) : sendHost(rt.id, ch, m)));
+  rt.on("change", pushHostStatus);
+  rt.on("relay-client", () => { if (rt.id === primaryOf()) attachPrimary(); });
+  rt.on("bridge-client", (b) => {
+    if (!b) desktop.dropHost(rt.id, false); // the connection ended: its requests and live nodes go with it
+    if (rt.id === primaryOf() && hostVersions && !b) hostVersions.bridgeVersion(null);
+  });
+  rt.on("version", (v) => { if (rt.id === primaryOf() && hostVersions) hostVersions.bridgeVersion(v); });
+});
+hosts.on("removed", (rt) => { views.drop(rt.id); desktop.dropHost(rt.id); });
+function onRelayFrame(rt, m) {
+  const primary = rt.id === primaryOf();
+  if (m && m.t === "hostUpdate") { if (primary && hostVersions) hostVersions.hostUpdate(m); return; } // update progress, restart rows
+  if (m && m.t === "hello") {
+    rt.hello = m;
+    if (primary) {
+      // large attachments: the picker/drop accepts files up to the relay's per-file limit (the send checks the channel again)
+      attachments.maxUpload = (rt.relay && rt.relay.uploads && rt.relay.uploads.fileBytes) || 0;
+      if (hostVersions) hostVersions.relayHello(m); // drift display and its one toast; a protocol mismatch was stopped by the runtime
+    }
+  }
+  (primary && workspace && workspace.onRelayMsg(m)) || sendHost(rt.id, "relay", m); // Workspace tab keeps its frames and answers
+}
+const relayOf = (e) => { const rt = hosts.get(views.hostOf(e)); return rt ? rt.relay : null; };
+const primaryRelay = () => { const rt = hosts.get(primaryOf()); return rt ? rt.relay : null; };
 const httpUrl = (u) => {
   try {
     const x = new URL(String(u));
@@ -182,53 +295,11 @@ function initHostVersions() {
   });
 }
 
-// --- relay ------------------------------------------------------------------------------------
-function setRelay(s) {
-  relayStatus = s;
-  send("relay", { t: "status", ...s });
-}
-
-function relayMsg(r, m) {
-  if (m && m.t === "hostUpdate" && hostVersions) { hostVersions.hostUpdate(m); return; } // update progress, restart rows
-  // large attachments: the picker/drop accepts files up to the relay's per-file limit (the send checks the channel again)
-  if (m && m.t === "hello") attachments.maxUpload = (r.uploads && r.uploads.fileBytes) || 0;
-  if (m && m.t === "hello" && hostVersions && !hostVersions.relayHello(m)) {
-    // a relay speaking another wire protocol: stop this connection only (the banner says why); version drift never stops it.
-    // The hello still goes out: its `v` may announce a newer app that speaks the relay's protocol (desktop.js).
-    send("relay", m);
-    r.stop();
-    if (relay === r) setRelay({ status: "closed", error: i18nText("hostupd.protocolRelayShort"), code: "protocol" });
-    return;
-  }
-  (workspace && workspace.onRelayMsg(m)) || send("relay", m); // Workspace tab keeps its frames and answers
-}
-
-function startRelay() {
-  if (relay) relay.stop();
-  relay = null;
-  if (workspace) workspace.attachRelay(null); // Workspace tab: drop the old connection's heartbeat + tunnel
-  botscreen.attachRelay(null); // Bot screen: the old connection's driver channels end
-  if (hostVersions) hostVersions.relayGone();
-  if (desktopsHost) desktopsHost.attachRelay(null); // agent desktops: the old connection's [0xD6] tunnel ends
-  if (!settings.isConfigured()) return setRelay({ status: "unconfigured" });
-  const r = (relay = new RelayClient({ url: settings.data.relay.url, token: settings.data.relay.token }));
-  relay.on("status", (s) => relay === r && setRelay(s));
-  relay.on("msg", (m) => relay === r && relayMsg(r, m));
-  if (workspace) workspace.attachRelay(relay); // Workspace tab: heartbeat + CDP tunnel on this connection
-  botscreen.attachRelay(relay); // Bot screen: [0xD5] driver frames on this connection
-  if (desktopsHost && !SHOT) desktopsHost.attachRelay(relay); // agent desktops: [0xD6] space tunnel frames on this connection
-  relay.start();
-}
-
 // --- direct Hermes connection (bridge) ---------------------------------------------------------
-// One BridgeClient for the saved bridge settings, restarted whenever they change. Inputs from the
-// renderer are checked here and again inside BridgeClient; mutations only ever follow a click.
-let bridge = null;
-let bridgeStatus = { status: "off" };
-let bridgeSessions = [];
-let bridgeReasoning = false; // the chat's "Show thinking" (the renderer persists it and sends it on start and on toggle)
+// Each host's BridgeClient lives in its runtime (host-runtime.js). Inputs from the renderer are checked here and
+// again inside BridgeClient; mutations only ever follow a click. Screenshot runs only: --bridge-fake[=approval,busy]
+// feeds the bridge from test/fake-stream.js (synthetic sessions).
 const BRIDGE_SID = /^[\x21-\x7e]{1,512}$/;
-// Screenshot runs only: --bridge-fake[=approval,busy] feeds the bridge from test/fake-stream.js (synthetic sessions).
 const BRIDGE_FAKE = SHOT ? arg("bridge-fake") : undefined;
 
 function fakeBridgeOptions() {
@@ -239,115 +310,27 @@ function fakeBridgeOptions() {
   };
 }
 
-function setBridge(s) {
-  bridgeStatus = s;
-  send("bridge", { t: "status", ...s });
-}
-
-function startBridge() {
-  desktop.dropHost(activeOf(), false);
-  const old = bridge;
-  bridge = null;
-  bridgeSessions = [];
-  if (old) {
-    old.removeAllListeners();
-    old.stop();
-  }
-  const cfg = settings.data.bridge;
-  if (hostVersions) hostVersions.bridgeVersion(null);
-  if (!cfg || cfg.mode === "off") return setBridge({ status: "off" });
-  const b = new BridgeClient(cfg, { ...(BRIDGE_FAKE ? fakeBridgeOptions() : {}), showReasoning: bridgeReasoning });
-  bridge = b;
-  const mine = (fn) => (...a) => bridge === b && fn(...a);
-  b.on("status", mine(setBridge));
-  // the host plugin's version, once per connection (host-versions.js); a different wire protocol stops this connection
-  b.on("status", mine((s) => {
-    if (s.status !== "open" || !hostVersions) return;
-    b.version().then(mine((v) => {
-      if (v && !hostVersions.bridgeVersion(v)) {
-        b.removeAllListeners();
-        b.stop();
-        bridge = null;
-        setBridge({ status: "offline", code: "protocol", error: i18nText("hostupd.protocolBridgeShort"), retryInMs: null });
-      }
-    }));
-  }));
-  b.on("snapshot", mine((snapshot) => send("bridge", { t: "snapshot", snapshot })));
-  b.on("event", mine((e) => send("bridge", { t: "event", ...e })));
-  b.on("requests", mine((list) => send("bridge", { t: "requests", list })));
-  b.on("sessions", mine((list) => {
-    bridgeSessions = list;
-    send("bridge", { t: "sessions", list });
-  }));
-  b.start();
-}
-
 // --- shared approvals from the other hosts ----------------------------------------------------
-// Reuse one BridgeClient per saved, non-active direct host for requests AND completions.
-// Native answers capture this client's arrival, never the currently selected host's client.
-// ponytail: relay-only hosts are not watched here (their approvals reach the Deck through the direct bridge only).
-const HOST_PROTOCOL = require("./host-versions").PROTOCOL;
-const watchers = new Map(); // hostId -> {client, name, status, requests}
-function pushWatchers() {
-  send("hosts", { t: "requests", hosts: [...watchers].map(([id, w]) => ({ id, name: w.name, status: w.status, requests: w.requests })) });
-}
-function startWatchers() {
-  for (const [id, w] of watchers) { desktop.dropHost(id); w.client.removeAllListeners(); w.client.stop(); }
-  watchers.clear();
-  if (!settings || FIXTURE || SHOT) return pushWatchers();
-  for (const h of settings.data.hosts) {
-    if (h.id === settings.data.activeHost || !h.bridge || h.bridge.mode === "off") continue;
-    const client = new BridgeClient(h.bridge, {});
-    const w = { client, name: h.name, status: "connecting", requests: [], pending: [], check: 0 };
-    watchers.set(h.id, w);
-    const mine = (fn) => (...a) => watchers.get(h.id) === w && fn(...a);
-    // a plugin on another wire protocol is not answered (the same rule as the active connection's version check)
-    const checked = (st) => (st.status !== "open" ? Promise.resolve(st) : client.version().then((v) =>
-      v && Number.isInteger(v.protocol) && v.protocol !== HOST_PROTOCOL ? { status: "protocol" } : st, () => st));
-    const observe = m => desktop.observe("bridge", m, { hostId: h.id, client });
-    const feed = m => {
-      if (w.status === "open") observe(m);
-      else if (w.status === "checking") {
-        w.pending.push(m);
-        // Bound the protocol-handshake queue; overflowing drops history, never replays mutations.
-        if (w.pending.length > 64) w.pending.shift();
-      }
-    };
-    client.on("status", mine((st) => {
-      const check = ++w.check;
-      w.status = st.status === "open" ? "checking" : st.status;
-      if (st.status !== "open") { w.requests = []; w.pending = []; observe({ t: "status", ...st }); }
-      pushWatchers();
-      checked(st).then(mine((s) => {
-        if (check !== w.check) return; // a late version reply cannot resurrect a disconnected client
-        w.status = s.status;
-        if (s.status === "protocol") { client.removeAllListeners(); client.stop(); }
-        if (s.status === "open") for (const m of w.pending) observe(m);
-        else { w.requests = []; observe({ t: "status", ...s }); }
-        w.pending = [];
-        pushWatchers();
-      }));
-    }));
-    client.on("snapshot", mine(snapshot => feed({ t: "snapshot", snapshot })));
-    client.on("event", mine(e => feed({ t: "event", ...e })));
-    client.on("requests", mine((list) => { w.requests = list; feed({ t: "requests", list }); pushWatchers(); }));
-    client.start();
-  }
-  pushWatchers();
-}
-ipc.handle("hosts:requests", () => [...watchers].map(([id, w]) => ({ id, name: w.name, status: w.status, requests: w.requests })));
+// Every other host's runtime carries its requests; the inbox shows them with the host's name. An answer goes to the
+// host that raised the request (its own client), never to the page's host.
+ipc.handle("hosts:requests", (e) => inboxRows(views.hostOf(e)));
 ipc.handle("hosts:answer", (_e, hostId, kind, id, value, o) => {
-  const w = watchers.get(String(hostId ?? ""));
-  if (!w || w.status !== "open") throw new Error(i18nText("hosts.offline"));
+  const rt = hosts.get(String(hostId ?? ""));
+  if (!rt || rt.phase !== "open" || !rt.bridge) throw new Error(i18nText("hosts.offline"));
   const rid = String(id ?? "").slice(0, 256);
+  const client = rt.bridge;
   return trackMutation(() => kind === "question"
-    ? w.client.answerQuestion(rid, bObj(value), { profile: bProfile(o) })
-    : w.client.answerApproval(rid, String(value ?? ""), { profile: bProfile(o) }));
+    ? client.answerQuestion(rid, bObj(value), { profile: bProfile(o) })
+    : client.answerApproval(rid, String(value ?? ""), { profile: bProfile(o) }));
 });
 
-const needBridge = () => {
-  if (!bridge) throw new Error(i18nText("U0045"));
-  return bridge;
+/** The sender page's host runtime (the gate already made sure the sender is one of our pages). */
+const runtimeOf = (e) => hosts.get(views.hostOf(e));
+/** The sender page's direct connection: the one of ITS host, never the primary's. */
+const needBridge = (e) => {
+  const rt = runtimeOf(e);
+  if (!rt || !rt.bridge || rt.phase !== "open") throw new Error(i18nText("U0045"));
+  return rt.bridge;
 };
 const bObj = (o) => (o && typeof o === "object" && !Array.isArray(o) ? o : {});
 const bSid = (v) => {
@@ -363,25 +346,22 @@ const bProfile = (o) => (typeof bObj(o).profile === "string" ? bObj(o).profile :
 const bTurn = (o) => (typeof bObj(o).turnId === "string" ? bObj(o).turnId : undefined);
 const bInt = (v, d) => (Number.isInteger(v) ? v : d);
 
-ipc.handle("bridge:status", () => ({
-  status: bridgeStatus,
-  snapshot: bridge ? bridge.currentSnapshot() : null,
-  requests: bridge ? bridge.listRequests() : [],
-  sessions: bridgeSessions,
-  platform: process.platform,
-}));
+ipc.handle("bridge:status", (e) => {
+  const rt = runtimeOf(e);
+  return { ...(rt ? rt.bridgeState() : { status: { status: "off" }, snapshot: null, requests: [], sessions: [] }), platform: process.platform };
+});
 // Draft operations capture this exact bridge and use the existing mutation lifecycle.
-ipc.handle("bridge:drafts-list", (_e, profile, offset) => needBridge().mailDrafts().list(profile, offset));
-ipc.handle("bridge:draft-get", (_e, profile, id) => needBridge().mailDrafts().get(profile, id));
-ipc.handle("bridge:draft-act", (_e, review, action, value) => {
-  const drafts = needBridge().mailDrafts();
+ipc.handle("bridge:drafts-list", (e, profile, offset) => needBridge(e).mailDrafts().list(profile, offset));
+ipc.handle("bridge:draft-get", (e, profile, id) => needBridge(e).mailDrafts().get(profile, id));
+ipc.handle("bridge:draft-act", (e, review, action, value) => {
+  const drafts = needBridge(e).mailDrafts();
   return trackMutation(() => drafts.act(review, action, value));
 });
 // reads
-ipc.handle("bridge:sessions", (_e, o) => needBridge().sessions({ limit: bInt(bObj(o).limit, 50), profile: bProfile(o) }));
-ipc.handle("bridge:history", async (_e, sid, o) => {
+ipc.handle("bridge:sessions", (e, o) => needBridge(e).sessions({ limit: bInt(bObj(o).limit, 50), profile: bProfile(o) }));
+ipc.handle("bridge:history", async (e, sid, o) => {
   const s = bSid(sid);
-  const r = await needBridge().history(s, { profile: bProfile(o) || "default", limit: bInt(bObj(o).limit, 40), offset: bInt(bObj(o).offset, 0) });
+  const r = await needBridge(e).history(s, { profile: bProfile(o) || "default", limit: bInt(bObj(o).limit, 40), offset: bInt(bObj(o).offset, 0) });
   // File chips: main parses the files an ASSISTANT message offers (MEDIA: or a backticked absolute path) and gives the
   // page only an opaque ref + the file name; a download is by ref, so the page can never ask for a path of its own.
   for (const m of r.messages) {
@@ -397,13 +377,13 @@ ipc.handle("bridge:history", async (_e, sid, o) => {
 // records at most 120 s of Opus (well under 1 MB), the host accepts up to 25 MB.
 const DICTATION_MAX = 8 * 1024 * 1024;
 let dictating = false;
-ipc.handle("bridge:transcribe", async (_e, bytes, mime) => {
+ipc.handle("bridge:transcribe", async (e, bytes, mime) => {
   if (dictating) throw new Error(i18nText("voice.busy"));
   const buf = bytes instanceof Uint8Array ? Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength) : bytes instanceof ArrayBuffer ? Buffer.from(bytes) : null;
   if (!buf || !buf.length || buf.length > DICTATION_MAX) throw new Error(i18nText("voice.invalid"));
   dictating = true;
   try {
-    return await needBridge().transcribe(buf, typeof mime === "string" ? mime.slice(0, 120) : "audio/webm");
+    return await needBridge(e).transcribe(buf, typeof mime === "string" ? mime.slice(0, 120) : "audio/webm");
   } finally {
     dictating = false;
   }
@@ -432,9 +412,11 @@ ipc.handle("downloads:reset-folder", () => {
   return settings.publicView();
 });
 const DOWNLOAD_TICKET = /^[A-Za-z0-9-]{6,64}$/;
-// startBridge replaces the client on every host switch, including a switch back to the same host.
-const checkFileBridge = (b) => {
-  if (bridge !== b) throw new Error(i18nText("hosts.stalePage"));
+// A transfer stays on the connection it started with. The asking page never changes host, but its host's runtime
+// replaces the client when the connection restarts or the saved host is edited (possibly to another machine).
+const fileBridge = (e) => { const rt = runtimeOf(e); return (rt && rt.bridge) || null; };
+const checkFileBridge = (e, b) => {
+  if (fileBridge(e) !== b) throw new Error(i18nText("hosts.stalePage"));
 };
 const bRef = (v) => {
   const s = String(v ?? "");
@@ -461,19 +443,20 @@ const downloadError = (e, limit = FILE_MAX) => {
 };
 // size and name of the file behind a chip (one byte is read; the host checks the offer and refuses secrets). A file over
 // the chunk path's 200 MB asks for a relay download ticket instead when the relay and the plugin share this host.
-ipc.handle("bridge:file-info", async (_e, sid, ref, o) => {
+ipc.handle("bridge:file-info", async (e, sid, ref, o) => {
   const s = bSid(sid);
   const p = offeredPath(s, bRef(ref));
   const profile = bProfile(o);
-  const b = needBridge();
+  const b = needBridge(e);
+  const hostRelay = relayOf(e); // the same host's relay (its spool), never the primary's
   const name = require("path").posix.basename(p);
   let route = null;
   try {
     const c = await b.fileChunk(s, p, { offset: 0, length: 1, profile });
     return { size: c.size, mtime: c.mtime, name, risky: media.isRisky(name) };
-  } catch (e) {
-    route = hermesDownloads.tooBig(e) ? await hermesDownloads.pickRoute(relay, b) : null;
-    if (!route) throw downloadError(e);
+  } catch (err) {
+    route = hermesDownloads.tooBig(err) ? await hermesDownloads.pickRoute(hostRelay, b) : null;
+    if (!route) throw downloadError(err);
   }
   try {
     const g = await b.fileGrant(s, p, { profile });
@@ -483,55 +466,56 @@ ipc.handle("bridge:file-info", async (_e, sid, ref, o) => {
   }
 });
 // inline preview of an image the user sent: the whole picture (bounded) as a data: URL, or {ok: false, reason}
-ipc.handle("bridge:media-image", async (_e, sid, ref, o) => {
+ipc.handle("bridge:media-image", async (e, sid, ref, o) => {
   const s = bSid(sid);
   const p = offeredPath(s, bRef(ref));
   const profile = bProfile(o);
-  const b = bridge;
+  const b = fileBridge(e);
   if (!b) return { ok: false, reason: "unavailable" };
   const r = await fetchImage((offset, length) => {
-    checkFileBridge(b);
+    checkFileBridge(e, b);
     return b.fileChunk(s, p, { offset, length, profile });
   });
-  if (bridge !== b) return { ok: false, reason: "unavailable" };
+  if (fileBridge(e) !== b) return { ok: false, reason: "unavailable" };
   if (!r.ok) return { ok: false, reason: r.reason };
   return { ok: true, mime: r.mime, size: r.bytes.length, url: `data:${r.mime};base64,${r.bytes.toString("base64")}` };
 });
 // the whole clip (bounded, 25 MB) of a voice note / audio file for the inline player: bytes for decodeAudioData + a blob: URL
-ipc.handle("bridge:media-audio", async (_e, sid, ref, o) => {
+ipc.handle("bridge:media-audio", async (e, sid, ref, o) => {
   const s = bSid(sid);
   const p = offeredPath(s, bRef(ref));
   const profile = bProfile(o);
-  const b = bridge;
+  const b = fileBridge(e);
   if (!b) return { ok: false, reason: "unavailable" };
   const r = await fetchAudio((offset, length) => {
-    checkFileBridge(b);
+    checkFileBridge(e, b);
     return b.fileChunk(s, p, { offset, length, profile });
   }, { name: require("path").posix.basename(p) });
-  if (bridge !== b) return { ok: false, reason: "unavailable" };
+  if (fileBridge(e) !== b) return { ok: false, reason: "unavailable" };
   if (!r.ok) return { ok: false, reason: r.reason };
   return { ok: true, mime: r.mime, size: r.bytes.length, bytes: r.bytes };
 });
-ipc.handle("bridge:file-download", async (_e, sid, ref, o) => {
+ipc.handle("bridge:file-download", async (e, sid, ref, o) => {
   const s = bSid(sid);
   const p = offeredPath(s, bRef(ref));
   const ticket = String(bObj(o).ticket ?? "");
   if (!DOWNLOAD_TICKET.test(ticket)) throw new Error(i18nText("download.invalid"));
   const profile = bProfile(o);
+  const hostId = views.hostOf(e); // progress goes back to the page that asked
   const emit = (m) => {
-    checkFileBridge(b);
-    if (win && !win.isDestroyed()) win.webContents.send("files", { ticket, ...m });
+    checkFileBridge(e, b);
+    views.send(hostId, "files", { ticket, ...m });
   };
-  const b = needBridge();
+  const b = needBridge(e);
   let route = null;
   try {
     // Large downloads (hermes-downloads.js): granted by the plugin and streamed from the relay when both share this
     // host's spool (8 GB by default, resumed after a cut); else 1 MiB chunks through the bridge (200 MB).
-    route = await hermesDownloads.pickRoute(relay, b);
-    checkFileBridge(b);
+    route = await hermesDownloads.pickRoute(relayOf(e), b);
+    checkFileBridge(e, b);
     const grant = route ? await b.fileGrant(s, p, { profile }) : null;
     const size = grant ? grant.size : (await b.fileChunk(s, p, { offset: 0, length: 1, profile })).size;
-    checkFileBridge(b);
+    checkFileBridge(e, b);
     const name = require("path").posix.basename(p);
     let target;
     if (settings.data.downloads.ask) {
@@ -542,20 +526,20 @@ ipc.handle("bridge:file-download", async (_e, sid, ref, o) => {
       if (pick.canceled || !pick.filePath) return { status: "cancelled" };
       target = pick.filePath;
     }
-    checkFileBridge(b);
+    checkFileBridge(e, b);
     const job = { name, target, size, max: hermesDownloads.activeLimit(route), onProgress: (pr) => emit({ t: "progress", ...pr }) };
     if (grant) {
       const open = hermesDownloads.opener({ relay: route.relay, bridge: b, sid: s, path: p, profile, grant });
       job.open = async (start, signal) => {
-        checkFileBridge(b);
+        checkFileBridge(e, b);
         const body = await open(start, signal);
-        if (bridge !== b) { body.destroy(); checkFileBridge(b); }
+        if (fileBridge(e) !== b) { body.destroy(); checkFileBridge(e, b); }
         return body;
       };
     } else job.read = async (offset, length) => {
-      checkFileBridge(b);
+      checkFileBridge(e, b);
       const chunk = await b.fileChunk(s, p, { offset, length, profile });
-      checkFileBridge(b);
+      checkFileBridge(e, b);
       return chunk;
     };
     return await downloads.run(ticket, job);
@@ -589,13 +573,13 @@ ipc.handle("bridge:send", (e, sid, text, o) => trackMutation(async () => {
   if (!Array.isArray(tokens) || tokens.length > MAX_STAGED) throw new Error(i18nText("attach.hermesTooMany", { n: MAX_STAGED }));
   const tokenList = tokens.map((t) => String(t ?? ""));
   const typed = bText(text).trim();
-  if (!tokenList.length) return needBridge().send(bSid(sid), bText(text), { profile: bProfile(o) });
+  if (!tokenList.length) return needBridge(e).send(bSid(sid), bText(text), { profile: bProfile(o) });
   for (const t of tokenList) if (uploads.has(t)) throw new Error(i18nText("attach.hermesAlreadySending"));
-  const b = needBridge();
+  const b = needBridge(e);
   // Large attachments (hermes-uploads.js): through the relay's disk spool when the relay and the plugin share it,
   // with the relay's limits (2 GB per file by default); else the old single-line path (25 MB per file).
-  const route = await hermesUploads.pickRoute(relay, b);
-  if (route) return sendViaRelay(b, route, sid, typed, tokenList, o);
+  const route = await hermesUploads.pickRoute(relayOf(e), b);
+  if (route) return sendViaRelay(b, route, sid, typed, tokenList, o, views.hostOf(e));
   const { items, files } = await attachments.hermesFiles(tokenList);
   const captures = items.filter((x) => x.appshotText).map((x) => x.appshotText);
   const prompt = [typed, ...captures].filter(Boolean).join("\n\n");
@@ -608,14 +592,15 @@ ipc.handle("bridge:send", (e, sid, text, o) => trackMutation(async () => {
 }));
 // Running relay uploads of direct Hermes sends: cancelled from the chip (tg:upload-cancel) or when the app quits.
 const relayUploads = new Set();
-async function sendViaRelay(b, route, sid, typed, tokenList, o) {
+async function sendViaRelay(b, route, sid, typed, tokenList, o, hostId) {
   const items = attachments.hermesItems(tokenList, route.limits); // checked against the relay's limits, nothing read
   const captures = items.filter((x) => x.appshotText).map((x) => x.appshotText);
   const prompt = [typed, ...captures].filter(Boolean).join("\n\n");
   const controller = new AbortController();
   // the chip's Cancel sets isCanceled (tg:upload-cancel); here that aborts the running upload
   const cancel = { get isCanceled() { return controller.signal.aborted; }, set isCanceled(v) { if (v) controller.abort(); } };
-  const trackers = new Map(items.map((it) => [it.token, progressTracker((p) => send("tg", { t: "upload", token: it.token, p, hermes: true }))]));
+  const progress = (m) => views.send(hostId, "tg", m); // the chip is on the page that sent
+  const trackers = new Map(items.map((it) => [it.token, progressTracker((p) => progress({ t: "upload", token: it.token, p, hermes: true }))]));
   for (const it of items) uploads.set(it.token, cancel);
   relayUploads.add(controller);
   try {
@@ -627,79 +612,81 @@ async function sendViaRelay(b, route, sid, typed, tokenList, o) {
     relayUploads.delete(controller);
     for (const it of items) {
       uploads.delete(it.token);
-      send("tg", { t: "upload", token: it.token, p: null, hermes: true, done: true });
+      progress({ t: "upload", token: it.token, p: null, hermes: true, done: true });
     }
   }
 }
-ipc.handle("bridge:create", (_e, o) => needBridge().create({ profile: bProfile(o) || "default" })); // a click on "New session"
-ipc.handle("bridge:discard", (_e, sid) => needBridge().discard(bSid(sid))); // untouched New session, no transcript deletion
-function resumeRailUnload() {
-  if (!win || win.isDestroyed()) return;
-  if (windowClosing) win.close();
-  else win.loadURL(appUrl()).catch(() => {}); // the active host's page (a host switch waits here too)
+ipc.handle("bridge:create", (e, o) => needBridge(e).create({ profile: bProfile(o) || "default" })); // a click on "New session"
+ipc.handle("bridge:discard", (e, sid) => needBridge(e).discard(bSid(sid))); // untouched New session, no transcript deletion
+// A page held its unload (untouched new sessions were being discarded) and is done: while the window closes, that
+// page goes now (host-views.js closeAll waits for every page); a host switch no longer unloads anything, so there is
+// nothing to resume otherwise.
+function resumeRailUnload(hostId) {
+  if (!windowClosing) return false;
+  return views.finishClose(hostId);
 }
-ipc.handle("bridge:unload-done", (e) => { fromApp(e); resumeRailUnload(); });
-ipc.handle("bridge:delete", (_e, sid, o) => needBridge().deleteSession(bSid(sid), { profile: bProfile(o) })); // right-click > Delete, confirmed
+ipc.handle("bridge:unload-done", (e) => { fromApp(e); resumeRailUnload(views.hostOf(e)); });
+ipc.handle("bridge:delete", (e, sid, o) => needBridge(e).deleteSession(bSid(sid), { profile: bProfile(o) })); // right-click > Delete, confirmed
 // session browser (renderer/sessions-browser.js): every profile's stored sessions (a read), then one click-driven write each
-ipc.handle("bridge:session-index", (_e, o) => needBridge().sessionIndex({ archived: bObj(o).archived === true, force: bObj(o).force === true }));
-ipc.handle("bridge:session-rename", (_e, sid, o) => trackMutation(() => needBridge().renameSession(bSid(sid), { profile: bProfile(o), title: bObj(o).title })));
-ipc.handle("bridge:session-pin", (_e, sid, o) => trackMutation(() => needBridge().pinSession(bSid(sid), { profile: bProfile(o), pinned: bObj(o).pinned })));
-ipc.handle("bridge:session-archive", (_e, sid, o) => trackMutation(() => needBridge().archiveSession(bSid(sid), { profile: bProfile(o), archived: bObj(o).archived })));
-ipc.handle("bridge:session-branch", (_e, sid, o) => trackMutation(() => needBridge().branchSession(bSid(sid), { profile: bProfile(o) })));
-ipc.handle("bridge:takeover", (e, sid, o) => { fromApp(e); return trackMutation(() => needBridge().takeover(bSid(sid), { profile: bProfile(o) })); });
-ipc.handle("bridge:steer", (_e, sid, text, o) => needBridge().steer(bSid(sid), bText(text), { turnId: bTurn(o) }));
-ipc.handle("bridge:redirect", (_e, sid, text, o) => needBridge().redirect(bSid(sid), bText(text), { turnId: bTurn(o) }));
-ipc.handle("bridge:interrupt", (_e, sid, o) => needBridge().interrupt(bSid(sid), { turnId: bTurn(o) }));
+ipc.handle("bridge:session-index", (e, o) => needBridge(e).sessionIndex({ archived: bObj(o).archived === true, force: bObj(o).force === true }));
+ipc.handle("bridge:session-rename", (e, sid, o) => trackMutation(() => needBridge(e).renameSession(bSid(sid), { profile: bProfile(o), title: bObj(o).title })));
+ipc.handle("bridge:session-pin", (e, sid, o) => trackMutation(() => needBridge(e).pinSession(bSid(sid), { profile: bProfile(o), pinned: bObj(o).pinned })));
+ipc.handle("bridge:session-archive", (e, sid, o) => trackMutation(() => needBridge(e).archiveSession(bSid(sid), { profile: bProfile(o), archived: bObj(o).archived })));
+ipc.handle("bridge:session-branch", (e, sid, o) => trackMutation(() => needBridge(e).branchSession(bSid(sid), { profile: bProfile(o) })));
+ipc.handle("bridge:takeover", (e, sid, o) => { fromApp(e); return trackMutation(() => needBridge(e).takeover(bSid(sid), { profile: bProfile(o) })); });
+ipc.handle("bridge:steer", (e, sid, text, o) => needBridge(e).steer(bSid(sid), bText(text), { turnId: bTurn(o) }));
+ipc.handle("bridge:redirect", (e, sid, text, o) => needBridge(e).redirect(bSid(sid), bText(text), { turnId: bTurn(o) }));
+ipc.handle("bridge:interrupt", (e, sid, o) => needBridge(e).interrupt(bSid(sid), { turnId: bTurn(o) }));
 // work pane (Run, Plan, Agents tabs): sub-agent roster and tail (reads), steer and interrupt of one child (a click
 // each, never replayed), the session's plan (live, else stored) and its latest tool calls
 const bSub = (v) => String(v ?? "").slice(0, 128); // bridge.js checks the shape (validSubagent)
-ipc.handle("bridge:subagents", (_e, sid, o) => needBridge().subagents(bSid(sid), { profile: bProfile(o) }));
-ipc.handle("bridge:subagent-tail", (_e, sid, id, o) => needBridge().subagentTail(bSid(sid), bSub(id), { profile: bProfile(o) }));
-ipc.handle("bridge:subagent-steer", (_e, sid, id, text, o) => trackMutation(() => needBridge().steerSubagent(bSid(sid), bSub(id), bText(text), { profile: bProfile(o) })));
-ipc.handle("bridge:subagent-interrupt", (_e, sid, id, o) => trackMutation(() => needBridge().interruptSubagent(bSid(sid), bSub(id), { profile: bProfile(o) })));
-ipc.handle("bridge:plan", (_e, sid, o) => needBridge().plan(bSid(sid), { profile: bProfile(o) }));
-ipc.handle("bridge:tool-calls", (_e, sid, o) => needBridge().toolCalls(bSid(sid), { profile: bProfile(o) }));
-ipc.handle("bridge:reasoning", (_e, show) => {
-  bridgeReasoning = show === true;
-  return bridge ? bridge.setReasoning(bridgeReasoning) : { show: bridgeReasoning };
+ipc.handle("bridge:subagents", (e, sid, o) => needBridge(e).subagents(bSid(sid), { profile: bProfile(o) }));
+ipc.handle("bridge:subagent-tail", (e, sid, id, o) => needBridge(e).subagentTail(bSid(sid), bSub(id), { profile: bProfile(o) }));
+ipc.handle("bridge:subagent-steer", (e, sid, id, text, o) => trackMutation(() => needBridge(e).steerSubagent(bSid(sid), bSub(id), bText(text), { profile: bProfile(o) })));
+ipc.handle("bridge:subagent-interrupt", (e, sid, id, o) => trackMutation(() => needBridge(e).interruptSubagent(bSid(sid), bSub(id), { profile: bProfile(o) })));
+ipc.handle("bridge:plan", (e, sid, o) => needBridge(e).plan(bSid(sid), { profile: bProfile(o) }));
+ipc.handle("bridge:tool-calls", (e, sid, o) => needBridge(e).toolCalls(bSid(sid), { profile: bProfile(o) }));
+ipc.handle("bridge:reasoning", (e, show) => {
+  const rt = runtimeOf(e);
+  return rt ? rt.setReasoning(show === true) : { show: show === true };
 });
-ipc.handle("bridge:model-options", (_e, sid, o) => needBridge().modelOptions(bSid(sid), { profile: bProfile(o), profileOnly: bObj(o).profileOnly === true }));
-ipc.handle("bridge:set-model", (_e, sid, c) => {
+ipc.handle("bridge:model-options", (e, sid, o) => needBridge(e).modelOptions(bSid(sid), { profile: bProfile(o), profileOnly: bObj(o).profileOnly === true }));
+ipc.handle("bridge:set-model", (e, sid, c) => {
   const x = bObj(c);
-  return needBridge().setModel(bSid(sid), { model: String(x.model || ""), provider: String(x.provider || ""), confirm: x.confirm === true, profile: bProfile(x) });
+  return needBridge(e).setModel(bSid(sid), { model: String(x.model || ""), provider: String(x.provider || ""), confirm: x.confirm === true, profile: bProfile(x) });
 });
-ipc.handle("bridge:set-effort", (_e, sid, o) => needBridge().setEffort(bSid(sid), { effort: String(bObj(o).effort || ""), profile: bProfile(o) }));
-ipc.handle("bridge:answer-approval", (_e, id, choice, o) => needBridge().answerApproval(String(id ?? "").slice(0, 256), String(choice ?? ""), { profile: bProfile(o) }));
-ipc.handle("bridge:answer-question", (_e, id, answers, o) => needBridge().answerQuestion(String(id ?? "").slice(0, 256), bObj(answers), { profile: bProfile(o) }));
+ipc.handle("bridge:set-effort", (e, sid, o) => needBridge(e).setEffort(bSid(sid), { effort: String(bObj(o).effort || ""), profile: bProfile(o) }));
+ipc.handle("bridge:answer-approval", (e, id, choice, o) => needBridge(e).answerApproval(String(id ?? "").slice(0, 256), String(choice ?? ""), { profile: bProfile(o) }));
+ipc.handle("bridge:answer-question", (e, id, answers, o) => needBridge(e).answerQuestion(String(id ?? "").slice(0, 256), bObj(answers), { profile: bProfile(o) }));
 // Botlar (renderer/bots.js): the profile roster and avatars (reads), the read-only Bot Chat lookup, and the
 // Bot Chat create that only a first message sent from the composer triggers
 const bName = (v) => String(v ?? "").slice(0, 64);
-ipc.handle("bridge:profiles", () => needBridge().profiles());
-ipc.handle("bridge:commands", (_e, profile) => needBridge().commandCatalog(bName(profile)));
-ipc.handle("bridge:avatar", (_e, name) => needBridge().avatar(bName(name)));
-ipc.handle("bridge:bot-chat", (_e, name, o) => needBridge().botChat(bName(name), { expect: bObj(o).expect === true }));
-ipc.handle("bridge:bot-chat-create", (_e, name, o) => needBridge().createBotChat(bName(name), { expect: bObj(o).expect === true }));
+ipc.handle("bridge:profiles", (e) => needBridge(e).profiles());
+ipc.handle("bridge:commands", (e, profile) => needBridge(e).commandCatalog(bName(profile)));
+ipc.handle("bridge:avatar", (e, name) => needBridge(e).avatar(bName(name)));
+ipc.handle("bridge:bot-chat", (e, name, o) => needBridge(e).botChat(bName(name), { expect: bObj(o).expect === true }));
+ipc.handle("bridge:bot-chat-create", (e, name, o) => needBridge(e).createBotChat(bName(name), { expect: bObj(o).expect === true }));
 // Group Chat (renderer/group-chat.js): the gateway's hosted rooms. Reads (capabilities, list, state, log) and the writes a
 // click or a send triggers (create, send, rename, stop, approve, retry, disband); bridge.js checks every shape.
 const bRoom = (v) => String(v ?? "").slice(0, 128);
 const bSeq = (v) => (Number.isInteger(v) && v >= 0 ? v : 0);
-ipc.handle("bridge:groups-capabilities", () => needBridge().groupCapabilities());
-ipc.handle("bridge:groups-list", () => needBridge().groupRooms());
-ipc.handle("bridge:groups-state", (_e, room) => needBridge().groupState(bRoom(room)));
-ipc.handle("bridge:groups-log", (_e, room, since, limit) => needBridge().groupLog(bRoom(room), bSeq(since), Number.isInteger(limit) && limit >= 1 && limit <= 500 ? limit : 200));
-ipc.handle("bridge:groups-create", (_e, o) => {
+ipc.handle("bridge:groups-capabilities", (e) => needBridge(e).groupCapabilities());
+ipc.handle("bridge:groups-list", (e) => needBridge(e).groupRooms());
+ipc.handle("bridge:groups-state", (e, room) => needBridge(e).groupState(bRoom(room)));
+ipc.handle("bridge:groups-log", (e, room, since, limit) => needBridge(e).groupLog(bRoom(room), bSeq(since), Number.isInteger(limit) && limit >= 1 && limit <= 500 ? limit : 200));
+ipc.handle("bridge:groups-create", (e, o) => {
   const x = bObj(o);
   const members = (Array.isArray(x.members) ? x.members : []).slice(0, 8).map((m) => ({ profile: bName(bObj(m).profile), name: String(bObj(m).name ?? "").slice(0, 200) }));
-  return trackMutation(() => needBridge().groupCreate({ name: String(x.name ?? "").slice(0, 200), members }));
+  return trackMutation(() => needBridge(e).groupCreate({ name: String(x.name ?? "").slice(0, 200), members }));
 });
-ipc.handle("bridge:groups-send", (_e, room, text) => trackMutation(() => needBridge().groupSend(bRoom(room), String(text ?? "").slice(0, 32000))));
-ipc.handle("bridge:groups-rename", (_e, room, name) => trackMutation(() => needBridge().groupRename(bRoom(room), String(name ?? "").slice(0, 200))));
-ipc.handle("bridge:groups-stop", (_e, room) => trackMutation(() => needBridge().groupStop(bRoom(room))));
-ipc.handle("bridge:groups-disband", (_e, room) => trackMutation(() => needBridge().groupDisband(bRoom(room))));
-ipc.handle("bridge:groups-retry", (_e, room, task) => trackMutation(() => needBridge().groupRetry(bRoom(room), bRoom(task))));
-ipc.handle("bridge:groups-approve", (_e, room, a) => {
+ipc.handle("bridge:groups-send", (e, room, text) => trackMutation(() => needBridge(e).groupSend(bRoom(room), String(text ?? "").slice(0, 32000))));
+ipc.handle("bridge:groups-rename", (e, room, name) => trackMutation(() => needBridge(e).groupRename(bRoom(room), String(name ?? "").slice(0, 200))));
+ipc.handle("bridge:groups-stop", (e, room) => trackMutation(() => needBridge(e).groupStop(bRoom(room))));
+ipc.handle("bridge:groups-disband", (e, room) => trackMutation(() => needBridge(e).groupDisband(bRoom(room))));
+ipc.handle("bridge:groups-retry", (e, room, task) => trackMutation(() => needBridge(e).groupRetry(bRoom(room), bRoom(task))));
+ipc.handle("bridge:groups-approve", (e, room, a) => {
   const x = bObj(a);
-  return trackMutation(() => needBridge().groupApprove(bRoom(room), { memberId: bRoom(x.memberId), taskId: bRoom(x.taskId), generation: Number.isInteger(x.generation) ? x.generation : 0, requestId: String(x.requestId ?? "").slice(0, 512), choice: String(x.choice ?? "") }));
+  return trackMutation(() => needBridge(e).groupApprove(bRoom(room), { memberId: bRoom(x.memberId), taskId: bRoom(x.taskId), generation: Number.isInteger(x.generation) ? x.generation : 0, requestId: String(x.requestId ?? "").slice(0, 512), choice: String(x.choice ?? "") }));
 });
 ipc.handle("bridge:test", (_e, cfg) => probeBridge(normalizeBridgeConfig(bObj(cfg))));
 
@@ -757,16 +744,15 @@ function wire(svc) {
   svc.on("counts", (x) => push({ t: "counts", ...x })); // C5: unread counts again after a reconnect
 }
 
-// fixture mode: a recorded-looking Telegram + relay from a JSON file, nothing over the network
+// fixture mode: a recorded-looking Telegram + relay from a JSON file, nothing over the network. The one page's host
+// is "" (no saved hosts): its runtime adopts the fixture relay; a fake bridge, when asked, runs there too.
 function startFixture() {
   const { FixtureService, FixtureRelay } = require("./fixture");
   const svc = fixture = new FixtureService(FIXTURE, { mediaDir: path.join(app.getPath("userData"), "media") });
   tg = svc;
   wire(svc);
-  relay = new FixtureRelay(svc.data.relay);
-  relay.on("status", setRelay);
-  relay.on("msg", (m) => send("relay", m));
-  relay.start();
+  const rt = hosts.ensure({ id: "", name: "", relay: { url: "", token: "" }, bridge: BRIDGE_FAKE ? settings.data.bridge : { mode: "off" } });
+  rt.adoptRelay(new FixtureRelay(svc.data.relay));
   return svc.start().then(() => {
     if (tg !== svc || !telegramReady(settings.data)) return svc.stop();
     setTg({ status: "open", me: svc.meInfo() });
@@ -886,19 +872,24 @@ async function startLogin(phone) {
 }
 
 // --- IPC (every input from the renderer is validated here) -----------------------------------
-ipc.handle("desktop:view", (_e, value) => desktop.setView(value, activeOf()));
-ipc.handle("ready", () => {
-  if (relay) relay.resync();
+// notifications follow the conversation actually displayed: each page reports its own, for its own host
+ipc.handle("desktop:view", (e, value) => desktop.setView(value, views.hostOf(e)));
+ipc.handle("ready", (e) => {
+  const hostId = views.hostOf(e);
+  const rt = runtimeOf(e);
+  if (rt && rt.relay) rt.relay.resync();
+  views.markReady(hostId); // its listeners are in place: layout and source-open events may go to it now
   return {
     tg: tgStatus,
-    relay: relayStatus,
+    relay: rt ? rt.relayStatus : { status: "unconfigured" },
     dialogs: tg && tg.state ? tg.state : null,
     avatars: tg ? tg.avatars : {},
     people: tg ? tg.people || {} : {},
-    settings: settings.publicView(),
+    settings: settings.publicView(hostId),
     desktop: desktop.info(), // desktop shell: build type, whether start-at-login works here (Settings → Desktop)
     hostVersions: hostState(), // relay / plugin versions on the host (host-versions.js)
     riskyExt: [...media.RISKY_EXT], // the one list "Open" refuses (media.isRisky); the renderer hides the button for it (L9)
+    layout: views.layoutFor(hostId), // CONTRACT: the page's own placement (split, pane, hostId, panes)
     ui: {
       tab: typeof arg("tab") === "string" ? arg("tab") : null,
       select: typeof arg("select") === "string" ? arg("select") : null,
@@ -908,56 +899,87 @@ ipc.handle("ready", () => {
     },
   };
 });
-ipc.handle("settings:get", () => settings.publicView());
-ipc.handle("settings:save", async (_e, patch) => {
+ipc.handle("settings:get", (e) => settings.publicView(views.hostOf(e)));
+ipc.handle("settings:save", async (e, patch) => {
   if (quitAttempt) throw new Error(i18nText("outbound.settingsClosing"));
+  const hostId = views.hostOf(e);
   const before = JSON.stringify(settings.data);
-  settings.update(patch && typeof patch === "object" ? patch : {});
+  settings.update(patch && typeof patch === "object" ? patch : {}, hostId);
   const was = JSON.parse(before);
   const d = settings.data;
   if (d.language !== was.language) {
     i18nSetLanguage(d.language);
-    for (const window of BrowserWindow.getAllWindows()) {
+    views.sendAll("language", i18nLanguage());
+    for (const window of BrowserWindow.getAllWindows()) { // the pet and the bot screen bar
       if (!window.isDestroyed()) window.webContents.send("language", i18nLanguage());
     }
   }
   if (d.theme !== was.theme) theme.setChoice(d.theme);
-  if (JSON.stringify(d.relay) !== JSON.stringify(was.relay)) startRelay();
-  if (JSON.stringify(d.bridge) !== JSON.stringify(was.bridge)) startBridge();
+  syncHosts(); // a changed relay / direct connection restarts that host's client only
   if (telegramReady(d) !== telegramReady(was) ||
       (JSON.stringify([d.telegram, d.groupChatId, d.hiddenBots]) !== JSON.stringify([was.telegram, was.groupChatId, was.hiddenBots]) && !login)) await startTelegram();
   if (d.readReceipts !== was.readReceipts && tg && tg.setReadReceipts) tg.setReadReceipts(d.readReceipts !== false); // C5, no reconnect needed
   desktop.applySettings(); // desktop shell: pet on/off, tray menu checkboxes
   if (desktopsHost && JSON.stringify(d.desktops) !== JSON.stringify(was.desktops)) desktopsHost.settingsChanged(); // the heartbeat's limit
-  return settings.publicView();
+  views.sendAll("desktop", (id) => ({ t: "settings", settings: settings.publicView(id) })); // the other pane's Settings follow
+  return settings.publicView(hostId);
 });
-// multi-host: saved hosts. Switching restarts the relay and bridge clients on the newly active host.
-ipc.handle("hosts:add", (_e, spec) => {
-  const was = settings.data.activeHost;
+// --- multi-host: saved hosts and the panes ------------------------------------------------------------
+// settings.data.activeHost is the primary (left / full) pane's host; settings.data.panes the right pane and the divider.
+const paneState = () => L.normalize({ primary: activeOf(), ...settings.data.panes }, settings.data.hosts.map((h) => h.id));
+/** Applies a pane state: a new primary moves settings (and device hosting) with it, the rest is persisted as a preference. */
+function applyPanes(next) {
+  const was = paneState();
+  if (next.primary !== was.primary) {
+    settings.selectHost(next.primary);
+    // device permissions were given to the old primary host: off before the new one takes over (the old relay hears it)
+    if (presence) for (const cap of ["browser", "desktop"]) if (presence.hosting[cap] && presence.capabilities.has(cap)) { try { presence.setHosting(cap, false); } catch {} }
+    if (desktopsHost) desktopsHost.hostOff().catch(() => {});
+    if (workspace) workspace.forgetTransferConsent(); // browser-transfer consent was given on the old host too
+    attachPrimary();
+  }
+  if (!FIXTURE && !WS_SHOT && (next.split !== was.split || next.right !== was.right || next.ratio !== was.ratio)) settings.setPanes({ split: next.split, right: next.right, ratio: next.ratio });
+  views.apply(paneState());
+  if (next.primary !== was.primary) views.sendAll("desktop", (id) => ({ t: "settings", settings: settings.publicView(id) }));
+}
+/** A notification's click (desktop.js): the host comes on screen; already shown, its pane is focused. */
+function showHost(hostId) {
+  if (!settings.data.hosts.some((h) => h.id === hostId) && hostId !== activeOf()) return;
+  applyPanes(L.select(paneState(), activeOf(), hostId)); // the primary pane takes it
+}
+ipc.handle("hosts:add", (e, spec) => {
   settings.addHost(spec);
-  if (settings.data.activeHost !== was) { startRelay(); startBridge(); } // the first host becomes active at once
-  startWatchers();
-  return settings.publicView();
+  syncHosts();
+  views.apply(paneState()); // the first host becomes the primary page at once
+  views.sendAll("desktop", (id) => ({ t: "settings", settings: settings.publicView(id) }));
+  return settings.publicView(views.hostOf(e));
 });
-ipc.handle("hosts:remove", (_e, id) => { settings.removeHost(String(id ?? "")); startWatchers(); return settings.publicView(); });
-ipc.handle("hosts:select", (_e, id) => {
+ipc.handle("hosts:remove", (e, id) => {
+  settings.removeHost(String(id ?? ""));
+  syncHosts(); // its runtime stops and its page is destroyed
+  views.apply(paneState());
+  views.sendAll("desktop", (hid) => ({ t: "settings", settings: settings.publicView(hid) }));
+  return settings.publicView(views.hostOf(e));
+});
+// CONTRACT deck.hosts.select(id): show `id` in the pane that called (swap when the other pane shows it); no reload,
+// the calling page stays alive, hidden or not. Resolves once the switch is on screen.
+ipc.handle("hosts:select", (e, id) => {
   if (quitAttempt) throw new Error(i18nText("outbound.settingsClosing"));
-  const was = settings.data.activeHost;
-  settings.selectHost(String(id ?? ""));
-  if (settings.data.activeHost === was) return settings.publicView();
-  desktop.setView(null, settings.data.activeHost);
-  desktop.dropHost(was);
-  // device permissions were given to the old host: off before the new host connects (the old relay hears it)
-  if (presence) for (const cap of ["browser", "desktop"]) if (presence.hosting[cap] && presence.capabilities.has(cap)) { try { presence.setHosting(cap, false); } catch {} }
-  if (desktopsHost) desktopsHost.hostOff().catch(() => {});
-  if (workspace) workspace.forgetTransferConsent(); // browser-transfer consent was given on the old host too
-  // a fresh page for the new host first: nothing the old page had in flight can land on the new host's screen
-  if (win && !win.isDestroyed()) { switchingHost = true; win.loadURL(appUrl()).catch(() => {}).finally(() => { switchingHost = false; }); }
-  startRelay();
-  startBridge();
-  startWatchers();
-  return settings.publicView();
+  const target = String(id ?? "");
+  if (!settings.data.hosts.some((h) => h.id === target)) throw new Error(i18nText("hosts.unknown"));
+  applyPanes(L.select(paneState(), views.hostOf(e), target));
+  return settings.publicView(views.hostOf(e));
 });
+ipc.handle("hosts:layout", (e) => views.layoutFor(views.hostOf(e)));
+ipc.handle("hosts:set-split", (e, on) => {
+  if (quitAttempt) throw new Error(i18nText("outbound.settingsClosing"));
+  let next;
+  try { next = L.setSplit(paneState(), on === true, views.hostOf(e), settings.data.hosts.map((h) => h.id)); }
+  catch (err) { throw new Error(i18nText(err.message === "mview.needTwo" ? "mview.needTwo" : "hosts.unknown")); }
+  applyPanes(next);
+  return views.layoutFor(views.hostOf(e));
+});
+ipc.handle("hosts:status", () => hosts.statuses());
 ipc.handle("tg:retry", () => {
   if (!login) startTelegram();
 });
@@ -1333,29 +1355,28 @@ ipc.handle("tg:topic", (e, op, a) => {
       throw new Error(i18nText("U0273"));
   }
 });
-ipc.handle("relay:session", (_e, sid) => {
-  if (!relay) throw new Error(i18nText("U0235"));
-  return relay.get(`/session/${encodeURIComponent(String(sid))}`);
-});
+// the relay of the page's own host (never the primary's for another pane)
+const needRelay = (e) => {
+  const r = relayOf(e);
+  if (!r) throw new Error(i18nText("U0235"));
+  return r;
+};
+ipc.handle("relay:session", (e, sid) => needRelay(e).get(`/session/${encodeURIComponent(String(sid))}`));
 // Plan tab (relay path): {sid, plan, stored}, the live plan or the one rebuilt from state.db
-ipc.handle("relay:plan", (_e, sid) => {
-  if (!relay) throw new Error(i18nText("U0235"));
-  return relay.plan(String(sid ?? ""));
-});
-ipc.handle("relay:tokens", (_e, rangeOrDays) => {
-  if (!relay) throw new Error(i18nText("U0235"));
+ipc.handle("relay:plan", (e, sid) => needRelay(e).plan(String(sid ?? "")));
+ipc.handle("relay:tokens", (e, rangeOrDays) => {
+  const relay = needRelay(e);
   return require("./tokens-range").fetchTokens((p) => relay.get(p), rangeOrDays);
 });
 // On-demand quota refresh (Usage refresh button): the relay asks the plugins to refetch now, rate-limited to 30 s.
-ipc.handle("relay:quota-refresh", async () => {
-  if (!relay) throw new Error(i18nText("U0235"));
-  const r = await relay.post("/fleet/quotas/refresh", 45000);
+ipc.handle("relay:quota-refresh", async (e) => {
+  const r = await needRelay(e).post("/fleet/quotas/refresh", 45000);
   return { refreshed: !!r.refreshed, throttled: !!r.throttled, timedOut: !!r.timedOut, retryAfterS: Number(r.retryAfterS) || 0 };
 });
 // sub-agent views (B1–B4): message history, full messages and tool calls through the relay (history.js)
-require("./history").register(ipc, () => relay);
+require("./history").register(ipc, relayOf);
 // Settings > Hermes config: Hermes' config.yaml per profile and the gateway / relay restarts, through the relay
-require("./hermes-config").register(ipc, () => relay);
+require("./hermes-config").register(ipc, relayOf);
 ipc.handle("open-external", (_e, url) => {
   const u = httpUrl(url);
   if (u) return shell.openExternal(u);
@@ -1363,7 +1384,7 @@ ipc.handle("open-external", (_e, url) => {
 ipc.on("rendered", () => {
   if (!SHOT || !win) return;
   setTimeout(async () => {
-    const img = await win.webContents.capturePage();
+    const img = await (views.primaryContents() || win.webContents).capturePage();
     const file = typeof SHOT === "string" ? path.resolve(SHOT) : path.join(app.getPath("temp"), "hermes-deck-shot.png");
     fs.writeFileSync(file, img.toPNG());
     console.log(`screenshot: ${file}`);
@@ -1385,34 +1406,19 @@ function createWindow() {
     ...(IS_MAC
       ? { titleBarStyle: "hiddenInset" }
       : { titleBarStyle: "hidden", titleBarOverlay: theme.titleBarOverlay() }),
-    webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
-      additionalArguments: [`--deck-language=${i18nLanguage()}`, theme.arg()],
-      contextIsolation: true,
-      sandbox: true,
-      nodeIntegration: false,
-      spellcheck: false,
-    },
+    // the window's own page stays empty (its ground shows through the divider); the Deck pages are the host views
+    webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false },
   });
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    const u = httpUrl(url);
-    if (u) shell.openExternal(u);
-    return { action: "deny" };
-  });
-  win.webContents.on("will-navigate", (e, url) => {
-    if (!url.startsWith("deck://")) e.preventDefault();
-  });
-  win.webContents.on("did-start-navigation", (_e, _url, inPlace, isMainFrame) => {
-    if (isMainFrame && !inPlace) desktop.setView(null, activeOf());
-  });
-  require("./context-menu").attachContextMenu(win); // cut/copy/paste on right-click in text fields
+  win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  win.webContents.on("will-navigate", (e) => e.preventDefault());
   theme.attach(win);
-  win.webContents.on("will-prevent-unload", (e) => { if (switchingHost) e.preventDefault(); }); // switch wins
-  win.loadURL(appUrl());
+  views.attach(win);
+  views.registerDivider(ipcMain, (ratio) => { if (!FIXTURE && !WS_SHOT) settings.setPanes({ ratio }); }); // the divider's final position is kept
+  views.apply(paneState()); // the primary host's page (and the right pane's, when split was on at the last quit)
   win.on("focus", () => tg && tg.wakeReads && tg.wakeReads()); // C5: marks held while in the background
 }
 
-// Dictation records from the microphone, in the Deck's own page only. Chromium asks the embedder; everything else
+// Dictation records from the microphone, in the Deck's own pages only. Chromium asks the embedder; everything else
 // (camera, geolocation, notifications, any other origin or frame) stays refused, as it was with no handler at all.
 const MIC_PERMISSIONS = new Set(["media", "microphone"]);
 function micAllowed(contents, permission, details) {
@@ -1422,10 +1428,11 @@ function micAllowed(contents, permission, details) {
   const types = details && Array.isArray(details.mediaTypes) ? details.mediaTypes : [];
   return !types.length || types.every((t) => t === "audio"); // never video
 }
+const ownPage = (contents) => !!contents && views.hostIds().some((id) => { const p = views.pageOf(id); return p && p.wc === contents; });
 function installPermissions() {
   const ses = require("electron").session.defaultSession;
-  ses.setPermissionRequestHandler((contents, permission, callback, details) => callback(!!win && contents === win.webContents && micAllowed(contents, permission, details)));
-  ses.setPermissionCheckHandler((contents, permission, _origin, details) => !!win && !!contents && contents === win.webContents && micAllowed(contents, permission, details));
+  ses.setPermissionRequestHandler((contents, permission, callback, details) => callback(ownPage(contents) && micAllowed(contents, permission, details)));
+  ses.setPermissionCheckHandler((contents, permission, _origin, details) => ownPage(contents) && micAllowed(contents, permission, details));
 }
 
 app.whenReady().then(() => {
@@ -1483,7 +1490,7 @@ app.whenReady().then(() => {
   }
   device.registerIpc();
   // Settings › Update the host: the relay token and this device's key, before the desktop shell like every channel
-  hostUpdater = createHostUpdater({ relay: () => relay, settings, deviceId: () => device.id, app: app.getVersion(), file: path.join(app.getPath("userData"), "host-update.json") });
+  hostUpdater = createHostUpdater({ relay: primaryRelay, settings, deviceId: () => device.id, app: app.getVersion(), file: path.join(app.getPath("userData"), "host-update.json") });
   ipc.handle("hostupdate:update", () => hostUpdater.update());
   ipc.handle("hostupdate:restart", (_e, profile) => hostUpdater.restart(profile));
   const demoUrl = SHOT && typeof arg("workspace-demo") === "string" ? arg("workspace-demo") : null;
@@ -1500,27 +1507,32 @@ app.whenReady().then(() => {
   initSpaces({ ipc, win, relayCfg: botscreen.relayCfg, relayFetch: botscreen.relayFetch, deviceId: () => device.id, settings, notify: (k, p) => desktop.notify(k, p), send, desktops: localDesktops });
   // agent desktops on this computer (off until the user turns them on, after the consent sheet); before the desktop shell
   desktopsHost = initDesktops({ ipc, settings, presence: device, send, dataDir: path.join(app.getPath("userData"), "desktops"), shot: !!SHOT });
-  desktop.init({ win, settings, icon: ICON, shot: !!SHOT }); // desktop shell: notifications, pet, tray, close-to-tray
-  win.on("close", (e) => { windowClosing = !e.defaultPrevented; }); // registered after close-to-tray
+  desktop.init({ win, settings, icon: ICON, shot: !!SHOT, pages: views, showHost }); // desktop shell: notifications, pet, tray, close-to-tray
+  // registered after close-to-tray: a real close first lets every page unload (drafts flush, untouched sessions go;
+  // a page that holds finishes with bridge:unload-done), then the window closes for good
+  win.on("close", (e) => {
+    windowClosing = !e.defaultPrevented;
+    if (!windowClosing || !views.hostIds().length) return;
+    e.preventDefault();
+    views.closeAll().then(() => { if (win && !win.isDestroyed()) win.close(); });
+  });
   // Bot screen: off until "Desktop control" is on (Settings > This device); fixture runs pick a scene with --botscreen=<scene>
   const bsScene = FIXTURE && arg("botscreen") ? (typeof arg("botscreen") === "string" ? arg("botscreen") : "on") : null;
-  botscreen.init({ win, settings, presence: device, send, desktop, shot: !!SHOT, fixture: bsScene });
+  botscreen.init({ win, settings, presence: device, send, desktop, shot: !!SHOT, fixture: bsScene, pages: views });
   if (FIXTURE) {
-    if (BRIDGE_FAKE) startBridge();
+    // one page (host ""), no runtimes for other hosts; a fake bridge runs on it when asked
+    if (BRIDGE_FAKE) hosts.ensure({ id: "", name: "", relay: { url: "", token: "" }, bridge: settings.data.bridge });
     return startTelegram(); // fixture Telegram respects modes and never connects to the network
   }
-  startRelay();
-  startBridge();
-  startWatchers();
+  syncHosts(); // every saved host's runtime, for the app's lifetime
+  attachPrimary();
   startTelegram();
 });
 
 /** The app's own connections and children end; safe to run more than once. */
 function shutdown() {
   if (desktopsHost) desktopsHost.quit(); // agent desktops here stop (stopped, not removed); once
-  if (relay) relay.stop();
-  if (bridge) bridge.stop();
-  for (const w of watchers.values()) w.client.stop();
+  hosts.stopAll(); // every host's relay client and direct connection
   cancelLogin();
 }
 app.on("window-all-closed", () => {

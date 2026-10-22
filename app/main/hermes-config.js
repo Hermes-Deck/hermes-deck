@@ -28,21 +28,22 @@ function answer({ status, body }) {
 }
 
 function register(ipc, getRelay) {
-  const relay = () => {
-    const r = getRelay();
+  // getRelay(e): the relay of the asking page's host (multi-host)
+  const relay = (e) => {
+    const r = getRelay(e);
     if (!r || typeof r.call !== "function") throw new Error(i18nText("U0235"));
     return r;
   };
-  ipc.handle("hcfg:schema", async () => answer(await relay().call("GET", "/hermes/config/schema", undefined, 70000)));
-  ipc.handle("hcfg:get", async (_e, profile) => {
+  ipc.handle("hcfg:schema", async (e) => answer(await relay(e).call("GET", "/hermes/config/schema", undefined, 70000)));
+  ipc.handle("hcfg:get", async (e, profile) => {
     if (!PROFILE_RE.test(String(profile || ""))) throw new Error(i18nText("hcfg.badRequest"));
-    return answer(await relay().call("GET", `/hermes/config?profile=${encodeURIComponent(profile)}`, undefined, 70000));
+    return answer(await relay(e).call("GET", `/hermes/config?profile=${encodeURIComponent(profile)}`, undefined, 70000));
   });
-  ipc.handle("hcfg:save", async (_e, o) => answer(await relay().call("POST", "/hermes/config", checkSave(o), 70000)));
-  ipc.handle("hcfg:restart-state", async () => answer(await relay().call("GET", "/hermes/restart")));
-  ipc.handle("hcfg:restart", async (_e, target) => {
+  ipc.handle("hcfg:save", async (e, o) => answer(await relay(e).call("POST", "/hermes/config", checkSave(o), 70000)));
+  ipc.handle("hcfg:restart-state", async (e) => answer(await relay(e).call("GET", "/hermes/restart")));
+  ipc.handle("hcfg:restart", async (e, target) => {
     if (target !== "gateway" && target !== "relay") throw new Error(i18nText("hcfg.badRequest"));
-    return answer(await relay().call("POST", "/hermes/restart", { target }));
+    return answer(await relay(e).call("POST", "/hermes/restart", { target }));
   });
 }
 

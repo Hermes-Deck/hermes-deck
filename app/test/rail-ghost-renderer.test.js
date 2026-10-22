@@ -105,17 +105,18 @@ test("renderer intent uses the correct draft, file tray, outbox and history for 
   for (const sid of ["history", "active", "echo", "live"]) assert.equal(!!d.hasIntent(sid), true, sid);
 });
 
-test("host resumes close and reload as distinct unload actions", () => {
+test("host resumes a held unload only while the window closes; a host switch never reloads a page", () => {
   const main = fs.readFileSync(path.join(__dirname, "../main/main.js"), "utf8");
-  const start = main.indexOf("function resumeRailUnload()");
+  const start = main.indexOf("function resumeRailUnload(");
   assert.ok(start >= 0, "host unload resumer exists");
   const end = main.indexOf('\nipc.handle("bridge:unload-done"', start);
   for (const windowClosing of [true, false]) {
     const calls = [];
-    const ctx = { windowClosing, appUrl: () => "deck://app/index.html?host=h1", win: { isDestroyed: () => false, close: () => calls.push("close"), loadURL: () => { calls.push("reload"); return Promise.resolve(); } } };
-    vm.runInNewContext(main.slice(start, end) + "\nresumeRailUnload();", ctx);
-    assert.deepEqual(calls, [windowClosing ? "close" : "reload"]);
+    const ctx = { windowClosing, views: { finishClose: (id) => { calls.push(["close", id]); return true; } } };
+    vm.runInNewContext(main.slice(start, end) + "\nresumeRailUnload('h1');", ctx);
+    assert.deepEqual(calls, windowClosing ? [["close", "h1"]] : [], "kept-warm pages are never reloaded");
   }
+  assert.ok(!main.includes("loadURL(appUrl"), "no page reload path is left in main");
 });
 
 test("New session focuses an untouched current session instead of creating another", async () => {

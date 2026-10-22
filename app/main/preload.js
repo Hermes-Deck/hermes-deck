@@ -104,9 +104,20 @@ contextBridge.exposeInMainWorld("deck", {
   hosts: {
     add: (spec) => ipcRenderer.invoke("hosts:add", spec), // {name, relay: {url, token}, bridge}
     remove: (id) => ipcRenderer.invoke("hosts:remove", id),
+    // show host `id` in THE PANE THAT CALLED (the panes swap when the other one shows it); this page is not reloaded
+    // and may stay alive hidden; resolves once the switch is on screen
     select: (id) => ipcRenderer.invoke("hosts:select", id),
     requests: () => ipcRenderer.invoke("hosts:requests"),
     answer: (hostId, kind, id, value, o) => ipcRenderer.invoke("hosts:answer", hostId, kind, id, value, o),
+    // split view (main/host-views.js): this page's own placement {split, pane: "full"|"left"|"right"|null, hostId,
+    // panes: [{side, hostId}]}; setSplit(on) opens the next saved host beside this pane (off keeps this pane);
+    // onLayout fires with this page's placement whenever split, pane or host changes, hidden pages included
+    layout: () => ipcRenderer.invoke("hosts:layout"),
+    setSplit: (on) => ipcRenderer.invoke("hosts:set-split", on === true),
+    onLayout: (cb) => listen("hosts")((m) => { if (m && m.t === "layout") cb({ split: m.split, pane: m.pane, hostId: m.hostId, panes: m.panes }); }),
+    // every host's relay and direct-connection state: [{id, name, relay: {status}, sessions: {status}}]; onEvent
+    // also delivers {t: "status", hosts} whenever any of them changes
+    status: () => ipcRenderer.invoke("hosts:status"),
     onEvent: listen("hosts"),
   },
   updates: {

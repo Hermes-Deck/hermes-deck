@@ -487,8 +487,8 @@ test("late fixture startup also respects Telegram disable without reopening its 
   let release;
   let stopped = 0;
   const statuses = [];
-  const ctx = { tg: null, fixture: null, relay: null, tgEpoch: 1, FIXTURE: "fixture.json", wire() {}, path,
-    app: { getPath: () => "/fixture-profile" }, setRelay() {}, send() {}, setTg: (s) => statuses.push(s.status),
+  const ctx = { tg: null, fixture: null, tgEpoch: 1, FIXTURE: "fixture.json", BRIDGE_FAKE: undefined, wire() {}, path,
+    app: { getPath: () => "/fixture-profile" }, hosts: { ensure: () => ({ adoptRelay() {} }) }, send() {}, setTg: (s) => statuses.push(s.status),
     settings: { data: { chat: { modes: ["telegram"] }, firstRunDone: true } }, telegramReady: require("../renderer/chat-modes").telegramReady,
     require: () => ({ FixtureService: class { data = {}; start() { return new Promise((r) => { release = r; }); } stop() { stopped++; } meInfo() { return {}; } },
       FixtureRelay: class { on() {} start() {} } }),

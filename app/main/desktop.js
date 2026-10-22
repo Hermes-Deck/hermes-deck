@@ -37,15 +37,17 @@ if (IS_WIN) app.setAppUserModelId(app.isPackaged ? APP_ID : process.execPath);
 
 const S = {
   win: null,
+  pages: null, // the host pages (main/host-views.js): where a message goes, which page is on screen, who may call
+  showHost: null, // main.js: put a host on screen (a notification's click)
   settings: null,
   icon: null, // build/icon.png
   shot: false,
   quitting: false,
   dialogs: null, // latest Telegram dialogs: chat names for the toasts
-  agents: {}, // latest relay agents: which bot belongs to which agent
-  agentsHost: null,
+  agentsByHost: new Map(), // host id -> that relay's latest agents: which bot belongs to which agent
   avatars: {}, // chat key ("group" for the forum group) -> data: URL
-  summary: { running: 0, subs: 0, unread: 0, pending: 0, offline: true }, // from the renderer
+  summaries: new Map(), // host id -> that page's fleet summary; the pet, tray and badge show their sum
+  summary: { running: 0, subs: 0, unread: 0, pending: 0, offline: true }, // the sum
   hidden: false, // G2: this run started at login straight into the tray (window not shown)
   autostart: null, // G2: the login-start state last read from the OS
 };
@@ -56,7 +58,13 @@ let updates = null;
 const icons = new Map(); // chat key -> {url, img}
 
 const flags = () => (S.settings ? S.settings.data.desktop : {});
-const toRenderer = (msg) => S.win && !S.win.isDestroyed() && S.win.webContents.send("desktop", msg);
+// desktop events go to the primary (left / full) pane's page: a Telegram chat to open, Settings to show, a chime
+// (one sound, not one per pane); tray-made settings changes go to every page, each with its own view
+const toRenderer = (msg) => {
+  if (!S.pages) return S.win && !S.win.isDestroyed() && S.win.webContents.send("desktop", msg);
+  if (msg && msg.t === "settings") return S.pages.sendAll("desktop", (hostId) => ({ t: "settings", settings: S.settings.publicView(hostId) }));
+  return S.pages.sendPrimary("desktop", msg);
+};
 const inFront = () => !!(S.win && !S.win.isDestroyed() && S.win.isVisible() && !S.win.isMinimized() && S.win.isFocused());
 let locked = false;
 function unlocked() {
@@ -66,29 +74,46 @@ function unlocked() {
 }
 const isLive = (s) => s.state === "running" && !s.stale;
 const count = (v) => Math.max(0, Math.min(99999, Math.floor(Number(v)) || 0));
-let view = null;
+// what each host's page says it shows (split view: one per pane; a hidden page's view does not count)
+const views = new Map(); // host id -> {channel, key, sid, profile, visible}
 const bounded = (s, max) => s === null || (typeof s === "string" && s.length > 0 && s.length <= max && !/[\x00-\x1f\x7f]/.test(s));
+const knownHost = (hostId) => typeof hostId === "string" && (S.pages ? S.pages.has(hostId) : !!hostId && hostId === S.settings?.data.activeHost);
 function setView(value, hostId) {
-  view = null; // invalid/stale visibility must fail toward a notification, never a remembered selection
+  if (typeof hostId === "string") views.delete(hostId); // invalid/stale visibility must fail toward a notification, never a remembered selection
   if (value === null) return true;
   if (!value || typeof value !== "object" || Array.isArray(value)
     || Object.keys(value).some(k => !["channel", "key", "sid", "profile", "visible"].includes(k))
     || !["telegram", "sessions", "bots"].includes(value.channel) || typeof value.visible !== "boolean"
     || !bounded(value.key ?? null, 200) || !bounded(value.sid ?? null, 512) || !bounded(value.profile ?? null, 64)
-    || typeof hostId !== "string" || !hostId || hostId !== S.settings?.data.activeHost) return false;
-  view = { channel: value.channel, key: value.key ?? null, sid: value.sid ?? null, profile: value.profile ?? null, visible: value.visible, hostId };
+    || !knownHost(hostId)) return false;
+  views.set(hostId, { channel: value.channel, key: value.key ?? null, sid: value.sid ?? null, profile: value.profile ?? null, visible: value.visible, hostId });
   notifier?.clear();
   return true;
 }
+/** True when the source is the conversation some VISIBLE pane shows (Telegram is one account: any pane counts). */
 function viewing(source) {
-  if (!inFront() || !view?.visible || !source?.hostId || source.hostId !== view.hostId || !source.channel || source.channel !== view.channel) return false;
-  if (source.channel === "telegram") return !!source.key && source.key === view.key;
-  return !!source.sid && !!source.profile && source.sid === view.sid && source.profile === view.profile;
+  if (!inFront() || !source?.hostId || !source.channel) return false;
+  for (const [hostId, view] of views) {
+    if (!view.visible || view.channel !== source.channel || (S.pages && !S.pages.isShown(hostId))) continue;
+    if (source.channel === "telegram") { if (!!source.key && source.key === view.key) return true; continue; }
+    if (source.hostId === hostId && !!source.sid && !!source.profile && source.sid === view.sid && source.profile === view.profile) return true;
+  }
+  return false;
 }
+/**
+ * A notification's click: the source host comes on screen (its pane focused when already shown, else the primary
+ * pane takes it) and ITS page is told what to open, once that page is ready for it. No reload, no other page.
+ */
 function openSource(source, request) {
-  if (Array.isArray(S.settings?.data.hosts) && !S.settings.data.hosts.some(h => h.id === source?.hostId)) return;
+  if (Array.isArray(S.settings?.data.hosts) && S.settings.data.hosts.length && !S.settings.data.hosts.some(h => h.id === source?.hostId)) return;
   showDeck(null);
-  if (source?.hostId) toRenderer({ t: "source-open", ...source, ...(request ? { id: request.id } : {}) });
+  if (typeof source?.hostId !== "string") return;
+  const msg = { t: "source-open", ...source, ...(request ? { id: request.id } : {}) };
+  if (!S.pages) return toRenderer(msg);
+  const hostId = source.hostId;
+  Promise.resolve(S.pages.reveal(hostId, (id) => S.showHost && S.showHost(id))).then((ready) => {
+    if (ready && S.pages.has(hostId)) S.pages.send(hostId, "desktop", msg);
+  }).catch((e) => console.error(`desktop: ${e.message}`));
 }
 const petTargets = new Map();
 let petTargetId = 0;
@@ -111,7 +136,12 @@ function openSettings(section) {
 // --- names and avatars for the toasts --------------------------------------------------------------
 function agentOfBot(bot) {
   const u = bot && bot.username ? bot.username.toLowerCase() : null;
-  return u ? Object.values(S.agents).find((a) => a && a.bot && a.bot.toLowerCase() === u) || null : null;
+  if (!u) return null;
+  for (const agents of S.agentsByHost.values()) {
+    const a = Object.values(agents).find((x) => x && x.bot && x.bot.toLowerCase() === u);
+    if (a) return a;
+  }
+  return null;
 }
 
 /** DM: the agent's name (the bot's when the relay does not know it); topic: "# title". */
@@ -138,7 +168,7 @@ function sessionKey(s, hostId) {
     const key = `t${String(s.thread).replace(/^t/, "")}`;
     return bounded(key, 200) && /^t\d+$/.test(key) ? key : null;
   }
-  const a = S.agentsHost === hostId && S.agents[s.agent];
+  const a = S.agentsByHost.get(hostId)?.[s.agent];
   const bot = a && a.bot ? (d.bots || []).find((b) => b.username && b.username.toLowerCase() === a.bot.toLowerCase()) : null;
   return bot && bounded(bot.key, 200) && /^u\d+$/.test(bot.key) ? bot.key : null;
 }
@@ -225,7 +255,7 @@ function completion(s, hostId, identity) {
 }
 function fromRelay(m, { hostId = null } = {}) {
   if (m.t === "hello" && updates) updates.available(m.v);
-  if (m.agents && typeof m.agents === "object") { S.agents = m.agents; S.agentsHost = hostId; }
+  if (m.agents && typeof m.agents === "object") S.agentsByHost.set(hostId, m.agents);
   if (m.t === "snapshot") {
     relayLive.set(hostId, new Map((m.sessions || []).slice(-3000).map((s) => [sessionIdentity(s), s])));
     return;
@@ -330,8 +360,7 @@ function fromBridge(m, { hostId = null, client = null } = {}) {
 
 function dropHost(hostId, relay = true) {
   directLive.delete(hostId);
-  if (relay) relayLive.delete(hostId);
-  if (relay && S.agentsHost === hostId) { S.agents = {}; S.agentsHost = null; }
+  if (relay) { relayLive.delete(hostId); S.agentsByHost.delete(hostId); views.delete(hostId); S.summaries.delete(hostId); }
   for (const [id, entry] of asked) if (entry.hostId === hostId) {
     entry.notice?.close();
     asked.delete(id);
@@ -469,11 +498,21 @@ function cleanSummary(s) {
   const o = s && typeof s === "object" ? s : {};
   return { running: count(o.running), subs: count(o.subs), unread: count(o.unread), pending: count(o.pending), offline: !!o.offline };
 }
+/** The device's one summary: counts add up over the hosts; offline only when every host is. */
+function sumSummaries(list) {
+  const out = { running: 0, subs: 0, unread: 0, pending: 0, offline: true };
+  for (const s of list) {
+    for (const k of ["running", "subs", "unread", "pending"]) out[k] = count(out[k] + s[k]);
+    if (!s.offline) out.offline = false;
+  }
+  if (!list.length) out.offline = true;
+  return out;
+}
 
 // --- setup ------------------------------------------------------------------------------------------
-function init({ win, settings, icon, shot }) {
-  Object.assign(S, { win, settings, icon, shot: !!shot });
-  if (S.shot) return devScroll(win); // screenshot runs: no tray, no pet, no toasts
+function init({ win, settings, icon, shot, pages = null, showHost = null }) {
+  Object.assign(S, { win, settings, icon, shot: !!shot, pages, showHost });
+  if (S.shot) return devScroll(pages ? pages.primaryContents() : win.webContents); // screenshot runs: no tray, no pet, no toasts
   const fullscreen = process.platform === "darwin" ? fullscreenProbe(systemPreferences) : null;
   notifier = new Notifier({
     enabled: () => !!flags().notifications,
@@ -552,16 +591,19 @@ function init({ win, settings, icon, shot }) {
   });
   if (IS_WIN && typeof Notification.handleActivation === "function") Notification.handleActivation(() => showDeck(null));
 
+  // every page reports its own host's fleet summary; the pet, tray and badge show the sum over the live hosts
+  const ownPage = (e) => !win.isDestroyed() && (S.pages ? S.pages.owns(e) : e.sender === win.webContents);
   ipcMain.on("desktop:pet-state", (e, s) => {
-    if (win.isDestroyed() || e.sender !== win.webContents) return;
-    S.summary = cleanSummary(s);
+    if (!ownPage(e)) return;
+    S.summaries.set(S.pages ? S.pages.hostOf(e) : "", cleanSummary(s));
+    S.summary = sumSummaries([...S.summaries.values()]);
     pet.setState(S.summary);
     if (tray) tray.status(statusParts(S.summary).map((p) => p.text).join(" · "));
     applyBadge();
     badge.seen = true;
   });
   ipcMain.handle("desktop:test", (e) => {
-    if (win.isDestroyed() || e.sender !== win.webContents) return "error";
+    if (!ownPage(e)) return "error";
     if (!Notification.isSupported()) return "unsupported";
     notifier.notify("test", { title: "Hermes Deck", body: i18nText("U0220"), force: true });
     return "ok";
@@ -659,12 +701,12 @@ function shotPet() {
   return true;
 }
 
-/** --shot with --shot-scroll=<css selector>: scroll that element into view before the capture. */
-function devScroll(win) {
+/** --shot with --shot-scroll=<css selector>: scroll that element into view before the capture (the page's webContents). */
+function devScroll(wc) {
   const sel = arg("shot-scroll");
-  if (typeof sel !== "string") return;
+  if (typeof sel !== "string" || !wc) return;
   const js = `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (el) el.scrollIntoView({ block: "start" }); })()`;
-  win.webContents.once("did-finish-load", () => setTimeout(() => win.webContents.executeJavaScript(js).catch(() => {}), 2500));
+  wc.once("did-finish-load", () => setTimeout(() => wc.executeJavaScript(js).catch(() => {}), 2500));
 }
 
-module.exports = { observe, setView, dropHost, init, applySettings, notify, quit, cancelQuit, shotPet, startHidden, info, trayAlert, openSettings };
+module.exports = { observe, setView, dropHost, init, applySettings, notify, quit, cancelQuit, shotPet, startHidden, info, trayAlert, openSettings, sumSummaries };

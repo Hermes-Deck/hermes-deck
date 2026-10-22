@@ -1,0 +1,10 @@
+/* The split view's divider (main/host-views.js): a transparent page the width of the gap between the two panes,
+   with one hairline in the middle; while dragging it covers the whole window so every pointer move reaches it. */
+html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+body { cursor: col-resize; user-select: none; -webkit-user-select: none; }
+#bar { position: absolute; top: 0; bottom: 0; left: 0; width: 6px; pointer-events: none; }
+#bar::after { content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 1px; background: var(--line); }
+:root { --line: rgba(125, 125, 125, 0.45); } /* basalt */
+:root[data-theme="marble"] { --line: rgba(103, 98, 90, 0.4); }
+:root[data-theme="aegean"] { --line: rgba(137, 149, 178, 0.4); }
+body.dragging #bar { display: none; }

@@ -20,8 +20,9 @@ function explain(e) {
 }
 
 function register(ipcMain, getRelay) {
-  const relay = () => {
-    const r = getRelay();
+  // getRelay(e): the relay of the asking page's host (multi-host); a page without one gets the "no relay" error
+  const relay = (e) => {
+    const r = getRelay(e);
     if (!r) throw new Error(i18nText("U0235"));
     return r;
   };
@@ -30,21 +31,21 @@ function register(ipcMain, getRelay) {
     if (!re.test(s)) throw new Error(i18nText("U0236", { what: what }));
     return s;
   };
-  const get = (p) => relay().get(p).catch((e) => Promise.reject(explain(e)));
-  ipcMain.handle("relay:messages", (_e, sid, before) => {
+  const get = (e, p) => relay(e).get(p).catch((err) => Promise.reject(explain(err)));
+  ipcMain.handle("relay:messages", (e, sid, before) => {
     const s = check(SID_RE, sid, i18nText("U0237"));
     const b = before === undefined || before === null || before === "" ? null : check(/^\d{1,15}$/, before, i18nText("A0145"));
-    return get(`/session/${encodeURIComponent(s)}/messages?limit=50${b ? `&before=${b}` : ""}`);
+    return get(e, `/session/${encodeURIComponent(s)}/messages?limit=50${b ? `&before=${b}` : ""}`);
   });
-  ipcMain.handle("relay:message-full", (_e, id) => get(`/message/${encodeURIComponent(check(MSG_ID_RE, id, i18nText("U0238")))}/full`));
+  ipcMain.handle("relay:message-full", (e, id) => get(e, `/message/${encodeURIComponent(check(MSG_ID_RE, id, i18nText("U0238")))}/full`));
   // Run tab: tool calls grouped by turn; `before` is the turn cursor of the previous page
-  ipcMain.handle("relay:tools", (_e, sid, before) => {
+  ipcMain.handle("relay:tools", (e, sid, before) => {
     const s = check(SID_RE, sid, i18nText("U0237"));
     const b = before === undefined || before === null || before === "" ? null : check(/^\d{1,15}$/, before, i18nText("A0145"));
-    return get(`/session/${encodeURIComponent(s)}/tools?limit=5${b ? `&before=${b}` : ""}`);
+    return get(e, `/session/${encodeURIComponent(s)}/tools?limit=5${b ? `&before=${b}` : ""}`);
   });
-  ipcMain.handle("relay:call", (_e, sid, call) =>
-    get(`/session/${encodeURIComponent(check(SID_RE, sid, i18nText("U0237")))}/call/${encodeURIComponent(check(CALL_RE, call, i18nText("U0239")))}`)
+  ipcMain.handle("relay:call", (e, sid, call) =>
+    get(e, `/session/${encodeURIComponent(check(SID_RE, sid, i18nText("U0237")))}/call/${encodeURIComponent(check(CALL_RE, call, i18nText("U0239")))}`)
   );
 }
 

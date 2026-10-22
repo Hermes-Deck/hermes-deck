@@ -47,10 +47,10 @@ function harness() {
   const sandbox = {
     require: (name) => {
       if (name === "electron") return electron;
-      if (name === "./desktop") return { quit: () => app.quit(), cancelQuit() { cancellations++; }, observe() {}, applySettings() {}, notify: (_kind, payload) => notices.push(payload) };
-      if (name === "./cua") return { killAll() {}, cancelQuit() { cuaCancellations++; } };
+      if (name === "./desktop") return { quit: () => app.quit(), cancelQuit() { cancellations++; }, observe() {}, dropHost() {}, applySettings() {}, notify: (_kind, payload) => notices.push(payload) };
+      if (name === "./cua") return { killAll() {}, cancelQuit() { cuaCancellations++; }, attachRelay() {} };
       if (name === "./history") return { register() {} };
-      if (!name.startsWith("./") || ["./telegram", "./ipc-guard", "./attach", "./media", "./hermes-uploads"].includes(name)) return req(name);
+      if (!name.startsWith("./") || ["./telegram", "./ipc-guard", "./attach", "./media", "./hermes-uploads", "./host-runtime", "./host-views", "./host-layout"].includes(name)) return req(name);
       return stub;
     },
     __dirname: path.dirname(main), console: { error() {}, log() {} }, URL, Response, Buffer,
@@ -63,8 +63,15 @@ function harness() {
     clearTimeout: (timer) => timers.delete(timer),
   };
   vm.createContext(sandbox);
-  vm.runInContext(fs.readFileSync(main, "utf8") + "\nglobalThis.access = { setTg: (x) => { wire(x); tg = x; }, setSettings: (x) => { settings = x; }, setBridge: (x) => { bridge = x; }, uploads, attachments };", sandbox, { filename: main });
-  const own = { senderFrame: { url: "deck://app/index.html", parent: null } };
+  // the one page of the legacy host "" (no saved hosts), registered the way host-views.js registers a made page;
+  // a direct connection is injected into that host's runtime (multi-host: handlers resolve it from the sender)
+  const sender = { send() {}, close() {}, isDestroyed: () => false, isFocused: () => false, focus() {} };
+  const own = { sender, senderFrame: { url: "deck://app/index.html", parent: null } };
+  vm.runInContext(fs.readFileSync(main, "utf8") + `
+globalThis.access = { setTg: (x) => { wire(x); tg = x; }, setSettings: (x) => { settings = x; }, uploads, attachments,
+  setBridge: (x) => { const rt = hosts.ensure({ id: "", name: "", relay: { url: "", token: "" }, bridge: { mode: "local" } }); rt.bridge = x; rt.phase = "open"; },
+  addPage: (wc) => { views.pages.set("", { hostId: "", wc, shown: true, readied: true, ready: Promise.resolve(true), _readyResolve() {}, view: {} }); } };`, sandbox, { filename: main });
+  sandbox.access.addPage(sender);
   return {
     app, exits, notices, cancelled: () => cancellations, cuaCancelled: () => cuaCancellations, access: sandbox.access,
     call: (ch, ...args) => handlers.get(ch)(own, ...args),
@@ -195,8 +202,8 @@ test("quit: settings changes cannot disable the draining client and can retry af
   let updates = 0;
   let stops = 0;
   const data = { chat: { modes: ["telegram"], defaultMode: "telegram" }, firstRunDone: true,
-    relay: {}, bridge: {}, telegram: {}, hiddenBots: [], readReceipts: true };
-  h.access.setSettings({ data, update: (patch) => { updates++; Object.assign(data, patch); }, publicView: () => data });
+    relay: {}, bridge: {}, telegram: {}, hiddenBots: [], readReceipts: true, hosts: [], activeHost: "" };
+  h.access.setSettings({ data, update: (patch) => { updates++; Object.assign(data, patch); }, publicView: () => data, isConfigured: () => false });
   h.access.setTg(Object.assign(new EventEmitter(), { sendFile: () => pending.promise, stop: async () => { stops++; } }));
   h.access.attachments.get = () => ({ token: "fixture-upload", name: "fixture.txt", size: 1 });
   h.access.attachments.discard = () => true;
@@ -262,7 +269,7 @@ test("quit: an in-flight Hermes message or file message finishes before its brid
     let stops = 0;
     let discarded = 0;
     h.app.stall = false;
-    h.access.setBridge({ send: () => pending.promise, stop: () => { stops++; pending.reject(new Error("bridge closed")); } });
+    h.access.setBridge({ send: () => pending.promise, stop: () => { stops++; pending.reject(new Error("bridge closed")); }, removeAllListeners() {} });
     const staged = { token: "fixture-file", name: "fixture-window.png", size: 4, buffer: Buffer.alloc(4), appshotText: "Window text" };
     h.access.attachments.get = () => staged;
     h.access.attachments.discard = () => { discarded++; return true; };

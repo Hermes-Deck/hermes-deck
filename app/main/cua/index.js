@@ -56,6 +56,7 @@ const arg = (name) => {
 
 const S = {
   win: null,
+  pages: null, // the host pages (main/host-views.js): which page is the primary pane's
   settings: null,
   presence: null, // main/presence.js DevicePresence: device id, the "desktop" switch, heartbeats
   send: null, // main.js send(channel, msg) to the renderer
@@ -763,9 +764,10 @@ function onQuit() {
 
 // ---------------------------------------------------------------- renderer calls (each one checked)
 function registerIpc() {
-  // multi-host: and the page must be the active host's (a stale page cannot pair or grant on the new host)
-  const own = (e) => !!(S.win && !S.win.isDestroyed() && e.sender === S.win.webContents
-    && samePage(e, S.settings && S.settings.data.activeHost));
+  // multi-host: and the page must be the primary pane's (desktop control is consent given to the primary host; a
+  // page of another host cannot pair or grant here)
+  const own = (e) => !!(S.win && !S.win.isDestroyed() && (S.pages ? S.pages.isPrimary(e)
+    : e.sender === S.win.webContents && samePage(e, S.settings && S.settings.data.activeHost)));
   const handle = (ch, fn) =>
     ipcMain.handle(ch, async (e, ...a) => {
       if (!own(e)) throw new Error(i18nText("U0175"));
@@ -854,7 +856,7 @@ function fixtureFeed() {
  * @param {string|null} [o.fixture]  fixture scene (fixture mode only)
  */
 function init(o) {
-  Object.assign(S, { win: o.win, settings: o.settings, presence: o.presence, send: o.send, desktop: o.desktop, version: app.getVersion(), shot: !!o.shot, fixture: o.fixture || null });
+  Object.assign(S, { win: o.win, pages: o.pages || null, settings: o.settings, presence: o.presence, send: o.send, desktop: o.desktop, version: app.getVersion(), shot: !!o.shot, fixture: o.fixture || null });
   // o.test (scripts/botscreen-e2e.js only): a fake installer and driver; the real wiring runs, headless
   const t = o.test || null;
   S.inert = S.shot && !S.fixture && !t;

@@ -4,7 +4,7 @@
 // prefers dark, marble when light. Pages get the theme twice: once as --deck-theme=<name> in their
 // additionalArguments (read by the preload, so the first paint is already right) and then as a "theme"
 // message whenever it changes.
-const { BrowserWindow, nativeTheme } = require("electron");
+const { BrowserWindow, webContents, nativeTheme } = require("electron");
 
 const THEMES = ["basalt", "marble", "aegean"];
 const CHOICES = [...THEMES, "system"];
@@ -50,8 +50,11 @@ function paint(win, name) {
 function broadcast() {
   const name = current();
   applied = name;
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send("theme", name);
+  // every page: the windows' own (pet, bot screen bar) and the host pages inside the main window (host-views.js)
+  const all = typeof webContents.getAllWebContents === "function" ? webContents.getAllWebContents() : null;
+  const targets = Array.isArray(all) ? all : BrowserWindow.getAllWindows().map((w) => (w.isDestroyed() ? null : w.webContents)).filter(Boolean);
+  for (const wc of targets) {
+    if (!wc.isDestroyed()) wc.send("theme", name);
   }
   for (const win of framed) paint(win, name);
 }
