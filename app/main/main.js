@@ -204,14 +204,18 @@ const send = (ch, msg) => { // device-level: every page; the observer files it u
 function hostList() {
   if (!settings) return [];
   const d = settings.data;
-  if (d.hosts.length) return d.hosts.map((h) => ({ id: h.id, name: h.name, relay: h.relay, bridge: h.bridge }));
+  if (d.hosts.length) {
+    // screenshot runs connect the primary host only (as the single connection did); the others' runtimes are not started
+    const list = SHOT ? d.hosts.filter((h) => h.id === d.activeHost) : d.hosts;
+    return list.map((h) => ({ id: h.id, name: h.name, relay: h.relay, bridge: h.bridge }));
+  }
   return settings.isConfigured() || (d.bridge && d.bridge.mode !== "off") ? [{ id: "", name: "", relay: d.relay, bridge: d.bridge }] : [];
 }
 /** Runtimes follow the saved hosts (new ones start, removed ones stop, edited ones restart the changed connection). */
 function syncHosts() {
   if (!settings || FIXTURE || WS_SHOT) return;
   const r = hosts.sync(hostList());
-  views.prune(hostList().map((h) => h.id));
+  views.prune(settings.data.hosts.length ? settings.data.hosts.map((h) => h.id) : hostList().map((h) => h.id)); // kept pages: the saved hosts'
   for (const id of r.removed) desktop.dropHost(id);
   if (r.added.length || r.removed.length || r.changed.length) pushHostStatus();
 }
