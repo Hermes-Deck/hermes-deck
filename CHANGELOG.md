@@ -12,6 +12,8 @@ The desktop app, relay and Hermes plugin share one version number.
 
 - A **Split view** button next to the host numbers shows two hosts side by side (when the app supports it); each pane has its own numbers, and the Windows caption-button space is reserved only in the right or full pane.
 
+- The top bar's host numbers sit in the bar's own flow between the breadcrumb and the right-hand controls (fleet capsule, search, Work, settings): centred while there is room, shifted left instead of overlapping when the right-hand group needs more space.
+
 - The chat title is no longer repeated in the top bar's breadcrumb; the chat header below shows it.
 - Hermes chats show one tool receipt per message you sent, after the work it started. A session watched from here (a sub-agent, a TUI or Telegram run) no longer piles a row of "1 tools" receipts under its work.
 - Tool counts read "1 tool" / "2 tools" in receipts, the sub-agent views and the session statistics.

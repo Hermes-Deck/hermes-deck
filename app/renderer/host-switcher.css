@@ -1,5 +1,5 @@
 /* Top bar host switcher: monitor-style numbers centred on the bar (host-switcher.js). */
-.host-bar { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 2; display: flex; align-items: center; gap: 8px; -webkit-app-region: no-drag; }
+.host-bar { flex: none; display: flex; align-items: center; gap: 8px; -webkit-app-region: no-drag; }
 .host-bar[hidden] { display: none; }
 .hb-nums { display: flex; align-items: center; gap: 6px; }
 .hb-num, .hb-split {
@@ -19,6 +19,3 @@
 .hb-dot.bad { background: var(--red); }
 .hb-split { margin-left: 4px; width: 28px; }
 .hb-split[hidden] { display: none; }
-@container topbar (max-width: 1000px) { /* see shell.css */
-  .host-bar { position: static; transform: none; }
-}

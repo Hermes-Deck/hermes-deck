@@ -212,12 +212,16 @@ test("layout drives which number is lit, marks the other pane's host and sets da
   assert.deepEqual(w.calls, [["select", "h1"]]);
 });
 
-test("--hb-half follows the width of the bar so the crumb stops short of the centre", () => {
-  const { doc, sw } = make();
-  assert.equal(doc.documentElement.style.set.get("--hb-half"), `${(3 * 32 - 6 + 40) / 2}px`);
-  const w = make({ noSplit: true });
-  assert.equal(w.doc.documentElement.style.set.get("--hb-half"), `${(3 * 32 - 6) / 2}px`);
-  assert.ok(sw);
+test("layout: the numbers sit in flow between the crumb and the right-hand group, which share the free width", () => {
+  const html = fs.readFileSync(path.join(RENDERER, "index.html"), "utf8");
+  const right = html.slice(html.indexOf('id="tb-right"'), html.indexOf("</header>"));
+  for (const id of ["crumb-extra", "capsule", "find-btn", "work-btn"]) assert.ok(right.includes(`id="${id}"`), `${id} sits in the right-hand group`);
+  const css = fs.readFileSync(path.join(RENDERER, "shell.css"), "utf8"), hb = fs.readFileSync(path.join(RENDERER, "host-switcher.css"), "utf8");
+  assert.ok(!/\.host-bar \{[^}]*position: absolute/.test(hb), "the switcher is not laid over the other controls");
+  assert.match(css, /\.topbar:has\(\.host-bar:not\(\[hidden\]\)\) \.crumb \{ flex: 1 1 0;/);
+  assert.match(css, /\.topbar:has\(\.host-bar:not\(\[hidden\]\)\) \.tb-right \{ flex: 1 1 0; min-width: max-content; \}/);
+  const app = fs.readFileSync(path.join(RENDERER, "app.js"), "utf8");
+  assert.ok(app.includes("els.crumb.after(HSW.root)"), "mounted after the crumb");
 });
 
 test("wiring: module and stylesheet are linked, the old select/status line and title span are gone", () => {
@@ -255,7 +259,7 @@ function appBlock(deckHosts) {
   const a = src.indexOf("  const HSW = window.DeckHostSwitcher.create({"), b = src.indexOf("  /** Show host `id` in this pane.");
   assert.ok(a > 0 && b > a);
   const doc = fakeDoc(), calls = [], handlers = {};
-  const crumb = { before: el => calls.push(["mounted", el.id]) };
+  const crumb = { after: el => calls.push(["mounted", el.id]) };
   const ctx = { window: { DeckHostSwitcher: HS }, document: doc, i18nText: (k, v) => I18N.t(k, v), SH: { icon: (n, s) => ({ icon: n, size: s }) },
     S: { settings: { firstRunDone: true, activeHost: "h1", relay: { url: "ws://r", hasToken: true }, bridge: { mode: "ssh" }, hosts: HOSTS.map(x => ({ ...x })) }, relay: { status: "open" } }, H: { status: { status: "open" } },
     SVM: { connectionState: (c, s) => (!c ? "unconfigured" : s === "open" ? "open" : "saved") }, hostSwitchPending: false, remoteHosts: [], els: { crumb },

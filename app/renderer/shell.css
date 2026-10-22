@@ -172,20 +172,18 @@ body.mac .app.side-hidden .topbar { padding-left: 80px; }
 .topbar .topbar-gear[aria-pressed="true"] { background: var(--press); color: var(--t1); }
 .topbar .hostver-banner { flex: 0 1 auto; min-width: 0; }
 
-/* The host switcher (host-switcher.css) is centred on the bar itself; the crumb stops short of it. --hb-half (half the
-   switcher's width) is set by host-switcher.js. Width rules follow the bar (container), not the window: the sidebar
-   and the Work pane change how much room the bar has. */
-.app .topbar { position: relative; container: topbar / inline-size; --tb-left: 12px; }
-.app.side-hidden .topbar { --tb-left: 48px; }
-body.mac .app.side-hidden .topbar { --tb-left: 116px; }
-.topbar:has(.host-bar:not([hidden])) .crumb { min-width: 0; max-width: calc(50% - var(--hb-half, 60px) - var(--tb-left) - 12px); }
+/* Right-hand controls (fleet capsule, search, Work pane, gear) sit in one group at the bar's right edge. With the host
+   switcher shown, the crumb and this group share the free width equally (flex-basis 0), so the numbers between them
+   are centred on the bar; when the group needs more than its half it keeps its width (min-width: max-content) and the
+   numbers move left instead of overlapping anything. Width rules follow the bar (container), not the window. */
+.tb-right { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: none; min-width: 0; }
+.app .topbar { position: relative; container: topbar / inline-size; }
+.topbar:has(.host-bar:not([hidden])) .crumb { flex: 1 1 0; min-width: 0; }
+.topbar:has(.host-bar:not([hidden])) .tb-right { flex: 1 1 0; min-width: max-content; }
 html[data-pane="left"] .app .topbar { padding-right: 12px; } /* split view: only the full/right pane sits under the window's caption buttons */
-@container topbar (max-width: 1400px) { /* keep the right-hand controls clear of the centred switcher */
+@container topbar (max-width: 1400px) { /* give the centred numbers room: search collapses to its icon */
   .topbar:has(.host-bar:not([hidden])) .findbtn { flex: none; width: 30px; padding: 0; justify-content: center; }
   .topbar:has(.host-bar:not([hidden])) .find-label, .topbar:has(.host-bar:not([hidden])) .find-kbd { display: none; }
-}
-@container topbar (max-width: 1000px) { /* too narrow for a true centre: the numbers sit between crumb and controls */
-  .topbar:has(.host-bar:not([hidden])) .crumb { max-width: none; }
 }
 
 /* ---------- main area: chat or inbox ---------- */

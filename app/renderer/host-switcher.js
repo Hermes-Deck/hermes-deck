@@ -134,7 +134,6 @@
       });
       const canSplit = typeof ctx.setSplit === "function";
       // half the bar's width (26px numbers, 6px gaps; the split button adds 40px): the crumb stops this far short of the centre
-      if (doc.documentElement && doc.documentElement.style) doc.documentElement.style.setProperty("--hb-half", `${((list.length * 32 - 6) + (canSplit ? 40 : 0)) / 2}px`);
       splitBtn.hidden = !canSplit;
       if (canSplit) {
         const on = !!(layout && layout.split);

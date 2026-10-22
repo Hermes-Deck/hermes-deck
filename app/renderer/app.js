@@ -427,7 +427,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     setSplit: deck.hosts?.setSplit ? (on) => deck.hosts.setSplit(on) : undefined, // older main: no split button
     onError: (e) => MV.toast(i18nText("common.saveFailed", { e: cleanErr(e) })),
   });
-  els.crumb.before(HSW.root);
+  els.crumb.after(HSW.root); // in flow between the crumb and the right-hand controls (shell.css centres it)
   document.addEventListener("deck-language", () => HSW.render());
   const renderHosts = () => HSW.render();
   const shownHost = () => HSW.shown();
@@ -1253,7 +1253,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     SV.notify(ok, text);
   }
   const gear = h("button", { class: "topbar-gear", type: "button", title: i18nText("set.open"), "aria-label": i18nText("A0231"), "data-i18n-title": "set.open", "data-i18n-aria-label": "A0231", dataset: { fk: "sv-gear" }, onclick: () => SV.toggle() }, SV.icon("gear", 15));
-  document.getElementById("topbar").appendChild(gear);
+  (document.getElementById("tb-right") || document.getElementById("topbar")).appendChild(gear); // right-hand controls group
   function renderGear() {
     gear.hidden = !(S.settings && S.settings.firstRunDone);
     gear.setAttribute("aria-pressed", SV.isOpen() ? "true" : "false");
