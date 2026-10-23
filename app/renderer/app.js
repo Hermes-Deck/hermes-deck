@@ -184,21 +184,11 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     return list.sort((a, b) => Number(isLive(b)) - Number(isLive(a)) || b.lastTs - a.lastTs).slice(0, 25);
   }
 
-  /** The session the live strip follows for this chat (this chat only): running first, then the latest. */
+  /** The session the status card follows for this chat (this chat only): running first, then the latest. */
   function liveFor(key) {
     const sc = scopeOf(key);
     const list = sessionsFor(key).filter((s) => inChat(s, sc));
     return list.find(isLive) || list[0] || null;
-  }
-
-  /** Where an agent is busy right now, when it is not in the open chat (top-level session or its sub-agents). */
-  function busyElsewhere(agentName) {
-    for (const s of S.relay.sessions.values()) {
-      if (s.parent || s.agent !== agentName) continue;
-      const kidsRun = kidsOf(s).filter(isLive).length;
-      if (isLive(s) || kidsRun) return { s, kidsRun };
-    }
-    return null;
   }
 
   function agentStatus(a) {
@@ -324,7 +314,6 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     head: document.getElementById("head"),
     msgs: document.getElementById("msgs"),
     msgsInner: document.getElementById("msgs-inner"),
-    strip: document.getElementById("strip"),
     input: document.getElementById("input"),
     send: document.getElementById("send"),
     note: document.getElementById("note"),
@@ -463,12 +452,14 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     if (window.DeckInbox?.mail?.hasUnsaved()) { MV.toast(i18nText("mail.leaveBlocked")); renderHosts(); return; }
     DR.flush(); // persist the old host's current draft before main reloads this page
     hostSwitchPending = true;
+    renderStrip();
     renderHosts();
     publishDesktopView();
     try {
       await deck.hosts.select(id); // existing guarded path owns consent reset and navigation
     } catch (e) {
       hostSwitchPending = false;
+      renderStrip();
       renderHosts();
       publishDesktopView();
       MV.toast(i18nText("common.saveFailed", { e: cleanErr(e) }));
@@ -1084,43 +1075,35 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   }
 
   function renderStrip() {
-    if (hermesMode()) return renderHermesStrip();
-    const parts = [];
-    if (S.relay.status !== "open") {
-      parts.push(h("span", { class: "quiet" }, S.relay.status === "unconfigured" ? i18nNode("U0466") : i18nNode("U0467")));
-    } else if (S.sel) {
-      const sess = liveFor(S.sel);
-      const sc = scopeOf(S.sel);
-      const away = !sess || !isLive(sess) ? sc && sc.kind === "dm" && sc.agent && busyElsewhere(sc.agent.name) : null;
-      if (away) {
-        const what = isLive(away.s) && away.s.curTool ? `${away.s.curTool.tool}` : away.kidsRun ? i18nText("U0468", { kidsRun: away.kidsRun }) : i18nText("U0410");
-        parts.push(h("span", { class: "now" }, i18nNode("U0469", { name: sc.agent.name, v: where(away.s) || i18nText("U0470"), what: what })));
-      }
-      if (!sess) {
-        if (!away) parts.push(h("span", { class: "quiet" }, i18nNode("U0471")));
-      } else {
-        const st = stateOf(sess);
-        if (isLive(sess) && sess.curTool) parts.push(h("span", { class: "now" }, ticker(sess.curTool.since, `${sess.curTool.tool} · `)));
-        else if (isLive(sess)) parts.push(h("span", { class: "now" }, i18nNode("U0376")));
-        else parts.push(h("span", { class: st === "failed" ? "bad" : st === "stale" ? "warn" : "quiet" }, `${STATE_TR[st]} · ${ago(sess.lastTs)}`));
-        const kids = kidsOf(sess);
-        const run = kids.filter(isLive).length;
-        if (kids.length) parts.push(h("span", { class: run ? "now-plain" : "" }, i18nNode("common.subagentSummary", { v: run ? i18nText("U0472", { run: run }) : "", length: kids.length })));
-        if (sess.ctxLen && sess.ctxUsed) {
-          const p = sess.ctxUsed / sess.ctxLen;
-          parts.push(h("span", { class: p >= 0.9 ? "bad" : p >= 0.7 ? "warn" : "" }, i18nNode("U0473", { ctxUsed: k(sess.ctxUsed), ctxLen: k(sess.ctxLen), v: Math.round(p * 100) })));
-        }
-        const lc = sess.lastCall;
-        if (lc) {
-          const prompt = lc.in + lc.cr + lc.cw;
-          const hit = prompt ? lc.cr / prompt : 0;
-          const cold = prompt > 40000 && hit < 0.2;
-          parts.push(h("span", { class: cold ? "warn" : "" }, i18nNode("U0474", { prompt: k(prompt), v: Math.round(hit * 100), v2: cold ? i18nText("U0475") : "" })));
-        }
-      }
-      if (typingNow(S.sel)) parts.push(h("span", { class: "now-plain" }, i18nNode("U0434")));
+    SH.publish("activity", composerActivity());
+  }
+
+  /** Selected-chat facts only: relay observation never grants direct controls. */
+  function composerActivity() {
+    const c = currentChat();
+    if (!c.id || hostSwitchPending) return null;
+    if (hermesMode()) {
+      if (!bridgeOpen()) return { sid: c.sid, agent: c.agent, phase: "disconnected", label: { key: "status.disconnected" } };
+      const n = H.nodes.get(c.sid);
+      if (n && (n.profile || "default") !== c.profile) return null;
+      const live = hermesLiveView();
+      if (live) return { ...live, agent: c.agent, model: n?.model || "" };
+      if (!n) return null;
+      const labels = { error: "status.failed", approval: "live.approval", question: "live.question", ratelimit: "U0563", finished: "status.completed" };
+      const phase = Object.hasOwn(labels, n.state) ? n.state : "idle";
+      return { sid: c.sid, agent: c.agent, model: n.model, node: n, phase,
+        label: { key: labels[phase] || "status.idle" }, steps: n.steps || [] };
     }
-    els.strip.replaceChildren(...parts);
+    if (S.relay.status !== "open") return { sid: c.sid, agent: c.agent, phase: "disconnected", label: { key: "status.disconnected" } };
+    const s = liveFor(S.sel);
+    if (!s) return null;
+    const live = isLive(s), phase = live ? (s.curTool ? "tool" : "thinking") : stateOf(s);
+    const recent = S.details.get(s.sid)?.recent || [];
+    return { sid: s.sid, agent: s.agent || c.agent, model: s.model, source: "relay", phase,
+      tool: live ? s.curTool?.tool || "" : "", since: live ? (s.curTool?.since || s.turnTs || 0) * 1000 : 0,
+      steps: recent.map(x => x.tool).filter(x => typeof x === "string").slice(-6),
+      label: live ? window.DeckLiveActivity.label(phase, s.curTool?.tool || "")
+        : { key: phase === "failed" ? "status.failed" : phase === "stale" ? "status.stale" : phase === "done" ? "status.completed" : "status.idle" } };
   }
 
   // ---------------------------------------------------------------- Workspace tab (renderer/workspace.js)
@@ -1571,13 +1554,17 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     if (S.open.has(sid)) S.open.delete(sid);
     else {
       S.open.add(sid);
-      if (!S.details.has(sid)) {
-        S.details.set(sid, { loading: true, recent: [] });
+      const cached = S.details.get(sid);
+      if (!cached || (!cached.loading && (cached.observedOnly || cached.error))) {
+        const pending = { loading: true, recent: cached?.recent || [] };
+        S.details.set(sid, pending);
         try {
           const d = await deck.session(sid);
-          S.details.set(sid, { recent: d.recent || [] });
+          const recent = new Map((d.recent || []).map(t => [t.call || t, t]));
+          for (const t of pending.recent) recent.set(t.call || t, { ...recent.get(t.call || t), ...t });
+          S.details.set(sid, { recent: [...recent.values()].slice(-30) });
         } catch (e) {
-          S.details.set(sid, { error: cleanErr(e), recent: [] });
+          S.details.set(sid, { error: cleanErr(e), observedOnly: true, recent: pending.recent });
         }
       }
     }
@@ -1604,8 +1591,9 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     );
   }
 
-  /** Keep expanded tool lists live from raw events. */
+  /** Keep observed steps live even before the tool-history panel is opened. */
   function applyDetail(e) {
+    if (e.ev === "tool_start" && !S.details.has(e.sid)) S.details.set(e.sid, { observedOnly: true, recent: [] });
     const d = S.details.get(e.sid);
     if (!d || !d.recent) return;
     if (e.ev === "tool_start") {
@@ -3467,30 +3455,6 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     return true; // the caller can now publish this painted conversation
   }
 
-  function renderHermesStrip() {
-    const parts = [];
-    if (!bridgeOpen()) parts.push(h("span", { class: H.status.status === "connecting" ? "quiet" : "bad" }, hermesStatusText()));
-    else {
-      const n = H.nodes.get(H.sel);
-      const bot = !n && BT ? BT.strip(H.sel) : null; // Botlar: a Bot Chat outside the snapshot shows its bot's state
-      if (bot) parts.push(...bot);
-      else if (!n) parts.push(h("span", { class: "quiet" }, H.sel ? i18nNode("U0595") : i18nNode("U0596")));
-      else {
-        // a live turn says what it does in the transcript's live row (live-activity.js), not again down here
-        if (!nodeLive(n)) parts.push(h("span", { class: n.state === "error" ? "bad" : "quiet" }, `${H_STATE_TR[n.state] || n.state}${n.updatedAt ? ` · ${ago(n.updatedAt)}` : ""}`));
-        const subs = [...H.nodes.values()].filter((c) => c.parent === n.sid);
-        if (subs.length) parts.push(h("span", { class: subs.some(nodeLive) ? "now-plain" : "" }, i18nNode("common.subagentSummary", { v: subs.filter(nodeLive).length ? i18nText("U0597", { length: subs.filter(nodeLive).length }) : "", length: subs.length })));
-        if (n.ctxMax && n.ctxUsed) {
-          const p = n.ctxUsed / n.ctxMax;
-          parts.push(h("span", { class: p >= 0.9 ? "bad" : p >= 0.7 ? "warn" : "" }, i18nNode("U0598", { v: n.ctxEstimated ? "~" : "", ctxUsed: k(n.ctxUsed), ctxMax: k(n.ctxMax), v2: Math.round(p * 100) })));
-        }
-        if (nodeLive(n) && !nodeControllable(n)) parts.push(h("span", { class: "quiet", title: i18nText("U0599") , "data-i18n-title": "U0599"}, i18nNode("U0600")));
-      }
-      if (H.requests.length) parts.push(h("span", { class: "warn" }, i18nNode("U0601", { length: H.requests.length })));
-    }
-    els.strip.replaceChildren(...parts);
-  }
-
   /**
    * Send the composer (or, with opts.box, a queued outbox message) to the selected (opts.sid) session. While the
    * session works the message is queued in the Deck's outbox instead (Hermes cannot cancel a queued prompt, and its
@@ -4606,6 +4570,9 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   new MutationObserver(publishDesktopView).observe(document.getElementById("detail"), { attributes: true, attributeFilter: ["hidden"] });
   // what later modules may use without editing this file (contracts.md, Lane A)
   SH.provide("h", h);
+  SH.provide("store", store);
+  SH.provide("composerActivity", composerActivity);
+  SH.provide("liveThinking", { isOpen: LA.isOpen, setOpen: LA.setOpen });
   SH.provide("workspace", workspace);
   SH.provide("botscreen", botscreen);
   SH.provide("openSettings", (section) => openSettings(section));

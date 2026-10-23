@@ -6,6 +6,8 @@ The desktop app, relay and Hermes plugin share one version number.
 
 ## [Unreleased]
 
+- Agent activity now appears in a collapsed status card above the composer for direct and Telegram/relay chats. Expand for observed steps, model, reasoning, Work and guarded Stop. Hide the entire card and restore it from the message toolbar; the choice persists per host without hiding approvals or questions.
+
 - The host selector and separate Relay/Sessions states form a compact centered header group. Narrow layouts keep all header actions reachable on a second row, while connection warnings retain explicit text.
 
 - macOS app switching now uses the same main-window restore path as Dock and pet clicks, returning to the main window's fullscreen Space instead of leaving only the pet visible. Hidden and minimized main windows also reopen.

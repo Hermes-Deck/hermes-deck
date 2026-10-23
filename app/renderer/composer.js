@@ -81,19 +81,42 @@
     const tracker = createEntranceTracker(), thoughtLabels = new Map(), snapshots = new Map(), stopped = new Map();
     let session = shell.last("session") || {}, view = root.DeckLiveActivity.lastView(), pending = false, fullRender = true, focused = null, stopping = null;
     const sidOf = () => session.sid || (session.kind === "hermes" ? session.id : null);
+    const store = shell.service("store");
+    let hidden = store?.get("deck.status.hidden") === "1", expanded = false, bridgeClosed = false;
+    const matchesProfile = n => !n?.profile || n.profile === (session.profile || "default");
     const tray = h("div", { class: "conv-tray", hidden: true });
     const queue = h("div", { class: "conv-queue", hidden: true });
     const row = h("div", { class: "conv-status" });
     const spinner = h("span", { class: "conv-spinner", "aria-hidden": "true" });
-    const label = h("span", { class: "conv-step" });
+    const label = h("span", { class: "conv-step", role: "status" });
     const arg = h("code", { class: "conv-arg" });
     const elapsed = h("span", { class: "conv-elapsed" });
     const error = h("p", { class: "conv-error", role: "alert", hidden: true });
     const stop = h("button", { class: "btn mini conv-stop", type: "button", onclick: stopNow }, t("conv.stop"));
-    row.append(spinner, label, arg, elapsed, stop);
+    const agent = h("span", { class: "conv-agent" });
+    const expand = h("button", { class: "conv-expand", type: "button", "aria-controls": "conv-status-details",
+      onclick: () => { expanded = !expanded; status(); } }, spinner, h("span", { class: "conv-summary" }, agent, label), elapsed);
+    const hide = h("button", { class: "btn mini conv-hide", type: "button", onclick: () => setHidden(true) });
+    const model = h("p", { class: "conv-model" });
+    const steps = h("ol", { class: "conv-steps" });
+    const thinking = h("p", { class: "conv-thinking", id: "conv-status-thinking", tabindex: "0" });
+    const thinkingToggle = h("button", { class: "linkbtn conv-thinking-toggle", type: "button", "aria-controls": "conv-status-thinking",
+      onclick: () => { const live = shell.service("liveThinking"); live?.setOpen(!live.isOpen()); status(); } });
+    const work = h("button", { class: "btn mini conv-work", type: "button", onclick: () => shell.openRight("work", "run") });
+    const details = h("div", { class: "conv-details", id: "conv-status-details", hidden: true }, arg, model, steps, thinkingToggle, thinking, h("div", { class: "conv-actions" }, work, stop));
+    row.append(h("div", { class: "conv-head" }, expand, hide), details);
     const slot = shell.mount("composer-status", row);
+    const visibility = h("button", { class: "ib conv-visibility", type: "button", "aria-controls": "composer-status", onclick: () => setHidden(!hidden) }, shell.icon?.("running", 16) || "◉");
+    doc.querySelector(".composer-tools")?.append(visibility);
+    doc.body.classList.add("conv-status-mounted");
+    function setHidden(value) {
+      hidden = value; expanded = false;
+      store?.set("deck.status.hidden", hidden ? "1" : "0");
+      status();
+      if (hidden || slot.hidden) visibility.focus(); else expand.focus();
+    }
     const filament = h("div", { class: "conv-filament", "aria-hidden": "true", "data-state": "hidden" });
-    composer.prepend(tray, slot, queue, error, filament);
+    composer.prepend(tray, queue, error, filament);
     const Fil = root.DeckFilament, motion = root.matchMedia?.("(prefers-reduced-motion: reduce)");
     let arc = null;
     if (Fil && doc.createElementNS && root.ResizeObserver && root.getComputedStyle) {
@@ -125,21 +148,51 @@
       input.focus();
     });
     function status() {
-      const sid = sidOf(), node = snapshots.get(sid) || view?.node;
-      if (view && isStopped(sid, node)) view = null;
-      const waiting = tray.children.length > 0;
-      const working = !!view && view.sid === sid && !waiting && !["approval", "question"].includes(view.phase);
+      const activity = shell.service("composerActivity");
+      if (activity) view = activity();
+      const sid = sidOf(), node = activity ? view?.node : snapshots.get(sid) || view?.node;
+      if (view && ((view.sid && view.sid !== sid) || !matchesProfile(node))) view = null;
+      if (!activity && (bridgeClosed || (view && isStopped(sid, node)))) view = null;
+      const waiting = tray.children.length > 0 || ["approval", "question"].includes(view?.phase);
+      const working = !!view && view.sid === sid && !waiting && ["thinking", "tool", "searching", "writing", "compacting"].includes(view.phase);
       composer.classList.toggle("conv-working", working);
       paintFilament(working, waiting);
-      slot.hidden = !working;
-      if (working) {
-        const text = view.tool ? t("conv.running", { tool: view.tool }) : view.phase === "thinking" ? t("conv.thinking") : t(view.label?.key || "live.writing", view.label?.vars);
-        if (label.textContent !== text) label.textContent = text;
-        if (arg.textContent !== (view.arg || "")) arg.textContent = view.arg || "";
-        elapsed.textContent = `${Math.max(0, Math.floor((Date.now() - view.since) / 1000))}s`;
-        stop.disabled = !stoppable(node) || stopping === sid;
-      }
+      if ((!view || hidden) && row.contains(doc.activeElement)) visibility.focus();
+      slot.hidden = hidden || !view;
+      row.dataset.phase = waiting ? "approval" : view?.phase || "idle";
+      row.classList.toggle("running", working);
+      expand.setAttribute("aria-expanded", String(expanded));
+      if (!expanded && details.contains(doc.activeElement)) expand.focus();
+      details.hidden = !expanded;
+      hide.textContent = t("status.hide");
+      visibility.title = t(hidden ? "status.show" : "status.hide");
+      visibility.setAttribute("aria-label", visibility.title);
+      visibility.setAttribute("aria-pressed", String(!hidden));
+      work.textContent = t("status.work");
+      stop.disabled = !working || view?.source === "relay" || !matchesProfile(node) || !stoppable(node) || stopping === sid;
       stop.textContent = t("conv.stop");
+      const text = waiting ? t(view?.phase === "question" || (tray.children.length && !tray.querySelector('[data-i18n-aria-label="U0603"]')) ? "live.question" : "live.approval")
+        : view?.tool ? t("conv.running", { tool: view.tool }) : t(view?.label?.key || "live.thinking", view?.label?.vars);
+      if (label.textContent !== text) label.textContent = text;
+      agent.textContent = view?.agent || shell.service("chat")?.()?.agent || "";
+      expand.setAttribute("aria-label", `${t(expanded ? "status.collapse" : "status.expand")}: ${agent.textContent} · ${text}`);
+      const since = view?.since;
+      elapsed.hidden = !working || !Number.isFinite(since) || since <= 0;
+      elapsed.textContent = elapsed.hidden ? "" : `${Math.max(0, Math.floor((Date.now() - since) / 1000))}s`;
+      arg.textContent = view?.arg || ""; arg.hidden = !arg.textContent;
+      model.textContent = view?.model || node?.model || ""; model.hidden = !model.textContent;
+      const names = (view?.steps || node?.steps || []).filter(x => typeof x === "string" && x !== "Thinking").slice(-6);
+      if (!names.length && view?.tool) names.push(view.tool);
+      const stepKey = JSON.stringify(names);
+      if (steps.dataset.key !== stepKey) { steps.replaceChildren(...names.map(name => h("li", null, name))); steps.dataset.key = stepKey; }
+      steps.hidden = !names.length;
+      const live = shell.service("liveThinking"), thinkingOpen = !!live?.isOpen();
+      thinkingToggle.hidden = !live || view?.source === "relay" || !working;
+      thinkingToggle.textContent = t(thinkingOpen ? "live.hideThinking" : "live.showThinking");
+      thinkingToggle.setAttribute("aria-expanded", String(thinkingOpen));
+      thinking.hidden = thinkingToggle.hidden || !thinkingOpen;
+      const thought = view?.think || t("live.noReasoning");
+      if (thinking.textContent !== thought) thinking.textContent = thought;
       const record = shell.service("chat")?.() || {};
       const route = via(session, { ...record, bot: record.bot || (/^@/.test(record.title || "") ? record.title : null) });
       viaEl.hidden = !session.id || !route;
@@ -148,8 +201,9 @@
       viaEl.dataset.channel = route ? session.channel || "" : "";
     }
     async function stopNow() {
-      const sid = sidOf(), node = snapshots.get(sid) || view?.node;
-      if (!sid || !view || stopping === sid || !stoppable(node)) return;
+      status(); // recheck selected host/session and controls at the moment of the click
+      const sid = sidOf(), node = shell.service("composerActivity") ? view?.node : snapshots.get(sid) || view?.node;
+      if (!sid || !view || stop.disabled || stopping === sid || !stoppable(node)) return;
       const turn = node?.turnId || "";
       stopping = sid; stop.disabled = true; error.hidden = true;
       let note = null;
@@ -257,7 +311,10 @@
       }
       if (d.type === "local.sent" || d.type === "message.start") stopped.delete(d.sid);
       if (d.type === "local.sent" && !view) view = { sid: d.sid, phase: "thinking", since: d.at, tool: "", arg: "" };
-      if (["message.complete", "local.stopped", "error"].includes(d.type)) view = null;
+      if (["message.complete", "local.stopped", "error"].includes(d.type)) {
+        markStopped(d.sid, (snapshots.get(d.sid) || view?.node)?.turnId || "");
+        view = null;
+      }
       status(); schedule();
     });
     doc.addEventListener("keydown", e => {
@@ -266,21 +323,27 @@
       e.preventDefault(); stopNow();
     });
     deck.bridge?.onEvent(m => {
-      if (m.t === "snapshot") {
+      if (shell.service("composerActivity")) { status(); return; }
+      if (m.t === "snapshot" && !bridgeClosed) {
         const list = Array.isArray(m.snapshot?.nodes) ? m.snapshot.nodes : [];
         snapshots.clear(); for (const n of list) if (n && typeof n.sid === "string") snapshots.set(n.sid, n);
         // A stop is remembered for its own turn only: a newer turn id or an idle node forgets it.
         for (const [sid, turn] of stopped) { const n = snapshots.get(sid); if (!n || !nodeLive(n) || (n.turnId || "") !== turn) stopped.delete(sid); }
         const sid = sidOf(), node = snapshots.get(sid);
-        if (node && nodeLive(node) && !isStopped(sid, node)) {
-          if (!view || view.sid !== sid) view = { sid, ...root.DeckLiveActivity.fromNode(node), since: Date.now(), arg: "", node };
-          else view.node = node;
-        } else if (node && !["approval", "question"].includes(node.state)) view = null;
+        if (node && matchesProfile(node) && nodeLive(node) && !isStopped(sid, node)) {
+          const since = view?.sid === sid && view.node?.turnId === node.turnId ? view.since : Date.now();
+          view = { sid, ...root.DeckLiveActivity.fromNode(node), since, arg: "", node };
+        } else view = null;
         status();
       }
-      if (m.t === "status" && m.status !== "open") { view = null; status(); }
+      if (m.t === "status") { bridgeClosed = m.status !== "open"; if (bridgeClosed) { view = null; snapshots.clear(); } status(); }
     });
-    shell.on("session", s => { session = s; view = null; fullRender = true; error.hidden = true; schedule(); });
+    shell.on("activity", status);
+    shell.on("session", s => {
+      const changed = session.id !== s.id || session.sid !== s.sid || session.profile !== s.profile || session.kind !== s.kind;
+      session = s; view = null; if (changed) expanded = false;
+      fullRender = true; error.hidden = true; status(); schedule();
+    });
     doc.addEventListener("deck-language", schedule);
     root.setInterval(() => { if (!doc.hidden && view) status(); }, 1000);
     decorate();

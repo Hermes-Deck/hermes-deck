@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 
-function environment({ session: initial } = {}) {
+function environment({ session: initial, store = new Map() } = {}) {
   const frames = [], timers = [], observers = [], resizes = [], bridge = [], relay = [], shellListeners = new Map(), lastEvents = new Map();
   let clock = 1_000_000;
   let pendingMutations = 0;
@@ -141,7 +141,7 @@ function environment({ session: initial } = {}) {
   const input = h("textarea", { id: "input" }); input.value = "Retained draft";
   const sends = [];
   const send = h("button", { id: "send", dataset: { kind: "queue" }, onclick: () => sends.push(input.value) });
-  const composer = h("div", { class: "composer" }, input, send);
+  const composer = h("div", { class: "composer" }, input, h("div", { class: "composer-tools" }), send);
   const status = h("div", { id: "composer-status", hidden: true }), timeline = h("div", { id: "timeline", hidden: true });
   chat.append(timeline, msgs, status, composer, h("p", { id: "note", class: "composer-note" }));
   doc.body.append(chat);
@@ -151,7 +151,7 @@ function environment({ session: initial } = {}) {
   const opens = [], mutations = [], toolCalls = new Map(), details = new Map();
   let interruptResult = { status: "interrupted" };
   const shell = {
-    service: name => name === "h" ? h : name === "chat" ? () => ({ title: "ExampleBot", agent: "Worker" }) : null,
+    service: name => name === "store" ? store : name === "h" ? h : name === "chat" ? () => ({ title: "ExampleBot", agent: "Worker" }) : null,
     last: name => lastEvents.get(name) || null, main: () => main,
     mount: (name, el) => { const slot = doc.getElementById(name); if (!slot) throw new Error(`Unknown slot ${name}`); slot.replaceChildren(el); slot.hidden = !el; return slot; },
     openRight: (...a) => opens.push(a),

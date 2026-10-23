@@ -13,7 +13,7 @@ test("boot registers every conversation module and mounts the status row and rai
   const env = boot();
   assert.ok(env.win.DeckComposer && env.win.DeckReceipts && env.win.DeckTimeline);
   const status = env.doc.getElementById("composer-status");
-  assert.equal(status.parentNode, env.composer, "status slot moved inside the composer");
+  assert.equal(status.parentNode, env.chat, "status card stays above the composer");
   assert.ok(status.querySelector(".conv-status"));
   assert.equal(status.hidden, true, "idle: status hidden");
   assert.ok(env.composer.contains(env.input) && env.composer.contains(env.send), "original input and send survive");

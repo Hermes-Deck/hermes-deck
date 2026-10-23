@@ -22,6 +22,7 @@ async function world(t, remote = []) {
   const ctx = { document: doc, DeckI18n: { t: (key, v) => v?.n !== undefined ? `${key}:${v.n}` : key },
     DeckUsage: { agoText: () => "now" },
     matchMedia: () => ({ matches: true }), setTimeout, clearTimeout, H, SH, h,
+    store: new Map(), composerActivity: () => null, LA: { isOpen: () => false, setOpen() {} },
     workspace: null, botscreen: null, sidebarSources: null, rail: { view: "all", source: "all" }, unseen: new Set(),
     S: { relay: { status: "open" }, tg: { status: "open" }, settings: { firstRunDone: true }, unread: new Map() },
     els: { sum: h("div"), conn: h("div") }, agentList: () => [], chatModes: () => ["sessions"],

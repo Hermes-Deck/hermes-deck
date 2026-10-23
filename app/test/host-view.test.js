@@ -74,6 +74,7 @@ test("host switch persists the draft before guarded selection, serializes clicks
   const calls = [];
   let reject;
   const ctx = { window: {}, hostSwitchPending: false, S: { settings: { activeHost: "h1" } },
+    renderStrip: () => calls.push("activity"),
     DR: { flush: () => calls.push("draft") }, renderHosts: () => calls.push("render"), publishDesktopView: () => calls.push("view"),
     deck: { hosts: { select: id => { calls.push(id); return new Promise((_resolve, no) => { reject = no; }); } } },
     MV: { toast: () => calls.push("error") }, i18nText: k => k, cleanErr: String,
@@ -83,7 +84,7 @@ test("host switch persists the draft before guarded selection, serializes clicks
   await ctx.selectHost("h1"); assert.deepEqual(calls, []);
   const pending = ctx.selectHost("h2");
   await ctx.selectHost("h3");
-  assert.deepEqual(calls, ["draft", "render", "view", "h2"]);
+  assert.deepEqual(calls, ["draft", "activity", "render", "view", "h2"]);
   assert.equal(ctx.hostSwitchPending, true);
   reject(new Error("stale page")); await pending;
   assert.equal(ctx.hostSwitchPending, false);
@@ -122,7 +123,7 @@ function sourceWorld({ host = "h1", storage = new Map(), ready = true } = {}) {
     SV: { close() {}, refresh() {} }, UD: { close() {} }, SH: { setMain: v => calls.push(["main", v]) },
     SB: { isOpen: () => false, close() {} }, allSessionsView: () => ctx.SB,
     RG: { leave() {} }, BT: null, AG: null,
-    renderHosts() {}, publishDesktopView() {}, mark() {}, renderNote() {}, renderMsgs() {}, hermesPoll() {},
+    renderStrip() {}, renderHosts() {}, publishDesktopView() {}, mark() {}, renderNote() {}, renderMsgs() {}, hermesPoll() {},
     hermesLoadHistory: sid => calls.push(["history", sid, ctx.H.nodes.get(sid)?.profile || ctx.H.hist.get(sid)?.profile]),
     MV: { toast: () => calls.push(["error"]) }, i18nText: k => k, cleanErr: String,
     refreshSettingsPane() {}, setRailView: v => calls.push(["rail", v]),
@@ -436,6 +437,6 @@ test("view publication is wired to render completion, navigation, visibility and
   assert.match(src, /addEventListener\("visibilitychange", publishDesktopView\)/);
   assert.match(functionSource("  function mark(", "  function flush("), /publishDesktopView\(\)/);
   assert.match(functionSource("  function renderMsgs(", "  \/\/ ---------------------------------------------------------------- first-run"), /displayedChat =/);
-  assert.match(functionSource("  function renderHermesMsgs(", "  function renderHermesStrip("), /return true/);
+  assert.match(functionSource("  function renderHermesMsgs(", "  async function hermesSend("), /return true/);
   assert.match(src, /selectHost,\n    hostStates:/, "Settings Switch reuses the same draft-safe path");
 });

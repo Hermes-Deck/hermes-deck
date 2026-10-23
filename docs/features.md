@@ -172,10 +172,16 @@ Telegram. Known executable and script types are saved but never opened directly.
 
 **What it is.**
 
-- In a Hermes chat, one live row at the end of the transcript says what the agent is doing (**Thinking…**,
-  **Running <tool>**, **Writing…**, **Waiting for approval**, **Waiting for your answer**) with the elapsed time and a
-  **Show thinking** disclosure that streams the reasoning of the step under way when Hermes sends it (finished steps
-  are already in the transcript above).
+- The agent status card above the composer follows the selected direct or Telegram/relay session. It shows the
+  agent, current tool or status, and elapsed time when available. It starts collapsed. Select its header to show
+  recent observed steps, the model, **Open Work**, and the existing **Stop (Esc)** control. Relay-only activity is
+  read-only; it cannot enable Stop. Disconnected and finished activity does not animate.
+- **Hide status** removes the whole card without leaving an empty row. The activity icon in the message toolbar
+  restores it (**Show agent status**). This preference survives reloads and chat changes, separately for each host.
+  Hiding never answers or dismisses an approval or question: those remain in the composer tray and **Needs you**.
+- In the expanded card, **Show thinking** uses the existing reasoning-stream setting. It shows only reasoning
+  Hermes actually sends; finished steps remain in the transcript. Collapsing or hiding the card does not change
+  that setting or the running task.
 - While a turn runs, Enter either queues your message (sent when the turn ends; **Edit**, **Cancel** and **Send
   now** on the pending bubble) or steers it into the running turn. Pick the default in **Settings → General → When
   the agent is busy, Enter…** (**Queues** / **Steers**); Ctrl/Cmd+Enter does the other one once. **Interrupt and
