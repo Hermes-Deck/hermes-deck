@@ -215,8 +215,10 @@
 .md hr { border: 0; border-top: 1px solid var(--vein); margin: 10px 0; }
 .md pre code { background: none; padding: 0; border-radius: 0; font: inherit; }
 .md .md-table { max-width: 100%; overflow-x: auto; margin: 6px 0 8px; }
-.md table { border-collapse: collapse; width: max-content; min-width: 60%; max-width: none; font-size: 12.5px; }
-.md th, .md td { border: 1px solid var(--vein); padding: 4px 9px; text-align: left; vertical-align: top; }
+/* Tables fit the reading column and wrap their cells' text (auto layout gives wide columns more room); the wrapper still
+   scrolls sideways for content that cannot break (a long URL or code token, many narrow columns). */
+.md table { border-collapse: collapse; width: auto; min-width: 60%; max-width: 100%; font-size: 12.5px; }
+.md th, .md td { border: 1px solid var(--vein); padding: 4px 9px; text-align: left; vertical-align: top; overflow-wrap: break-word; }
 .md th { background: rgb(var(--hi-rgb) / 0.05); font-weight: 700; }
 .md [data-align="center"] { text-align: center; }
 .md [data-align="right"] { text-align: right; font-variant-numeric: tabular-nums; }
