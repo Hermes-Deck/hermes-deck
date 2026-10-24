@@ -1,6 +1,6 @@
 "use strict";
 // Large attachments: the relay's disk spool (uploads.js), its desktop HTTP routes and the mobile staged/legacy split.
-const { test } = require("node:test");
+const { test, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const http = require("node:http");
@@ -19,6 +19,8 @@ const MIB = 1024 * 1024;
 const model = { snapshot: () => ({ sessions: [] }), tokens: () => ({}), sessions: new Map() };
 const tmp = (name) => fs.mkdtempSync(path.join(os.tmpdir(), `deck-uploads-${name}-`));
 const mutationID = () => `m.${Date.now()}.${crypto.randomUUID()}`;
+// Keep normal upload fixtures independent of runner capacity; disk-floor cases inject their own statfs.
+beforeEach(t => t.mock.method(fs, "statfsSync", () => ({ bavail: 25 * 1024 * 1024, bsize: 4096 })));
 
 async function relayWith(t, options = {}) {
   const dir = tmp("http");
@@ -27,7 +29,7 @@ async function relayWith(t, options = {}) {
   const relay = createServer({ token: TOKEN, model, fleet: { data: {} }, version: "test", mobile, uploads: spool });
   await new Promise((resolve) => relay.server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${relay.server.address().port}`;
-  t.after(async () => { spool.stop(); for (const ws of relay.clients) ws.terminate(); await new Promise((resolve) => relay.server.close(resolve)); });
+  t.after(async () => { spool.stop(); for (const ws of relay.clients) ws.terminate(); relay.server.closeAllConnections(); await new Promise((resolve) => relay.server.close(resolve)); });
   const call = async (method, route, body, auth = `Bearer ${TOKEN}`) => {
     const r = await fetch(base + route, { method, headers: { ...(auth ? { authorization: auth } : {}), "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
     return { status: r.status, body: await r.json() };
@@ -98,7 +100,9 @@ test("desktop routes: relay token in the header only; mobile tokens, query token
 test("PUT streams to <id>.part on disk while the request is open (no buffering), then <id>.bin + <id>.json, both 0600", async (t) => {
   const { call, base, spool } = await relayWith(t);
   const size = 64 * MIB;
-  const { body: { id } } = await call("POST", "/uploads", { name: "big archive.rar", mime: "application/vnd.rar", size });
+  const ticket = await call("POST", "/uploads", { name: "big archive.rar", mime: "application/vnd.rar", size });
+  assert.equal(ticket.status, 200, JSON.stringify(ticket.body));
+  const { id } = ticket.body;
   const { req, done } = putStream(base, id, { length: size });
   const chunk = Buffer.alloc(MIB, 7);
   for (let i = 0; i < 48; i++) await writeAll(req, chunk);

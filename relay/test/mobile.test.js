@@ -1,7 +1,9 @@
 'use strict';
-const { test } = require('node:test');
+const { test, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+// Normal upload fixtures must not depend on free disk space on the CI runner.
+beforeEach(t => t.mock.method(fs, 'statfsSync', () => ({ bavail: 25 * 1024 * 1024, bsize: 4096 })));
 const os = require('node:os');
 const path = require('node:path');
 const { Readable } = require('node:stream');
