@@ -104,7 +104,8 @@ test("limits and messages: 2 GB per file on the relay path, the old 25 MB messag
 async function relayFor(t) {
   const dir = tmp("relay");
   const token = "t".repeat(32);
-  const spool = new UploadSpool({ dir: path.join(dir, "spool"), machine: "m" });
+  // Keep upload behavior independent of the CI runner's free space; disk-full is tested below.
+  const spool = new UploadSpool({ dir: path.join(dir, "spool"), machine: "m", statfs: () => ({ bavail: 100 * GIB / 4096, bsize: 4096 }) });
   const model = { snapshot: () => ({ sessions: [] }), tokens: () => ({}), sessions: new Map() };
   const srv = createServer({ token, model, fleet: { data: {} }, version: "test", uploads: spool });
   await new Promise((resolve) => srv.server.listen(0, "127.0.0.1", resolve));
