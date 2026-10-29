@@ -287,3 +287,18 @@ test("an unrecognized source is not silently assigned to Sessions", () => {
   const r = rig(); r.view(); r.snapshot([r.node({ source: "future-platform" })]); r.complete(); r.drain();
   assert.equal(r.banners.length, 1);
 });
+
+test("one finished turn seen by both the relay (no turn id) and the direct connection notifies once", () => {
+  const r = rig(); r.view({ visible: false });
+  const relay = state => r.desktop.observe("relay", { t: "evs", sessions: [{ sid: "s1", profile: "default", source: "cli", state }] }, { hostId: "host-a" });
+  r.desktop.observe("relay", { t: "snapshot", sessions: [{ sid: "s1", profile: "default", source: "cli", state: "running" }] }, { hostId: "host-a" });
+  r.snapshot([r.node({ turnId: "turn-9" })]);
+  relay("running"); relay("finished");
+  r.snapshot([r.node({ state: "finished", terminalAt: 20, turnId: "turn-9" })]);
+  r.complete({ payload: { turn_id: "turn-9", text: "done" } });
+  r.drain();
+  assert.equal(r.banners.length, 1, "one turn, one notification (one sound)");
+  // the same session on ANOTHER host is a different turn: it still notifies
+  r.snapshot([r.node({ turnId: "turn-9" })], "host-b"); r.complete({ payload: { turn_id: "turn-9" } }, "host-b"); r.drain();
+  assert.equal(r.banners.length, 2);
+});

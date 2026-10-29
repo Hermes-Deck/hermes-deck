@@ -244,12 +244,26 @@ function sourceOf(s, hostId) {
   // No mapped chat: retain an exact session review destination, never an invalid Telegram target.
   return { hostId, channel: channel === "telegram" && !key ? null : channel, key, sid: s.sid || null, profile: s.profile || null };
 }
+// One finished turn reaches the Deck on up to three paths (the relay's session list, which carries no turn id, the
+// direct connection's terminal snapshot and its message.complete event): one notification, one sound. A completion of
+// the same session on the same host shortly after another is the same turn unless both carry different turn ids.
+const DONE_SAME_TURN_MS = 15000;
+const recentDone = new Map(); // JSON([hostId, profile, sid]) -> {at, identity}
 function completion(s, hostId, identity) {
   if (identity && hostId && s.sid && s.profile) {
     const id = JSON.stringify([hostId, s.profile, s.sid, identity]);
     if (completions.has(id)) return;
     completions.add(id);
     while (completions.size > 1000) completions.delete(completions.values().next().value);
+  }
+  if (s.sid) {
+    const key = JSON.stringify([hostId, s.profile || null, s.sid]);
+    const last = recentDone.get(key), now = Date.now();
+    const same = last && now - last.at < DONE_SAME_TURN_MS && !(identity && last.identity && JSON.stringify(identity) !== JSON.stringify(last.identity));
+    recentDone.delete(key);
+    recentDone.set(key, { at: same ? last.at : now, identity: identity || last?.identity || null });
+    while (recentDone.size > 1000) recentDone.delete(recentDone.keys().next().value);
+    if (same) return;
   }
   sessionDone(s, sourceOf(s, hostId));
 }

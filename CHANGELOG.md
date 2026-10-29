@@ -12,6 +12,8 @@ The desktop app, relay and Hermes plugin share one version number.
 
 - A **Split view** button next to the host numbers shows two hosts side by side (when the app supports it); each pane has its own numbers, and the Windows caption-button space is reserved only in the right or full pane.
 
+- A finished turn notifies once (one sound): the relay and the direct connection both report it, and the second report of the same session moments later no longer raises a second notification.
+
 - Markdown tables in chats fit the message column and wrap their cell text instead of growing past it; a table only scrolls sideways when something in it cannot break (a long URL or code token).
 
 - The top bar's host numbers sit in the bar's own flow between the breadcrumb and the right-hand controls (fleet capsule, search, Work, settings): centred while there is room, shifted left instead of overlapping when the right-hand group needs more space.
