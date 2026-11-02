@@ -61,6 +61,18 @@ function approvalNotice(request, captured, unlocked, host) {
   };
 }
 
+/**
+ * The toast / pet bubble of a masked prompt (sudo, secret, vault.*): "<agent> needs a password" or "... a code", with
+ * the site as the only detail. Never the command, the prompt text, the env var name or anything typed.
+ */
+function secretNotice(request) {
+  const r = request || {};
+  const agent = typeof r.profile === "string" && r.profile && r.profile !== "default" ? clip(r.profile, 40) : "Hermes";
+  const site = (r.method === "vault.save_login" || r.method === "vault.code") && typeof r.site === "string" ? clip(r.site, 80) : "";
+  const title = i18nText(r.method === "vault.code" ? "mp.notifyCode" : "mp.notifyPassword", { agent });
+  return { title, body: site, actions: [], pet: { agent, snippet: site || title } };
+}
+
 class Notifier {
   /**
    * @param {object} o
@@ -265,4 +277,4 @@ class Notifier {
   }
 }
 
-module.exports = { approvalNotice, Notifier, clip, textOf, SOUND_OF, SUB_GAP_MS };
+module.exports = { approvalNotice, secretNotice, Notifier, clip, textOf, SOUND_OF, SUB_GAP_MS };

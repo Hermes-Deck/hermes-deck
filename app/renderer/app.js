@@ -349,6 +349,10 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   });
   // messages written while the session is busy wait here (outbox.js); echo-match.js pairs sent turns with stored ones
   const OB = window.DeckOutbox.create({ store, h, i18nText, i18nNode });
+  // sudo / secret / vault prompts as masked cards (masked-prompt.js): what is typed goes to main once, kept nowhere
+  const MPC = window.DeckMaskedPrompt.create({ h, t: i18nText, errText: cleanErr, redraw: () => mark("msgs", "rail", "strip", true),
+    answer: (r, value) => deck.bridge.answerSecret(r.id, value, r.profile ? { profile: r.profile } : {}) });
+  deck.bridge.onEvent(m => { if (m && m.t === "requests") MPC.prune(m.list); }); // withdrawn: wipe what was typed at once
   const EM = window.DeckEchoMatch;
   // the live "working" row at the end of the transcript (live-activity.js) and what Enter does while busy (busy-send.js)
   const LA = window.DeckLiveActivity.create({
@@ -3776,6 +3780,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
 
   // ------------------------------------------------------------ approvals and questions
   function hermesRequestCards() {
+    MPC.prune(H.requests);
     if (!H.requests.length) return [];
     const mine = (r) => (hermesMode() && r.sid && r.sid === H.sel ? 0 : 1);
     return H.requests.slice().sort((a, b) => mine(a) - mine(b) || a.at - b.at).map(requestCard);
@@ -3793,6 +3798,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   function requestCard(r) {
     const n = r.sid ? H.nodes.get(r.sid) : null;
     const who = n ? hermesTitle(n) : r.sid ? i18nText("common.sessionId", { v: r.sid.slice(-8) }) : r.rpcId ? i18nText("A0275", { v: r.rpcId.slice(-8) }) : "Hermes";
+    if (r.kind === "secret") return MPC.card(r, { who, open: bridgeOpen });
     const a = answerState(r.id);
     const disabled = a.busy || !bridgeOpen();
     const head = h("div", { class: "hreq-head" }, h("span", { class: "hreq-kind" }, r.kind === "approval" ? i18nNode("A0276") : i18nNode("A0277")), h("span", { class: "hreq-who" }, who));
@@ -4481,7 +4487,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     if (!sid || !hermesMode() || !bridgeOpen() || (BT && BT.isDraft(sid))) return null;
     const n = H.nodes.get(sid);
     const req = H.requests.find((r) => r.sid === sid);
-    return LA.view(sid, { node: n || null, live: nodeLive(n), request: req ? req.kind : null });
+    return LA.view(sid, { node: n || null, live: nodeLive(n), request: req ? (req.kind === "secret" ? "question" : req.kind) : null });
   }
 
   /** Reasoning tokens arrive fast: one in-place update of the live row per frame (a full render when it cannot). */

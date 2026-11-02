@@ -114,6 +114,9 @@ const ATTACHMENTS = false;
 const MODES = ["off", "ssh", "wsl", "local"];
 const STATES = new Set(["idle", "thinking", "working", "searching", "finished", "error", "question", "approval", "ratelimit"]);
 const APPROVAL_CHOICES = ["once", "session", "always", "deny"];
+// Hermes' masked server requests; each is answered with one string under `value` ("" = declined)
+const SECRET_PROMPTS = ["sudo", "secret", "vault.unlock_prompt", "vault.save_login", "vault.code"];
+const SECRET_MAX = 4096; // characters of one typed value
 
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const PROFILE_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -1048,7 +1051,42 @@ function normalizeServerRequest(frame, refFor) {
     }
     return questions.length ? { ...base, kind: "question", questions } : null;
   }
+  if (SECRET_PROMPTS.includes(frame.method)) {
+    // Masked prompts (sudo password, a named secret, a password-manager unlock, a login to save, a one-time code):
+    // only the prompt's own params, bounded; the answer never comes back through here.
+    const req = { ...base, kind: "secret", method: frame.method };
+    if (frame.method === "sudo") req.command = keepLines(p.command, 2000);
+    if (frame.method === "secret") {
+      req.envVar = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(p.env_var) ? p.env_var : "";
+      req.prompt = keepLines(p.prompt, 1000);
+    }
+    if (frame.method === "vault.unlock_prompt") req.displayName = oneLine(p.display_name, 80) || oneLine(p.backend, 40);
+    if (frame.method === "vault.save_login") {
+      req.site = oneLine(p.site, 253);
+      req.origin = oneLine(p.origin, 300);
+    }
+    if (frame.method === "vault.code") {
+      req.site = oneLine(p.site, 253);
+      req.hint = oneLine(p.hint, 300);
+    }
+    return req;
+  }
   return null;
+}
+
+/** The value a masked prompt sends back ("" declines). vault.save_login gets Hermes' JSON {identifier, password}. */
+function secretAnswer(method, value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (method === "vault.save_login") {
+    if (!isPlainObject(value)) throw new Error(i18nText("mp.invalid"));
+    const identifier = typeof value.identifier === "string" ? value.identifier.trim() : "";
+    const password = typeof value.password === "string" ? value.password : "";
+    if (!identifier && !password) return "";
+    if (!identifier || !password || identifier.length > SECRET_MAX || password.length > SECRET_MAX) throw new Error(i18nText("mp.invalid"));
+    return JSON.stringify({ identifier, password });
+  }
+  if (typeof value !== "string" || value.length > SECRET_MAX) throw new Error(i18nText("mp.invalid"));
+  return method === "vault.code" ? value.replace(/[\s-]/g, "") : value;
 }
 
 // ---------------------------------------------------------------- failure wording
@@ -2560,6 +2598,25 @@ class BridgeClient extends EventEmitter {
     return this._answer(req, { answers: out });
   }
 
+  /**
+   * Answer a masked prompt (sudo, secret, vault.*). `value`: the typed string, or {identifier, password} for
+   * vault.save_login (sent as Hermes' JSON string); "" / null declines. The value goes out in this one
+   * request.answer and is kept nowhere: not in openRequests, not in an event, not in an error message.
+   */
+  answerSecret(id, value, { profile } = {}) {
+    const matches = this.listRequests().filter((r) => r.id === id);
+    const req = matches.length === 1 ? matches[0] : null;
+    if (!req || !validProfileParam(req.profile) || req.kind !== "secret") return Promise.reject(new Error(MSG.notOpen));
+    if (profile !== undefined && (!validProfileParam(profile) || req.profile !== profile)) return Promise.reject(new Error(MSG.notOpen));
+    let answer;
+    try {
+      answer = secretAnswer(req.method, value);
+    } catch (e) {
+      return Promise.reject(e);
+    }
+    return this._answer(req, { value: answer });
+  }
+
   async _answer(req, result) {
     const captured = [...this.openRequests].find(([, prior]) => prior.id === req.id && prior.rpcId === req.rpcId
       && this._sessionRef(prior.rpcId, prior.profile ? { profile: prior.profile } : {}).profile === req.profile);
@@ -2736,4 +2793,6 @@ module.exports = {
   READS,
   MUTATIONS,
   MAX_TEXT,
+  SECRET_PROMPTS,
+  secretAnswer,
 };

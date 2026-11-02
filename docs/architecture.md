@@ -248,12 +248,28 @@ page's own come through its `bridge` channel). The inbox shows them with the hos
 that host is not connected. `deck.hosts.status()` and the `{t: "status", hosts}` frames carry every host's relay and
 direct-connection state for the switcher.
 
-On the first `session.list` of a new control connection, the plugin restores up to 32 still-open native approval
-and question frames. It keeps each request's ID, owning profile and creation time. It does not restore secret
-prompts, resume sessions, or resend answers. Answered and cancelled requests are omitted. This also restores
-pending cards after a host switch or a dropped direct connection.
+On the first `session.list` of a new control connection, the plugin restores up to 32 still-open native approval,
+question and masked-prompt frames. It keeps each request's ID, owning profile and creation time. It does not resume
+sessions or resend answers. Answered and cancelled requests are omitted. This also restores pending cards after a
+host switch or a dropped direct connection.
 
-From then on that connection also receives every new approval and question of that Hermes process live, not only
+**Masked prompts.** Hermes asks for a typed secret with five server requests, each answered with one string under
+`value` (`""` declines): `sudo` {`command`} (a sudo password, 120 s), `secret` {`env_var`, `prompt`, `metadata`?}
+(a value for a named env var), `vault.unlock_prompt` {`backend`, `display_name`} (a password manager's master
+password, 120 s), `vault.save_login` {`origin`, `site`} (the answer is the JSON string
+`{"identifier": "...", "password": "..."}`; anything else declines, 180 s) and `vault.code` {`site`?, `hint`?} (a
+one-time code, 180 s). The plugin fans them out and withdraws them exactly like approvals (`observer.py`
+`SECRET_REQUEST_KINDS`); the frames carry only those params. `bridge.js` lists them as requests of kind `secret`
+(`method` = the Hermes method) with bounded copies of the params, and `answerSecret` (IPC `bridge:answer-secret`)
+sends the typed value once in `request.answer`; for `vault.save_login` main builds the JSON string from the two
+fields, and a code loses spaces and dashes. The value is never kept in the bridge, an event, a snapshot, a
+notification or a log; the renderer card (`masked-prompt.js`) wipes its inputs on submit, cancel and withdrawal.
+Notifications say only "<agent> needs a password" or "... a code", plus the site for a login or a code. The relay's
+mobile API never lists or pushes them (`mobile.js` `phoneRequests`): the phone has no masked card. Before this, the
+Deck dropped these frames without an answer, so the agent waited out the full deadline and got an empty answer
+(for a login: `save_declined`).
+
+From then on that connection also receives every new approval, question and masked prompt of that Hermes process live, not only
 those of sessions it created or resumed (`observer.py` `RequestHub`). Hermes writes a request only to its session's
 own transport, which is gone once the Deck that started the session switched host or disconnected; the hub offers it
 to every other listing connection too. Hermes has no subscription hook for new requests, so the hub reads its request

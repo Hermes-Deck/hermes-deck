@@ -112,6 +112,11 @@ test("ipc: every main-window channel refuses a foreign frame (bridge, settings, 
     assert.ok(used.includes(ch), `${ch} is in the preload`);
     assert.deepEqual([byChannel.get(ch)?.kind, byChannel.get(ch)?.guarded, byChannel.get(ch)?.refused], ["handle", true, true], ch);
   }
+  // a masked prompt's answer (sudo password, secret, vault login/code) answers the Deck's own page only
+  for (const ch of ["bridge:answer-secret", "bridge:answer-approval", "bridge:answer-question"]) {
+    assert.ok(used.includes(ch), `${ch} is in the preload`);
+    assert.deepEqual([byChannel.get(ch)?.kind, byChannel.get(ch)?.guarded, byChannel.get(ch)?.refused], ["handle", true, true], ch);
+  }
 });
 
 test("ipc-guard: handle refuses and on ignores a foreign frame; the Deck's page passes", async () => {

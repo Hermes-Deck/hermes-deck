@@ -1,0 +1,10 @@
+/* Masked prompt cards (masked-prompt.js): sudo / secret / vault prompts, styled like the approval and question cards */
+.hreq.mp .mp-title { margin: 8px 0 0; font-size: 13.5px; font-weight: 600; color: var(--marble); overflow-wrap: anywhere; }
+.hreq.mp .mp-fields { display: grid; gap: 8px; margin-top: 8px; }
+.hreq.mp .mp-field { display: grid; gap: 4px; }
+.hreq.mp .mp-field > span { font: 11px var(--mono); color: var(--vein-text); }
+.hreq.mp .mp-row { display: flex; gap: 6px; align-items: center; }
+.hreq.mp .mp-row .mp-input { flex: 1 1 auto; min-width: 0; margin-top: 0; }
+.hreq.mp .mp-input { margin-top: 0; font-family: var(--mono); }
+.hreq.mp .mp-show { flex: 0 0 auto; }
+.conv-tray .hreq.mp .mp-input { width: auto; }

@@ -20,6 +20,8 @@
 //     --late-reply            before each answer, send a reply for an unknown id and a server
 //                             request that reuses the request's id
 //     --approval              after the first session.list, ask an approval (A7) and a question (Q3)
+//     --secret-prompts        after the first session.list, ask the five masked prompts (S1 sudo, S2 secret, S3 vault.unlock_prompt,
+//                             S4 vault.save_login, S5 vault.code) and an approval (A8)
 //     --cancel-approval MS    withdraw A7 with request.cancel MS after asking it
 //     --no-gateway            ordinary requests fail like stream.py without a plugin control socket
 //     --uncontrolled          the main session has no live control (control_available false)
@@ -620,6 +622,17 @@ function after(method, p) {
       jsonrpc: "2.0", id: "A9", method: "approval",
       params: { session_id: "rpc-s-idle", command: "git push origin main", description: "Komut onayı: değişiklikleri uzak depoya gönder", choices: ["once", "session", "deny"] },
     });
+  }
+  if (method === "session.list" && !listed && flag("secret-prompts")) {
+    // the five masked prompts Hermes can raise (tui_gateway contracts/server_requests.py), plus one approval
+    listed = true;
+    const ask = (id, m, params) => { open.add(id); out({ jsonrpc: "2.0", id, method: m, params: { session_id: "rpc-s-main", profile_name: "default", ...params } }); };
+    ask("S1", "sudo", { command: "apt-get install -y ripgrep" });
+    ask("S2", "secret", { env_var: "ATLAS_API_KEY", prompt: "API key for the Atlas skill", metadata: { help: "https://example.com/keys" } });
+    ask("S3", "vault.unlock_prompt", { backend: "bitwarden", display_name: "Bitwarden" });
+    ask("S4", "vault.save_login", { origin: "https://login.example.com", site: "login.example.com" });
+    ask("S5", "vault.code", { site: "login.example.com", hint: null });
+    ask("A8", "approval", { command: "rm -rf build", choices: ["once", "deny"] });
   }
   if (method === "session.list" && !listed && flag("approval")) {
     listed = true;

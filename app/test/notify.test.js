@@ -319,3 +319,32 @@ test("bridge keeps explicit completion identity/source and drops initial/history
   c._onServerFrame({ method: "event", params: { ...params, turn_id: "x".repeat(513), event_id: "bad\u0000id" } });
   assert.equal(events[1].turnId, ""); assert.equal(events[1].eventId, "", "invalid identity is absent, not repaired or truncated");
 });
+
+test("a masked prompt's toast and pet bubble say who needs a password or a code, with the site at most", async () => {
+  const r = rig(() => "banner");
+  const { secretNotice } = require("../main/notify");
+  const cases = [
+    [{ method: "sudo", profile: "default", command: "apt-get install -y ripgrep" }, "Hermes needs a password", ""],
+    [{ method: "secret", profile: "research", envVar: "ATLAS_API_KEY", prompt: "API key for Atlas" }, "research needs a password", ""],
+    [{ method: "vault.unlock_prompt", profile: "default", displayName: "Bitwarden" }, "Hermes needs a password", ""],
+    [{ method: "vault.save_login", profile: "default", site: "login.example.com", origin: "https://login.example.com" }, "Hermes needs a password", "login.example.com"],
+    [{ method: "vault.code", profile: "default", site: "login.example.com", hint: "6 digits from the app" }, "Hermes needs a code", "login.example.com"],
+  ];
+  for (const [req, title, body] of cases) {
+    const notice = secretNotice({ kind: "secret", id: "srq-1", ...req });
+    assert.deepEqual([notice.title, notice.body, notice.actions], [title, body, []]);
+    const all = JSON.stringify(notice);
+    for (const word of ["ripgrep", "ATLAS_API_KEY", "Atlas", "Bitwarden", "https://", "6 digits"]) assert.ok(!all.includes(word), `${req.method}: ${word}`);
+  }
+  // through the notifier: one banner, title and body as above, no actions
+  r.n.notify("question", { title: "Hermes is asking a question", body: "", ...secretNotice({ method: "vault.code", profile: "default", site: "login.example.com" }) });
+  await flush();
+  assert.equal(r.banners.length, 1);
+  assert.deepEqual([r.banners[0].options.title, r.banners[0].options.body], ["Hermes needs a code", "login.example.com"]);
+  // the pet bubble: the same words, never more
+  const pet = rig(() => "pet");
+  pet.n.notify("question", { title: "x", body: "", ...secretNotice({ method: "sudo", profile: "default", command: "apt-get update" }) });
+  await flush();
+  assert.equal(pet.pets.length, 1);
+  assert.deepEqual([pet.pets[0].agent, pet.pets[0].snippet], ["Hermes", "Hermes needs a password"]);
+});

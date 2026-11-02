@@ -260,6 +260,14 @@ Telegram. Known executable and script types are saved but never opened directly.
   turns.
 - Approvals and questions from the agent appear in the composer tray and are answered there (or in the
   [inbox](#inbox-and-fleet)).
+- When the agent needs something typed that it must not see, a masked card appears in the same tray: **sudo
+  password**, **Secret: <name>** with the agent's prompt, **Unlock <password manager>**, **Save login for <site>**
+  (username or email plus a masked password; the login is stored in the host's vault and filled into the page) or
+  **Code for <site>** (a one-time code, digits keyboard). **Enter** sends, **Esc** or **Cancel** declines, **Show**
+  reveals the field while you type. What you type goes to Hermes once and is cleared from the card at once; it is
+  never kept, logged or shown in a notification, which says only that a password or code is needed (and for which
+  site). These cards are desktop only: the phone does not show them. Needs the updated Hermes plugin and a gateway
+  restart; without it the card appears only on the Deck that started the session.
 - Work › **Session** ends with what is running in other agents right now (status, title, model and
   reasoning level, elapsed time, cost so far). A session's own sub-agents are in Work › **Sub-agents**.
 

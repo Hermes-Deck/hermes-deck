@@ -186,6 +186,7 @@ contextBridge.exposeInMainWorld("deck", {
     setEffort: (sid, opts) => ipcRenderer.invoke("bridge:set-effort", sid, opts),
     answerApproval: (id, choice, o) => ipcRenderer.invoke("bridge:answer-approval", id, choice, o),
     answerQuestion: (id, answers, o) => ipcRenderer.invoke("bridge:answer-question", id, answers, o),
+    answerSecret: (id, value, o) => ipcRenderer.invoke("bridge:answer-secret", id, value, o), // masked prompt: value sent once
     // Botlar: profile roster + avatars, the read-only Bot Chat lookup, and its create (first message only)
     draftsList: (profile, offset) => ipcRenderer.invoke("bridge:drafts-list", profile, offset),
     draftGet: (profile, id) => ipcRenderer.invoke("bridge:draft-get", profile, id),

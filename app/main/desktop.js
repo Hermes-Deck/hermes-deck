@@ -11,7 +11,7 @@ const { t: i18nText, getLocale: i18nLocale } = require("../renderer/i18n");
 const { app, ipcMain, nativeImage, Notification, powerMonitor, systemPreferences } = require("electron");
 const fs = require("fs");
 const path = require("path");
-const { Notifier, clip, approvalNotice } = require("./notify");
+const { Notifier, clip, approvalNotice, secretNotice } = require("./notify");
 const { Pet, statusParts, SKINS: PET_SKINS } = require("./pet");
 const { notificationRoute, fullscreenProbe } = require("./notification-route");
 const { DeckTray } = require("./tray");
@@ -357,9 +357,11 @@ function fromBridge(m, { hostId = null, client = null } = {}) {
     const q = r.kind === "question" && Array.isArray(r.questions) && r.questions[0] ? r.questions[0].question : "";
     const host = S.settings?.data.hosts?.find(h => h.id === hostId);
     const approval = r.kind === "approval" ? approvalNotice(r, captured, unlocked, host) : null;
+    // a masked prompt says only that a password/code is needed, and for which site: never a command, prompt or value
+    const secret = r.kind === "secret" ? secretNotice(r) : null;
     entry.notice = notifier.notify(r.kind === "approval" ? "approval" : "question", {
       source,
-      title: i18nText("A0138"), body: q, ...approval,
+      title: i18nText("A0138"), body: q, ...approval, ...secret,
       // Only macOS has the verified native action API; the request card works on every platform.
       ...(process.platform !== "darwin" ? { actions: [] } : {}),
       key: typeof r.sid === "string" && r.sid ? `hs:${r.sid}` : null,

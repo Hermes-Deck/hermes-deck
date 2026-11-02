@@ -777,6 +777,86 @@ test("a withdrawn approval disappears; a dropped connection clears every request
   await cleared;
 });
 
+// ---------------------------------------------------------------- masked prompts (sudo, secret, vault.*)
+
+/** Every string reachable from `root` (Maps, Sets, arrays, objects; not functions, buffers or the child process). */
+function reachableStrings(root) {
+  const out = [], seen = new Set();
+  const walk = (v, depth) => {
+    if (typeof v === "string") return void out.push(v);
+    if (!v || typeof v !== "object" || seen.has(v) || depth > 12 || Buffer.isBuffer(v)) return;
+    seen.add(v);
+    if (v instanceof Map) for (const [k, x] of v) { walk(k, depth + 1); walk(x, depth + 1); }
+    else if (v instanceof Set || Array.isArray(v)) for (const x of v) walk(x, depth + 1);
+    else for (const k of Object.keys(v)) if (k !== "child" && k !== "_events") walk(v[k], depth + 1);
+  };
+  walk(root, 0);
+  return out;
+}
+
+test("masked prompts: each method becomes a secret card with its prompt params only; answers go out once and stay nowhere", async (t) => {
+  const log = tmpLog();
+  const c = makeClient(t, ["--secret-prompts", "--log", log]);
+  const emitted = [];
+  for (const ev of ["requests", "event", "snapshot", "sessions", "status"]) c.on(ev, (v) => emitted.push(JSON.stringify(v)));
+  const all = next(c, "requests", (list) => list.length === 6);
+  c.start();
+  const list = await all;
+  const card = (id) => {
+    const { at, createdAt, sid, rpcId, ...rest } = list.find((r) => r.id === id);
+    return rest;
+  };
+  assert.deepEqual(card("S1"), { id: "S1", profile: "default", kind: "secret", method: "sudo", command: "apt-get install -y ripgrep" });
+  assert.deepEqual(card("S2"), { id: "S2", profile: "default", kind: "secret", method: "secret", envVar: "ATLAS_API_KEY", prompt: "API key for the Atlas skill" });
+  assert.deepEqual(card("S3"), { id: "S3", profile: "default", kind: "secret", method: "vault.unlock_prompt", displayName: "Bitwarden" });
+  assert.deepEqual(card("S4"), { id: "S4", profile: "default", kind: "secret", method: "vault.save_login", site: "login.example.com", origin: "https://login.example.com" });
+  assert.deepEqual(card("S5"), { id: "S5", profile: "default", kind: "secret", method: "vault.code", site: "login.example.com", hint: "" });
+  // the kinds do not mix: an approval is not answered as a secret, a secret not as an approval or a question
+  await assert.rejects(c.answerApproval("S1", "once"), /açık değil/);
+  await assert.rejects(c.answerQuestion("S2", { q: "x" }), /açık değil/);
+  await assert.rejects(c.answerSecret("A8", "x"), /açık değil/);
+  await assert.rejects(c.answerSecret("S1", "x", { profile: "other" }), /açık değil/);
+  // a login needs both parts; too long or wrongly shaped values never leave
+  await assert.rejects(c.answerSecret("S4", { identifier: "ada@example.com", password: "" }), /gönderilemez/);
+  await assert.rejects(c.answerSecret("S4", "plain-string"), /gönderilemez/);
+  await assert.rejects(c.answerSecret("S3", "x".repeat(4097)), /gönderilemez/);
+  await assert.rejects(c.answerSecret("S3", { value: "x" }), /gönderilemez/);
+  assert.equal(calls(log, "request.answer").length, 0, "nothing was sent for a refused answer");
+  assert.deepEqual(await c.answerSecret("S1", ""), { status: "ok" }); // Cancel: declined
+  assert.deepEqual(await c.answerSecret("S2", "sk-test-9b2f71"), { status: "ok" });
+  assert.deepEqual(await c.answerSecret("S3", "master-Pw-4a8e60", { profile: "default" }), { status: "ok" });
+  assert.deepEqual(await c.answerSecret("S4", { identifier: "  ada@example.com ", password: "login-Pw-c3d917" }), { status: "ok" });
+  assert.deepEqual(await c.answerSecret("S5", "481 516"), { status: "ok" });
+  assert.deepEqual(calls(log, "request.answer").map((e) => e.params), [
+    { id: "S1", result: { value: "" } },
+    { id: "S2", result: { value: "sk-test-9b2f71" } },
+    { id: "S3", result: { value: "master-Pw-4a8e60" } },
+    { id: "S4", result: { value: JSON.stringify({ identifier: "ada@example.com", password: "login-Pw-c3d917" }) } },
+    { id: "S5", result: { value: "481516" } },
+  ]);
+  assert.deepEqual(c.listRequests().map((r) => r.id), ["A8"]);
+  await assert.rejects(c.answerSecret("S2", "again"), /açık değil/);
+  // nothing typed stays in the client or went out in any event it emitted
+  const kept = reachableStrings(c).join("\n");
+  const events = emitted.join("\n");
+  assert.ok(kept.includes("rm -rf build"), "the walk reaches the open requests");
+  for (const secret of ["sk-test-9b2f71", "master-Pw-4a8e60", "login-Pw-c3d917", "481516", "481 516"]) {
+    assert.ok(!kept.includes(secret), `client state holds ${secret}`);
+    assert.ok(!events.includes(secret), `an event carried ${secret}`);
+  }
+});
+
+test("secretAnswer: a login becomes Hermes' JSON string, a code loses spaces and dashes, empty declines", () => {
+  assert.equal(bridge.secretAnswer("vault.save_login", { identifier: " a@example.com", password: " p w " }), JSON.stringify({ identifier: "a@example.com", password: " p w " }));
+  assert.equal(bridge.secretAnswer("vault.save_login", { identifier: "", password: "" }), "");
+  assert.equal(bridge.secretAnswer("vault.save_login", null), "");
+  assert.equal(bridge.secretAnswer("vault.code", "12-34 56"), "123456");
+  assert.equal(bridge.secretAnswer("sudo", " keep spaces "), " keep spaces ");
+  assert.equal(bridge.secretAnswer("secret", ""), "");
+  assert.throws(() => bridge.secretAnswer("sudo", 42), /gönderilemez/);
+  assert.deepEqual(bridge.SECRET_PROMPTS, ["sudo", "secret", "vault.unlock_prompt", "vault.save_login", "vault.code"]);
+});
+
 // ---------------------------------------------------------------- connection test (Settings)
 
 test("the connection test reports success, a missing plugin, a rejected key and a missing python", async () => {
@@ -1066,6 +1146,45 @@ test("a watcher BridgeClient hears a question from a session another Deck create
   const log = readLog(path.join(home, "gateway.log"));
   assert.deepEqual(log.filter((e) => e.method === "agent.answered").map((e) => e.params), [{ id: q.id, result: { answers: { q1: "blue" } } }]);
   assert.equal(log.filter((e) => e.method === "session.resume").length, 0, "the watcher never attached to the session");
+});
+
+test("a masked prompt through the real plugin: a watcher gets the save-login card and answers it with Hermes' JSON", async (t) => {
+  if (process.platform === "win32" && !HOST_WRAPPER) return t.skip("needs Unix sockets (Linux/macOS)");
+  if (spawnSync(HOST_PY, ["--version"]).status !== 0) return t.skip("no python");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "hd-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const launch = { file: HOST_PY, args: [...(HOST_WRAPPER ? [HOST_WRAPPER] : []), HOST, home, "--log", path.join(home, "gateway.log")] };
+  const timing = { ...FAST, handshake: 10000, request: 5000, heartbeat: 12000 };
+  const watcher = new BridgeClient(CFG, { launch, timing });
+  t.after(() => watcher.stop());
+  const listed = next(watcher, "requests", (list) => list.some((r) => r.id === "A1"), 15000);
+  watcher.start();
+  await listed;
+  const owner = await controlConnection(home);
+  const rpc = (await owner.call("session.create", {})).result.session_id;
+  const asked = next(watcher, "requests", (list) => list.some((r) => r.kind === "secret" && r.rpcId === rpc), 10000);
+  await owner.call("prompt.submit", { session_id: rpc, text: "deck-test:vault.save_login" });
+  owner.destroy();
+  const card = (await asked).find((r) => r.kind === "secret" && r.rpcId === rpc);
+  assert.deepEqual([card.method, card.site, card.origin, card.profile], ["vault.save_login", "login.example.com", "https://login.example.com", "default"]);
+  const gone = next(watcher, "requests", (list) => !list.some((r) => r.id === card.id), 10000);
+  assert.deepEqual(await watcher.answerSecret(card.id, { identifier: "ada@example.com", password: "login-Pw-c3d917" }, { profile: "default" }), { status: "ok" });
+  await gone;
+  const value = JSON.stringify({ identifier: "ada@example.com", password: "login-Pw-c3d917" });
+  const digest = require("crypto").createHash("sha256").update(value).digest("hex");
+  const log = readLog(path.join(home, "gateway.log"));
+  assert.deepEqual(log.filter((e) => e.method === "agent.answered").map((e) => e.params), [{ id: card.id, result: { value_sha256: digest } }]);
+  await watcher.stop();
+  // the host side wrote nothing with the password in it (state files, event ndjson, the fake gateway's log)
+  const files = [];
+  const walk = (dir) => { for (const e of fs.readdirSync(dir, { withFileTypes: true })) (e.isDirectory() ? walk : (p) => files.push(p))(path.join(dir, e.name)); };
+  walk(home);
+  assert.ok(files.length > 1);
+  for (const f of files) {
+    let text = "";
+    try { text = fs.readFileSync(f, "latin1"); } catch { continue; } // a socket
+    assert.ok(!text.includes("login-Pw-c3d917"), path.relative(home, f));
+  }
 });
 
 // ---------------------------------------------------------------- Group Chat (groups.*) through the real plugin

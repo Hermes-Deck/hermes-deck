@@ -668,6 +668,8 @@ ipc.handle("bridge:set-model", (e, sid, c) => {
 ipc.handle("bridge:set-effort", (e, sid, o) => needBridge(e).setEffort(bSid(sid), { effort: String(bObj(o).effort || ""), profile: bProfile(o) }));
 ipc.handle("bridge:answer-approval", (e, id, choice, o) => needBridge(e).answerApproval(String(id ?? "").slice(0, 256), String(choice ?? ""), { profile: bProfile(o) }));
 ipc.handle("bridge:answer-question", (e, id, answers, o) => needBridge(e).answerQuestion(String(id ?? "").slice(0, 256), bObj(answers), { profile: bProfile(o) }));
+// a masked prompt's typed value (string, or {identifier, password} for a login): passed through once, never kept or logged
+ipc.handle("bridge:answer-secret", (e, id, value, o) => needBridge(e).answerSecret(String(id ?? "").slice(0, 256), value, { profile: bProfile(o) }));
 // Botlar (renderer/bots.js): the profile roster and avatars (reads), the read-only Bot Chat lookup, and the
 // Bot Chat create that only a first message sent from the composer triggers
 const bName = (v) => String(v ?? "").slice(0, 64);

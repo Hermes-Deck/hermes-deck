@@ -302,3 +302,15 @@ test("one finished turn seen by both the relay (no turn id) and the direct conne
   r.snapshot([r.node({ turnId: "turn-9" })], "host-b"); r.complete({ payload: { turn_id: "turn-9" } }, "host-b"); r.drain();
   assert.equal(r.banners.length, 2);
 });
+
+test("a masked prompt from the direct connection raises one notice that names only the need and the site", () => {
+  const r = rig(); r.view({ visible: false });
+  const login = { id: "srq-login", rpcId: "rpc", sid: "s1", profile: "default", kind: "secret", method: "vault.save_login", site: "login.example.com", origin: "https://login.example.com", at: 1 };
+  const sudo = { id: "srq-sudo", rpcId: "rpc", sid: "s1", profile: "default", kind: "secret", method: "sudo", command: "apt-get install -y ripgrep", at: 2 };
+  r.observe({ t: "requests", list: [login, sudo] }); r.drain();
+  r.observe({ t: "requests", list: [login, sudo] }); r.drain(); // the same list again: no second notice
+  assert.deepEqual(r.banners.map(b => [b.options.title, b.options.body]), [["Hermes needs a password", "login.example.com"], ["Hermes needs a password", ""]]);
+  assert.ok(!JSON.stringify(r.banners.map(b => b.options)).includes("ripgrep"));
+  r.observe({ t: "requests", list: [] }); r.drain(); // answered elsewhere: both close
+  assert.ok(r.banners.every(b => b.closed));
+});

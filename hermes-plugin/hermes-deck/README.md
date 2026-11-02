@@ -5,7 +5,7 @@ Provides Deck's direct Hermes connection and optional relay events.
 | Part | Purpose | Runtime |
 |---|---|---|
 | `events.py` | Turn/tool/token/sub-agent events, gateway/cron snapshots, opt-in desktop fence | `~/.hermes-deck/events/`, `state/`, `cu/` |
-| `observer.py`, `stream.py` | Live sessions, history, prompts, model/turn controls, approvals and questions | `<HERMES_HOME>/hermes-deck/processes/` and private control sockets |
+| `observer.py`, `stream.py` | Live sessions, history, prompts, model/turn controls, approvals, questions and masked prompts (sudo, secret, vault) | `<HERMES_HOME>/hermes-deck/processes/` and private control sockets |
 
 ## Install
 
