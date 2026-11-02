@@ -6,6 +6,7 @@ comes from, process checks) and what Hermes Deck's app/main/bridge.js expects on
 the real observer control socket and the real stream together (testhost.py); they need Unix sockets, so
 they run on Linux/macOS (CI) and are skipped on Windows.
 """
+import hashlib
 import importlib.util
 import io
 import json
@@ -26,6 +27,7 @@ from contextlib import contextmanager, ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
+import testhost
 from testsupport import unittest_main
 
 HERE = Path(__file__).resolve().parent
@@ -1037,6 +1039,48 @@ class LiveRequestTests(unittest.TestCase):
             self.assertEqual([w["payload"]["reason"] for w in withdrawals(frames, asked["id"])], ["answered"])
         self.assertEqual(self.call("request.answer", {"id": asked["id"], "result": {"choice": "once"}})["result"],
                          {"status": "expired"})
+
+    def test_masked_prompts_reach_another_deck_are_answered_once_and_the_value_never_leaves(self):
+        # sudo / secret / vault prompts travel like approvals: fanned out to every Deck that listed sessions,
+        # withdrawn on answer; the typed value goes to Hermes only, never into a frame, a file or a log line
+        self.call("session.list", {"limit": 50})
+        typed = {"sudo": "sudo-Pw-0e5c1d", "secret": "sk-test-9b2f71", "vault.unlock_prompt": "master-Pw-4a8e60",
+                 "vault.save_login": json.dumps({"identifier": "ada@example.com", "password": "login-Pw-c3d917"}),
+                 "vault.code": "481516"}
+        secrets = ["sudo-Pw-0e5c1d", "sk-test-9b2f71", "master-Pw-4a8e60", "login-Pw-c3d917", "481516"]
+        others = []
+        for kind, value in typed.items():
+            gone = self.control()
+            others.append(gone)
+            rpc = gone.call("session.create", {})["result"]["session_id"]
+            gone.call("prompt.submit", {"session_id": rpc, "text": f"deck-test:{kind}"})
+            gone.close()  # the owner left: only the hub can bring the prompt to this Deck
+            asked = self.next(lambda f: f.get("method") == kind and f["params"].get("session_id") == rpc)
+            # exactly Hermes' prompt params plus the owning profile: nothing else rides along
+            self.assertEqual(asked["params"], {"session_id": rpc, "profile_name": "default", **testhost.ASK_PARAMS[kind]})
+            self.assertEqual(self.call("request.answer", {"id": asked["id"], "result": {"value": value}})["result"],
+                             {"status": "ok"})
+            digest = hashlib.sha256(value.encode()).hexdigest()
+            self.assertIn({"id": asked["id"], "result": {"value_sha256": digest}}, self.agent_log("agent.answered"))
+            self.assertTrue(eventually(lambda: withdrawals(self.seen, asked["id"])))
+            time.sleep(0.7)  # one more sweep: nothing arrives twice, nothing is withdrawn twice
+            self.assertEqual(len([f for f in self.seen if f.get("id") == asked["id"] and f.get("method") == kind]), 1)
+            self.assertEqual([w["payload"] for w in withdrawals(self.seen, asked["id"])],
+                             [{"id": asked["id"], "method": kind, "reason": "answered"}])
+            self.assertEqual(self.call("request.answer", {"id": asked["id"], "result": {"value": value}})["result"],
+                             {"status": "expired"})
+        # Grep everything this host side produced for the typed values: the frames both Decks received, every file
+        # under HERMES_HOME (snapshots, event ndjson, process records), the gateway log and the process' stderr.
+        self.proc.terminate()
+        self.proc.wait(5)
+        stderr = self.proc.stderr.read().decode(errors="replace")
+        written = [p.read_bytes().decode(errors="replace") for p in self.home.rglob("*") if p.is_file()]
+        self.assertTrue(written, "the host wrote its state files")
+        haystacks = [json.dumps(self.seen), *[json.dumps(c.seen) for c in others], self.log.read_text(encoding="utf-8"),
+                     stderr, *written]
+        for secret in secrets:
+            for text in haystacks:
+                self.assertNotIn(secret, text)
 
 
 class VersionRequestTests(unittest.TestCase):

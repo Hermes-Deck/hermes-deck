@@ -46,7 +46,8 @@ class RequestReconnectTests(unittest.TestCase):
             requests = types.SimpleNamespace(_lock=threading.Lock(), _open={})
             rows = [Request("approve", "s-a", "approval", {"command": "test only"}),
                     Request("question", "s-b", "clarify", {"questions": [{"qid": "q1", "question": "Test?"}]}),
-                    Request("secret", "s-a", "secret", {"name": "never replay"}),
+                    Request("secret", "s-a", "vault.save_login", {"origin": "https://login.example.com",
+                                                                  "site": "login.example.com"}),
                     Request("orphan", "missing", "approval", {}),
                     Request("forged", "s-a", "approval", {"profile_name": "beta"})]
             requests._open = {r.id: r for r in rows}
@@ -93,12 +94,17 @@ class RequestReconnectTests(unittest.TestCase):
                                     frames.append(frame)
 
                     initial = connect()
-                    self.assertEqual([r["id"] for r in initial], ["approve", "question"])
-                    self.assertEqual([r["params"]["profile_name"] for r in initial], ["default", "alpha"])
-                    self.assertEqual([r["request_created_at"] for r in initial], [r.created_at for r in rows[:2]])
+                    # a masked prompt is restored like an approval: its prompt params only, never a value
+                    self.assertEqual([r["id"] for r in initial], ["approve", "question", "secret"])
+                    self.assertEqual([r["params"]["profile_name"] for r in initial], ["default", "alpha", "default"])
+                    self.assertEqual([r["request_created_at"] for r in initial], [r.created_at for r in rows[:3]])
+                    self.assertEqual(initial[2]["params"], {"session_id": "s-a", "profile_name": "default",
+                                                            "origin": "https://login.example.com",
+                                                            "site": "login.example.com"})
                     self.assertEqual(connect(), initial, "reconnect preserves identity and creation time")
                     with requests._lock:
                         del requests._open["approve"]
+                        del requests._open["secret"]
                     self.assertEqual([r["id"] for r in connect()], ["question"], "answered requests stay gone")
                     self.assertEqual(calls, ["session.list"] * 3, "no resume, answer or command is replayed")
                     # A native cancellation follows the session's old transport, not global broadcasts.
@@ -194,14 +200,34 @@ class RequestCardsTests(unittest.TestCase):
         self.sweep()
         self.assertEqual(self.kinds(), ["clarify", "answered"])
 
-    def test_an_unstamped_or_secret_request_is_never_offered(self):
+    def test_an_unstamped_request_is_never_offered(self):
         self.cards.subscribed = True
         self.requests._open = {"srq-2": Request("srq-2", "missing", "approval", {}),
-                               "srq-3": Request("srq-3", "s-a", "secret", {"name": "x"})}
+                               "srq-3": Request("srq-3", "missing", "sudo", {"command": "apt-get update"})}
         with self.requests._lock:
             fresh = [(r, r.frame()) for r in self.requests._open.values() if r.method in observer.REQUEST_KINDS]
         self.cards.sync(fresh, lambda rid: False)
         self.assertEqual(self.sent, [])
+
+    def test_every_masked_prompt_is_offered_once_and_withdrawn_once(self):
+        # sudo, secret and the three vault prompts are cards like approvals: one arrival, one withdrawal
+        self.cards.subscribed = True
+        prompts = {"sudo": {"command": "apt-get update"}, "secret": {"env_var": "ATLAS_KEY", "prompt": "Key"},
+                   "vault.unlock_prompt": {"backend": "bitwarden", "display_name": "Bitwarden"},
+                   "vault.save_login": {"origin": "https://login.example.com", "site": "login.example.com"},
+                   "vault.code": {"site": "login.example.com", "hint": None}}
+        self.assertEqual(observer.SECRET_REQUEST_KINDS, frozenset(prompts))
+        self.assertLessEqual(observer.SECRET_REQUEST_KINDS, observer.REQUEST_KINDS)
+        self.requests._open = {f"srq-{m}": Request(f"srq-{m}", "s-a", m, p) for m, p in prompts.items()}
+        self.sweep()
+        self.sweep()
+        self.assertEqual([(f["method"], f["params"]) for f in self.sent],
+                         [(m, {"session_id": "s-a", "profile_name": "default", **p}) for m, p in prompts.items()])
+        for rid in list(self.requests._open):
+            self.cards.withdraw(rid, "answered")
+        self.requests._open = {}
+        self.sweep()
+        self.assertEqual(self.kinds(), [*prompts, *["answered"] * len(prompts)])
 
 
 if __name__ == "__main__":

@@ -2169,14 +2169,18 @@ def withdraw_answered(server, request_id, opened, response):
 # Hermes writes a server request only to its session's own transport (tui_gateway write_json): the Deck connection
 # that created or resumed the session. When that Deck left (the owner switched to another host) or another Deck only
 # watches this host, nobody saw the question, and Hermes' request.cancel followed the same dead route.
-REQUEST_KINDS = frozenset({"approval", "clarify"})  # what a Deck card shows; secret/sudo/vault prompts never leave
+# What a Deck card shows. The masked prompts (sudo password, a named secret, a password-manager unlock, a login to
+# save, a one-time code) travel exactly like approvals: the frame carries only Hermes' prompt params (never a value),
+# and the answer goes back through request.answer, which this module never records, logs or echoes.
+SECRET_REQUEST_KINDS = frozenset({"sudo", "secret", "vault.unlock_prompt", "vault.save_login", "vault.code"})
+REQUEST_KINDS = frozenset({"approval", "clarify"}) | SECRET_REQUEST_KINDS
 REQUEST_CARDS_MAX = 32       # BridgeClient's open-request cap
 REQUEST_POLL_SECONDS = 0.5   # registry read while a Deck is connected (server_requests offers no subscription hook)
 WITHDRAWN_MAX = 512
 
 
 def request_frame_id(obj):
-    """The id of an approval/clarify server-request frame, else None."""
+    """The id of a server-request frame a Deck card shows (REQUEST_KINDS), else None."""
     if isinstance(obj, dict) and obj.get("method") in REQUEST_KINDS and isinstance(obj.get("id"), str):
         return obj["id"]
     return None
@@ -2275,8 +2279,8 @@ class RequestCards:
 
 
 class RequestHub:
-    """Every open approval/clarify of this Hermes process on every Deck connection that listed sessions, live, and
-    withdrawn everywhere once it is answered, expired or cancelled. Hermes' tui_gateway.server_requests has no
+    """Every open approval, question and masked prompt of this Hermes process on every Deck connection that listed
+    sessions, live, and withdrawn everywhere once it is answered, expired or cancelled. Hermes' tui_gateway.server_requests has no
     subscription hook, so the hub reads its registry under the registry's own lock every REQUEST_POLL_SECONDS while
     a Deck is connected, and at once when a request passes through any Deck connection. It never attaches a
     connection to a session, never takes over controls and never replays an answer."""

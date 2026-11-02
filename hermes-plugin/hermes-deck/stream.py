@@ -564,7 +564,9 @@ def relay_requests(home, incoming, emit):
                 with socket_lock:
                     if gateway["socket"] is not conn: raise OSError("Gateway disconnected")
                     if "id" in request:
-                        gateway["pending"][request["id"]] = (method, pid, params)
+                        # only deck.takeover's reply needs its params back; a request.answer may carry a typed secret,
+                        # which must not stay in memory while its reply is pending
+                        gateway["pending"][request["id"]] = (method, pid, params if method == "deck.takeover" else {})
                         registered = True
                 conn.settimeout(remaining(deadline))
                 attempted = True

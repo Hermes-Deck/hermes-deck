@@ -11,10 +11,12 @@ HOME is an empty directory used as HERMES_HOME. Sessions: s-main (live, controll
 process) and s-idle (persisted only). --log appends every request the gateway saw as a JSON line, plus
 agent.asked / agent.answered lines for the server requests the fake agent raised and got answered. The first
 session.list asks one approval (A1); prompt.submit streams message.start/delta/complete events, or with the text
-"deck-test:clarify" / "deck-test:approval" makes that session ask one question / approval after
-DECK_TEST_ASK_DELAY seconds (0.8), written only to the session's own transport like Hermes does. groups.* serves
-in-memory hosted rooms (Group Chat).
+"deck-test:<method>" (clarify, approval, or a masked prompt: sudo, secret, vault.*; ASK_PARAMS) makes that session
+ask one such request after DECK_TEST_ASK_DELAY seconds (0.8), written only to the session's own transport like
+Hermes does. A masked prompt's typed value is logged only as a SHA-256 digest. groups.* serves in-memory hosted
+rooms (Group Chat).
 """
+import hashlib
 import json
 import os
 import sys
@@ -31,6 +33,19 @@ HISTORY = [
     {"id": 12, "role": "assistant", "content": [{"type": "text", "text": "Selam"}], "timestamp": 1700000001.25},
     {"id": 13, "role": "tool", "content": "tool output"},
 ]
+
+# What the fake agent asks for "deck-test:<method>" (Hermes' contract params per server request). The five masked
+# prompts carry no value; their answers come back through request.answer as {"value": "..."}.
+ASK_PARAMS = {
+    "clarify": {"questions": [{"qid": "q1", "question": "Which colour?", "choices": ["red", "blue"]}]},
+    "approval": {"command": "rm -rf dist", "description": "Komut onayı", "choices": ["once", "deny"]},
+    "sudo": {"command": "apt-get install -y ripgrep"},
+    "secret": {"env_var": "ATLAS_API_KEY", "prompt": "API key for the Atlas skill"},
+    "vault.unlock_prompt": {"backend": "bitwarden", "display_name": "Bitwarden"},
+    "vault.save_login": {"origin": "https://login.example.com", "site": "login.example.com"},
+    "vault.code": {"site": "login.example.com", "hint": "6-digit code from your authenticator app"},
+}
+SECRET_METHODS = frozenset({"sudo", "secret", "vault.unlock_prompt", "vault.save_login", "vault.code"})
 
 
 class Agent:
@@ -51,6 +66,9 @@ class Agent:
 
 def install_fake_hermes(home: Path, log=None):
     """Fake hermes_constants, hermes_cli.web_routers.sessions, agent.interrupt_compat and tui_gateway modules."""
+    def digest(value):
+        return hashlib.sha256(str(value).encode()).hexdigest()
+
     def record(entry):
         if log:
             with open(log, "a", encoding="utf-8") as f:
@@ -116,8 +134,7 @@ def install_fake_hermes(home: Path, log=None):
     def ask(sid, method):
         """The agent of runtime session `sid` asks the Deck (server_requests.send): registered first, then written to
         the session's own transport only. Hermes ids are srq-<hex>."""
-        params = ({"questions": [{"qid": "q1", "question": "Which colour?", "choices": ["red", "blue"]}]}
-                  if method == "clarify" else {"command": "rm -rf dist", "description": "Komut onayı", "choices": ["once", "deny"]})
+        params = ASK_PARAMS[method]
         rid = "srq-" + os.urandom(6).hex()
         frame = lambda: {"jsonrpc": "2.0", "id": rid, "method": method, "params": {"session_id": sid, **params}}
         req = types.SimpleNamespace(id=rid, sid=sid, method=method, params=params, created_at=time.time(),
@@ -135,7 +152,10 @@ def install_fake_hermes(home: Path, log=None):
 
     def dispatch(request, transport=None):
         method, p, rid = request.get("method"), request.get("params") or {}, request.get("id")
-        record({"id": rid, "method": method, "params": p})
+        result = p.get("result") if method == "request.answer" else None
+        # a masked prompt's typed value is logged only as a digest (see agent.answered below)
+        record({"id": rid, "method": method, "params": dict(p, result={"value_sha256": digest(result["value"])})
+                if isinstance(result, dict) and "value" in result else p})
         ok = lambda result: {"jsonrpc": "2.0", "id": rid, "result": result}
         event = lambda sid, type_, payload: transport.write(
             {"jsonrpc": "2.0", "method": "event", "params": {"type": type_, "session_id": sid, "payload": payload}})
@@ -161,8 +181,9 @@ def install_fake_hermes(home: Path, log=None):
             return ok({"session_id": "rpc-" + str(p.get("session_id")), "stored_session_id": p.get("session_id")})
         if method == "prompt.submit":
             sid = str(p.get("session_id"))
-            if p.get("text") in ("deck-test:clarify", "deck-test:approval"):
-                # the turn asks a question / an approval a little later (the Deck that sent it may have left by then)
+            if str(p.get("text", "")).startswith("deck-test:") and p["text"].split(":", 1)[1] in ASK_PARAMS:
+                # the turn asks a question / an approval / a masked prompt a little later (the Deck that sent it may
+                # have left by then)
                 threading.Timer(float(os.environ.get("DECK_TEST_ASK_DELAY", "0.8")), ask,
                                 args=(sid, p["text"].split(":", 1)[1])).start()
                 return ok({"status": "streaming"})
@@ -177,7 +198,12 @@ def install_fake_hermes(home: Path, log=None):
             with open_requests._lock:
                 settled = open_requests._open.pop(str(p.get("id")), None)
             if settled:
-                record({"id": None, "method": "agent.answered", "params": {"id": settled.id, "result": p.get("result")}})
+                result = p.get("result")
+                if settled.method in SECRET_METHODS and isinstance(result, dict):
+                    # the fake agent got the typed value; its log keeps only a digest, so a test can grep every file
+                    # it wrote for the value itself
+                    result = {"value_sha256": digest(result.get("value"))}
+                record({"id": None, "method": "agent.answered", "params": {"id": settled.id, "result": result}})
             return ok({"status": "ok" if settled else "expired"})
         if method == "session.interrupt":
             return ok({"status": "interrupted"})
