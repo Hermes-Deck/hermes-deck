@@ -52,6 +52,14 @@ function previewText(value, lines = BODY_LINES, max = BODY_MAX) {
   if (!picked.length) return '';
   return clip(picked.join('\n'), max);
 }
+/**
+ * The open requests a phone may see: approvals and questions. Masked prompts (sudo, secret, vault.*, kind "secret")
+ * stay on the desktop: the phone has no masked card for them and no op to answer them, so they are neither listed
+ * nor pushed; the phone shows nothing rather than a card it would mis-render.
+ */
+function phoneRequests(list) {
+  return (Array.isArray(list) ? list : []).filter(r => r && (r.kind === 'approval' || r.kind === 'question'));
+}
 /** Banner body for one admitted event, from the native payload or the open request. Never persisted outside the owner's relay. */
 function notificationBody(kind, source = {}) {
   if (kind === 'approval') return previewText(source.description, 2) || previewText(source.command, 2) || '';
@@ -275,6 +283,7 @@ class MobileRelay {
       for (const [event, label] of [['status', 'status'], ['snapshot', 'snapshot'], ['requests', 'requests'], ['event', 'native'], ['sessions', 'sessions']]) {
         bridge.on(event, data => {
           if (this.devices.get(device.id) !== device || !tokens.stillValid(this.tokensFile, device.id, device.hash)) return;
+          if (event === 'requests') data = phoneRequests(data);
           this.emit(device, { t: 'bridge', event: label, data });
           try { this.notify(device, label, data); } catch { this.emit(device, { t: 'bridge', event: 'status', data: { status: 'error', error: 'Notification metadata could not be saved' } }); }
         });
@@ -395,7 +404,7 @@ class MobileRelay {
     const at = this.atDesk();
     if (this.wasAtDesk && !at) for (const device of this.devices.values()) {
       if (!device.bridge || typeof device.bridge.listRequests !== 'function') continue;
-      try { this.notify(device, 'requests', device.bridge.listRequests()); } catch {}
+      try { this.notify(device, 'requests', phoneRequests(device.bridge.listRequests())); } catch {}
     }
     this.wasAtDesk = at;
   }
@@ -766,7 +775,7 @@ class MobileRelay {
         const bridge = this.bridge(device);
         ws.send(JSON.stringify({ t: 'bridge', event: 'status', data: bridge.status }));
         if (bridge.snapshot) ws.send(JSON.stringify({ t: 'bridge', event: 'snapshot', data: bridge.snapshot }));
-        ws.send(JSON.stringify({ t: 'bridge', event: 'requests', data: bridge.listRequests() }));
+        ws.send(JSON.stringify({ t: 'bridge', event: 'requests', data: phoneRequests(bridge.listRequests()) }));
       } catch (error) { ws.send(JSON.stringify({ t: 'bridge', event: 'status', data: { status: 'off', error: error.message } })); }
     });
   }
@@ -956,4 +965,4 @@ class MobileRelay {
     this.wss.close();
   }
 }
-module.exports = { MobileRelay, createPair, LIMITS, previewText, notificationBody, conversationTitle };
+module.exports = { MobileRelay, createPair, LIMITS, previewText, notificationBody, conversationTitle, phoneRequests };
