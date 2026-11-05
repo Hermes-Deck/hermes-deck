@@ -6,6 +6,12 @@ The desktop app, relay and Hermes plugin share one version number.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-05
+
+- Switching hosts cancels pending browser-transfer approvals and file downloads. Late image and audio responses from the previous host are discarded.
+
+- Update compatible dependencies to include Electron certificate validation fixes and corrected HTTP-client, URI and IP-address handling.
+
 - Agent activity now appears in a collapsed status card above the composer for direct and Telegram/relay chats. Expand for observed steps, model, reasoning, Work and guarded Stop. Hide the entire card and restore it from the message toolbar; the choice persists per host without hiding approvals or questions.
 
 - The host selector and separate Relay/Sessions states form a compact centered header group. Narrow layouts keep all header actions reachable on a second row, while connection warnings retain explicit text.

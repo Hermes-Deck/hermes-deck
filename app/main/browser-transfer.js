@@ -11,6 +11,7 @@ class BrowserTransfer {
   constructor({ host, presence, settings, dir, protect, unprotect, request, emit, shot = false }) {
     Object.assign(this, { host, presence, settings, dir, protect, unprotect, request, emit, shot });
     this.relay = null;
+    this.consentGeneration = 0;
     this.identity = null;
     this.registered = false;
     this.registration = null;
@@ -36,12 +37,13 @@ class BrowserTransfer {
       consented: this.consent.allowed, automaticTarget: this.consent.autoTarget, error: this.error };
   }
   attach(relay) {
+    this.consentGeneration++;
     if (this.relay && this.status) this.relay.off("status", this.status);
     this.relay = relay;
     this.registered = false;
     this.status = (m) => {
       if (m.status === "open") this.register().catch((e) => this.fail(e));
-      else this.registered = false;
+      else { this.consentGeneration++; this.registered = false; }
     };
     if (relay && !this.shot) relay.on("status", this.status);
   }
@@ -75,10 +77,17 @@ class BrowserTransfer {
     return (await this.http("GET", "/bundle/devices")).devices;
   }
   async approve(target, automatic) {
+    const relay = this.relay, generation = this.consentGeneration;
+    // HTTP and policy replies can outlive the connection or the consent they started with.
+    const assertCurrent = () => {
+      if (generation !== this.consentGeneration || relay !== this.relay || !relay || !this.registered) throw new Error(i18nText("U0341"));
+    };
     const devices = await this.targets();
+    assertCurrent();
     if (!devices.some((d) => d.deviceId === target && d.fresh)) throw new Error(i18nText("transfer.targetNotReady"));
     const next = { allowed: true, autoTarget: automatic === true && target !== this.presence.id ? target : null };
     await this.request("transfer-policy", "default", { autoTarget: next.autoTarget });
+    assertCurrent();
     fs.mkdirSync(this.dir, { recursive: true });
     const tmp = `${this.policyFile}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(next), { mode: 0o600 });
@@ -88,6 +97,7 @@ class BrowserTransfer {
   }
   /** Multi-host: consent was given while another host was active; the next host asks again. Local only. */
   forget() {
+    this.consentGeneration++;
     this.consent = { allowed: false, autoTarget: null };
     try { fs.writeFileSync(`${this.policyFile}.tmp`, JSON.stringify(this.consent), { mode: 0o600 }); fs.renameSync(`${this.policyFile}.tmp`, this.policyFile); } catch {}
   }

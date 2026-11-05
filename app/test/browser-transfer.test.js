@@ -33,9 +33,16 @@ function harness(t, { controller = "agent", rejectAck = false, failDisposal = fa
     openBundle: async () => ({ controller }),
     importState: async () => { calls.import++; return { contexts: ["new-a", "new-b"], tabs: ["new-tab"] }; },
   };
+  const files = new Map();
+  const policyFs = {
+    readFileSync: name => { if (!files.has(name)) throw new Error("missing fixture file"); return files.get(name); },
+    mkdirSync: () => {},
+    writeFileSync: (name, data) => files.set(name, data),
+    renameSync: (from, to) => { files.set(to, files.get(from)); files.delete(from); },
+  };
   const module = { exports: {} };
   const load = vm.runInThisContext(`(function(require,module,exports){${fs.readFileSync(file, "utf8")}\n})`, { filename: file });
-  load(name => name === "./browser-bundle" ? bundle : name === "./cdp-view" ? { CdpClient: Cdp } : ownRequire(name), module, module.exports);
+  load(name => name === "fs" ? policyFs : name === "./browser-bundle" ? bundle : name === "./cdp-view" ? { CdpClient: Cdp } : ownRequire(name), module, module.exports);
   const presence = new EventEmitter(); presence.id = deviceId;
   const host = { peek: () => browser, enabled: () => true, ensure: async () => browser,
     setController: (_slug, next) => { browser.controller = next; }, list: () => [] };
@@ -52,8 +59,115 @@ function harness(t, { controller = "agent", rejectAck = false, failDisposal = fa
     calls.http.push({ method, endpoint, body });
     return { bundle: { slug: "demo", source, target: deviceId } };
   };
-  return { transfer, browser, contexts, calls, message: { id: "b".repeat(32), slug: "demo", source } };
+  return { transfer, browser, contexts, calls, files, message: { id: "b".repeat(32), slug: "demo", source } };
 }
+
+function approvalHarness(t) {
+  const h = harness(t);
+  const { transfer, calls } = h;
+  const relay = new EventEmitter();
+  transfer.attach(relay);
+  transfer.registered = true;
+  transfer.http = async (method, endpoint) => {
+    calls.http.push({ relay: transfer.relay, method, endpoint });
+    return { devices: [{ deviceId: "fallback", fresh: true }, { deviceId: transfer.presence.id, fresh: true }] };
+  };
+  transfer.request = async (op, slug, extra) => { calls.requests.push({ relay: transfer.relay, op, slug, extra }); return {}; };
+  return { ...h, relay };
+}
+
+const connectionChanges = {
+  forget: transfer => transfer.forget(),
+  replace: transfer => { transfer.attach(new EventEmitter()); transfer.registered = true; },
+  detach: transfer => transfer.attach(null),
+  reconnect: transfer => {
+    transfer.relay.emit("status", { status: "closed" });
+    transfer.relay.emit("status", { status: "open" });
+    transfer.registered = true;
+  },
+  "host switch": transfer => {
+    transfer.forget();
+    transfer.attach(new EventEmitter());
+    transfer.registered = true;
+  },
+};
+
+for (const boundary of ["devices", "policy"]) {
+  for (const [change, invalidate] of Object.entries(connectionChanges)) {
+    test(`transfer: pending approval at ${boundary} rejects after ${change}`, async t => {
+      const { transfer, calls, files, relay } = approvalHarness(t);
+      const entered = Promise.withResolvers(), resume = Promise.withResolvers();
+      const method = boundary === "devices" ? "http" : "request";
+      const original = transfer[method].bind(transfer);
+      transfer[method] = async (...args) => {
+        const result = await original(...args);
+        entered.resolve();
+        await resume.promise;
+        return result;
+      };
+      const pending = transfer.approve("fallback", true);
+      await entered.promise;
+      invalidate(transfer);
+      const saved = [...files];
+      resume.resolve();
+      const result = await pending.then(value => ({ value }), error => ({ error }));
+      assert.deepEqual(calls.requests, boundary === "devices" ? [] : [
+        { relay, op: "transfer-policy", slug: "default", extra: { autoTarget: "fallback" } },
+      ], "a stale approval must never send policy to the new connection");
+      assert.deepEqual(transfer.consent, { allowed: false, autoTarget: null }, "stale consent must stay off");
+      assert.deepEqual([...files], saved, "stale approval must not persist consent");
+      assert.ok(result.error, "stale approval must reject so the caller cannot continue to handoff");
+    });
+  }
+}
+
+for (const [target, automatic, autoTarget] of [["fallback", true, "fallback"], ["fallback", false, null], ["self", true, null]]) {
+  test(`transfer: unchanged connection approves ${target}, automatic=${automatic}`, async t => {
+    const { transfer, calls, files, relay } = approvalHarness(t);
+    const state = await transfer.approve(target === "self" ? transfer.presence.id : target, automatic);
+    assert.equal(state.consented, true);
+    assert.equal(state.automaticTarget, autoTarget);
+    assert.deepEqual(calls.requests, [{ relay, op: "transfer-policy", slug: "default", extra: { autoTarget } }]);
+    assert.deepEqual(JSON.parse(files.get(transfer.policyFile)), { allowed: true, autoTarget });
+  });
+}
+
+test("transfer: stale policy completion cannot overwrite fresh approval on the new host", async t => {
+  const { transfer, files, calls } = approvalHarness(t);
+  const entered = Promise.withResolvers(), resume = Promise.withResolvers();
+  const request = transfer.request;
+  transfer.request = async (...args) => {
+    const result = await request(...args);
+    entered.resolve();
+    await resume.promise;
+    return result;
+  };
+  const stale = transfer.approve("fallback", true);
+  await entered.promise;
+  connectionChanges["host switch"](transfer);
+  transfer.request = request;
+  await transfer.approve("fallback", false);
+  const saved = files.get(transfer.policyFile);
+  resume.resolve();
+  const result = await stale.then(value => ({ value }), error => ({ error }));
+  assert.deepEqual(transfer.consent, { allowed: true, autoTarget: null });
+  assert.equal(files.get(transfer.policyFile), saved);
+  assert.notEqual(calls.requests[0].relay, calls.requests[1].relay);
+  assert.equal(calls.requests.length, 2);
+  assert.ok(result.error);
+});
+
+test("transfer: rejected policy and stale targets never grant consent", async t => {
+  const { transfer, calls, files } = approvalHarness(t);
+  transfer.http = async () => ({ devices: [{ deviceId: "fallback", fresh: false }] });
+  await assert.rejects(transfer.approve("fallback", true));
+  assert.equal(calls.requests.length, 0);
+  transfer.http = async () => ({ devices: [{ deviceId: "fallback", fresh: true }] });
+  transfer.request = async () => { throw new Error("policy refused"); };
+  await assert.rejects(transfer.approve("fallback", true), /policy refused/);
+  assert.deepEqual(transfer.consent, { allowed: false, autoTarget: null });
+  assert.equal(files.size, 0);
+});
 
 test("transfer: first-export consent gates snapshot and upload, and checkpoint stays quiet", async t => {
   const { transfer, calls } = harness(t);

@@ -126,10 +126,13 @@ class OwnerRoutingTests(unittest.TestCase):
         from hermes_cli.gateway_client import GatewayClient
         from hermes_cli.gateway_runtime import GatewayDiscovery, GatewayEndpoint
         from websockets.exceptions import ConnectionClosedError
+        from websockets.protocol import State
         endpoint = GatewayEndpoint("/isolated/cold", "owner", 1, 1, "http://127.0.0.1:1", "none", frozenset())
         sends = []
 
         class BrokenSocket:
+            state = State.OPEN  # The connection drops during send, not before it.
+
             async def send(self, frame):
                 sends.append(frame)
                 raise ConnectionClosedError(None, None)
@@ -266,7 +269,7 @@ class NativeOwnerTests(unittest.TestCase):
             observer.session_update({"profile": "missing", "session_id": "gui", "pinned": True})
         self.assertFalse((self.home / "profiles" / "missing").exists())
 
-        # The native capability permits legacy cron pins, not general history control.
+        # Native history metadata is editable; runtime control stays read-only.
         from hermes_cli.gateway_client import GatewayRPCError, connect_gateway
         from hermes_cli.gateway_runtime import discover_gateway_endpoint
         from hermes_state import SessionDB
@@ -291,18 +294,14 @@ class NativeOwnerTests(unittest.TestCase):
                 with self.assertRaises(observer.SessionUpdateError) as conflict:
                     observer._session_update_owner("cold", "cron", before, {"pinned": not pinned})
                 self.assertEqual(conflict.exception.code, 4090)
-                reply = observer.session_reply({"id": "rename", "params": {
-                    "profile": "cold", "session_id": "cron", "title": "Not permitted"}}, observer.session_update)
-                self.assertEqual(reply["error"]["code"], 4040, reply)
-
-                async def archive():
+                async def reset():
                     async with connect_gateway(endpoint=endpoint) as client:
-                        return await client.rpc("session.mutate", session_id="cron", request_id=f"archive-{pinned}",
-                                                expected_revision=after["runtime_revision"], operation="archive",
-                                                payload={"archived": True})
+                        return await client.rpc("session.mutate", session_id="cron", request_id=f"reset-{pinned}",
+                                                expected_revision=after["runtime_revision"], operation="reset",
+                                                payload={})
                 with self.assertRaises(GatewayRPCError) as denied:
-                    asyncio.run(archive())
-                self.assertEqual(str(denied.exception), "not_found")
+                    asyncio.run(reset())
+                self.assertEqual(str(denied.exception), "session_read_only")
                 self.assertEqual(self.row("cold", "cron"), after)
 
     def test_native_created_gui_without_deck_attachment(self):

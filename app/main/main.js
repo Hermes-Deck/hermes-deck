@@ -432,6 +432,10 @@ ipc.handle("downloads:reset-folder", () => {
   return settings.publicView();
 });
 const DOWNLOAD_TICKET = /^[A-Za-z0-9-]{6,64}$/;
+// startBridge replaces the client on every host switch, including a switch back to the same host.
+const checkFileBridge = (b) => {
+  if (bridge !== b) throw new Error(i18nText("hosts.stalePage"));
+};
 const bRef = (v) => {
   const s = String(v ?? "");
   if (!/^[0-9a-f]{16}$/.test(s)) throw new Error(i18nText("download.invalid"));
@@ -483,7 +487,13 @@ ipc.handle("bridge:media-image", async (_e, sid, ref, o) => {
   const s = bSid(sid);
   const p = offeredPath(s, bRef(ref));
   const profile = bProfile(o);
-  const r = await fetchImage((offset, length) => needBridge().fileChunk(s, p, { offset, length, profile }));
+  const b = bridge;
+  if (!b) return { ok: false, reason: "unavailable" };
+  const r = await fetchImage((offset, length) => {
+    checkFileBridge(b);
+    return b.fileChunk(s, p, { offset, length, profile });
+  });
+  if (bridge !== b) return { ok: false, reason: "unavailable" };
   if (!r.ok) return { ok: false, reason: r.reason };
   return { ok: true, mime: r.mime, size: r.bytes.length, url: `data:${r.mime};base64,${r.bytes.toString("base64")}` };
 });
@@ -492,7 +502,13 @@ ipc.handle("bridge:media-audio", async (_e, sid, ref, o) => {
   const s = bSid(sid);
   const p = offeredPath(s, bRef(ref));
   const profile = bProfile(o);
-  const r = await fetchAudio((offset, length) => needBridge().fileChunk(s, p, { offset, length, profile }), { name: require("path").posix.basename(p) });
+  const b = bridge;
+  if (!b) return { ok: false, reason: "unavailable" };
+  const r = await fetchAudio((offset, length) => {
+    checkFileBridge(b);
+    return b.fileChunk(s, p, { offset, length, profile });
+  }, { name: require("path").posix.basename(p) });
+  if (bridge !== b) return { ok: false, reason: "unavailable" };
   if (!r.ok) return { ok: false, reason: r.reason };
   return { ok: true, mime: r.mime, size: r.bytes.length, bytes: r.bytes };
 });
@@ -503,6 +519,7 @@ ipc.handle("bridge:file-download", async (_e, sid, ref, o) => {
   if (!DOWNLOAD_TICKET.test(ticket)) throw new Error(i18nText("download.invalid"));
   const profile = bProfile(o);
   const emit = (m) => {
+    checkFileBridge(b);
     if (win && !win.isDestroyed()) win.webContents.send("files", { ticket, ...m });
   };
   const b = needBridge();
@@ -511,8 +528,10 @@ ipc.handle("bridge:file-download", async (_e, sid, ref, o) => {
     // Large downloads (hermes-downloads.js): granted by the plugin and streamed from the relay when both share this
     // host's spool (8 GB by default, resumed after a cut); else 1 MiB chunks through the bridge (200 MB).
     route = await hermesDownloads.pickRoute(relay, b);
+    checkFileBridge(b);
     const grant = route ? await b.fileGrant(s, p, { profile }) : null;
     const size = grant ? grant.size : (await b.fileChunk(s, p, { offset: 0, length: 1, profile })).size;
+    checkFileBridge(b);
     const name = require("path").posix.basename(p);
     let target;
     if (settings.data.downloads.ask) {
@@ -523,9 +542,22 @@ ipc.handle("bridge:file-download", async (_e, sid, ref, o) => {
       if (pick.canceled || !pick.filePath) return { status: "cancelled" };
       target = pick.filePath;
     }
+    checkFileBridge(b);
     const job = { name, target, size, max: hermesDownloads.activeLimit(route), onProgress: (pr) => emit({ t: "progress", ...pr }) };
-    if (grant) job.open = hermesDownloads.opener({ relay: route.relay, bridge: b, sid: s, path: p, profile, grant });
-    else job.read = (offset, length) => needBridge().fileChunk(s, p, { offset, length, profile });
+    if (grant) {
+      const open = hermesDownloads.opener({ relay: route.relay, bridge: b, sid: s, path: p, profile, grant });
+      job.open = async (start, signal) => {
+        checkFileBridge(b);
+        const body = await open(start, signal);
+        if (bridge !== b) { body.destroy(); checkFileBridge(b); }
+        return body;
+      };
+    } else job.read = async (offset, length) => {
+      checkFileBridge(b);
+      const chunk = await b.fileChunk(s, p, { offset, length, profile });
+      checkFileBridge(b);
+      return chunk;
+    };
     return await downloads.run(ticket, job);
   } catch (e) {
     throw downloadError(e, hermesDownloads.activeLimit(route));
