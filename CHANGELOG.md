@@ -6,6 +6,8 @@ The desktop app, relay and Hermes plugin share one version number.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-10
+
 - Every saved host is live at once: each keeps its relay and direct connection open while the Deck runs, so replies, finished turns, approvals and questions from any host raise their notification and open that host's chat when clicked. Every host you open keeps its page warm in the background: switching back is instant with scroll, open chat and draft intact, nothing reloads.
 - Split view: two hosts side by side, each a full Deck with its own top bar. Picking the host the other pane shows swaps the panes; the divider drags (360 px minimum per pane); split on/off, the right host and the divider position survive a restart. This device's hosting switches follow the left pane's host and change only from there.
 - The top bar's host dropdown and its "Relay: … · Sessions: …" line are replaced by numbered monitor-style buttons (1, 2, …) centred on the bar. The shown host is filled, each number has a connection dot (green all connected, amber connecting or one part down, red disconnected, grey unobserved) and a tooltip with the host name and its Relay and Sessions state. Arrow keys move between the numbers and Ctrl/Cmd+1…9 selects a host. The switcher is hidden with a single host. A host switch no longer waits for a page reload.
