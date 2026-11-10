@@ -16,6 +16,9 @@ const deferred = () => {
   const promise = new Promise(r => { resolve = r; });
   return { promise, resolve };
 };
+// Multi-host: a page never changes host. What can change under a transfer is the client of the page's own host
+// runtime (the connection restarted, or the saved host was edited), so "host replacement" below means exactly that.
+// Another host's runtime never matters to this page.
 const REF = "0123456789abcdef";
 const OFFER = "/mock/offered.png";
 const PNG = Buffer.from("89504e470d0a1a0a0000000d4948445200000001000000010806000000", "hex");
@@ -43,10 +46,17 @@ function rig({ relayRoute = false, ask = true } = {}) {
     connected: true, downloads: capabilities,
     download: async () => { calls.push({ host: "A", method: "stream" }); return { res: "mock-stream" }; },
   };
+  // the asking page's host runtime, and a second saved host that is live at the same time
+  const rt = { bridge: a, relay: relayRoute ? relay : null, phase: "open" };
+  const other = { bridge: client("C"), relay: null, phase: "open" };
+  const runtimes = new Map([["host-A", rt], ["host-C", other]]);
   const ctx = {
-    require, path, bridge: a, relay: relayRoute ? relay : null,
+    require, path,
     ipc: { handle: (name, fn) => handlers.set(name, fn) },
-    needBridge: () => { if (!ctx.bridge) throw new Error("offline"); return ctx.bridge; },
+    views: { hostOf: e => e.host, send: (hostId, ch, m) => progress.push([hostId, ch, m]) },
+    runtimeOf: e => runtimes.get(e.host),
+    relayOf: e => runtimes.get(e.host)?.relay || null,
+    needBridge: e => { const b = runtimes.get(e.host)?.bridge; if (!b) throw new Error("offline"); return b; },
     bSid: s => s, bObj: o => o || {}, bProfile: o => o.profile,
     fileOffers: { pathOf: () => OFFER },
     i18nText: key => key, FILE_MAX: 1024,
@@ -55,7 +65,7 @@ function rig({ relayRoute = false, ask = true } = {}) {
     settings: { data: { downloads: { ask, dir: "" } } },
     SHOT: false, defaultDownloadDir: () => "/mock/downloads", resolveFolder: () => "/mock/downloads",
     app: { getPath: () => "/mock/downloads" },
-    win: { isDestroyed: () => false, webContents: { send: (...args) => progress.push(args) } },
+    win: { isDestroyed: () => false },
     dialog: { showSaveDialog: () => { dialogEntered.resolve(); return dialogResult.promise; } },
     downloads: {
       run: async (ticket, job) => {
@@ -67,8 +77,8 @@ function rig({ relayRoute = false, ask = true } = {}) {
     },
   };
   vm.runInNewContext(source.slice(start, end), ctx);
-  const invoke = channel => handlers.get(`bridge:${channel}`)(null, "session-A", REF, { ticket: "ticket-001", profile: "profile-A" });
-  return { ctx, a, b, calls, jobs, progress, dialogEntered, dialogResult, invoke };
+  const invoke = channel => handlers.get(`bridge:${channel}`)({ host: "host-A" }, "session-A", REF, { ticket: "ticket-001", profile: "profile-A" });
+  return { ctx, rt, other, relay, a, b, calls, jobs, progress, dialogEntered, dialogResult, invoke };
 }
 
 for (const relayRoute of [false, true]) {
@@ -79,9 +89,9 @@ for (const relayRoute of [false, true]) {
     await r.dialogEntered.promise;
     assert.equal(r.calls.length, 1, "metadata was read from A before Save As");
     assert.equal(r.calls[0].host, "A");
-    r.ctx.bridge = r.b;
+    r.rt.bridge = r.b;
     r.dialogResult.resolve({ filePath: "/mock/downloads/saved.png" });
-    await assert.rejects(pending, /hosts.stalePage/);
+    await assert.rejects(pending, /download.hostChanged/);
     assert.equal(r.jobs.length, 0, "do not create a local download after the host changed");
     assert.equal(r.calls.length, 1, "no chunk, grant, or stream starts after the switch");
   });
@@ -100,11 +110,11 @@ for (const relayRoute of [false, true]) {
   test(`${route}: a callback retained by Downloads cannot run on a replaced bridge`, async () => {
     const r = rig({ relayRoute, ask: false });
     r.ctx.downloads.run = async (_ticket, job) => {
-      r.ctx.bridge = r.b;
+      r.rt.bridge = r.b;
       if (job.read) await job.read(0, job.size);
       if (job.open) await job.open(0, new AbortController().signal);
     };
-    await assert.rejects(r.invoke("file-download"), /hosts.stalePage/);
+    await assert.rejects(r.invoke("file-download"), /download.hostChanged/);
     assert.equal(r.calls.length, 1, "only A's initial metadata request ran");
   });
 }
@@ -122,10 +132,10 @@ test("switch away and back with a fresh client does not revive a pending downloa
   const r = rig();
   const pending = r.invoke("file-download");
   await r.dialogEntered.promise;
-  r.ctx.bridge = r.b;
-  r.ctx.bridge = { ...r.a }; // startBridge creates a fresh client even when returning to A
+  r.rt.bridge = r.b;
+  r.rt.bridge = { ...r.a }; // startBridge creates a fresh client even when returning to A
   r.dialogResult.resolve({ filePath: "/mock/downloads/saved.png" });
-  await assert.rejects(pending, /hosts.stalePage/);
+  await assert.rejects(pending, /download.hostChanged/);
   assert.equal(r.jobs.length, 0);
 });
 
@@ -134,12 +144,12 @@ test("late metadata is discarded before opening Save As", async () => {
   r.a.fileChunk = async () => { entered.resolve(); return reply.promise; };
   const pending = r.invoke("file-download");
   await entered.promise;
-  r.ctx.bridge = r.b;
+  r.rt.bridge = r.b;
   reply.resolve({ size: PNG.length });
   r.dialogResult.resolve({ filePath: "/mock/downloads/saved.png" });
   let shown = false;
   r.ctx.dialog.showSaveDialog = async () => { shown = true; return { filePath: "/mock/downloads/saved.png" }; };
-  await assert.rejects(pending, /hosts.stalePage/);
+  await assert.rejects(pending, /download.hostChanged/);
   assert.equal(shown, false);
   assert.equal(r.jobs.length, 0);
 });
@@ -154,9 +164,9 @@ test("a final chunk resolving after a host switch cannot complete the download",
   };
   const pending = r.invoke("file-download");
   await entered.promise;
-  r.ctx.bridge = r.b;
+  r.rt.bridge = r.b;
   reply.resolve({ size: PNG.length, length: PNG.length, bytes: PNG, eof: true });
-  await assert.rejects(pending, /hosts.stalePage/);
+  await assert.rejects(pending, /download.hostChanged/);
   assert.ok(r.calls.every(c => c.host === "A"));
 });
 
@@ -167,32 +177,32 @@ test("a late route lookup cannot grant a file or open Save As after switching", 
   r.ctx.dialog.showSaveDialog = async () => { shown = true; return { canceled: true }; };
   const pending = r.invoke("file-download");
   await entered.promise;
-  r.ctx.bridge = r.b;
-  reply.resolve({ downloads: r.ctx.relay.downloads });
-  await assert.rejects(pending, /hosts.stalePage/);
+  r.rt.bridge = r.b;
+  reply.resolve({ downloads: r.relay.downloads });
+  await assert.rejects(pending, /download.hostChanged/);
   assert.equal(shown, false);
   assert.equal(r.calls.length, 0);
 });
 
 test("a relay body arriving after switching is destroyed instead of consumed", async () => {
   const r = rig({ relayRoute: true, ask: false }), entered = deferred(), reply = deferred();
-  r.ctx.relay.download = async () => { entered.resolve(); return reply.promise; };
+  r.relay.download = async () => { entered.resolve(); return reply.promise; };
   const pending = r.invoke("file-download");
   await entered.promise;
-  r.ctx.bridge = r.b;
+  r.rt.bridge = r.b;
   let destroyed = false;
   reply.resolve({ res: { destroy: () => { destroyed = true; } } });
-  await assert.rejects(pending, /hosts.stalePage/);
+  await assert.rejects(pending, /download.hostChanged/);
   assert.equal(destroyed, true);
 });
 
 test("stale download progress fails instead of reaching the new host page", async () => {
   const r = rig({ ask: false });
   r.ctx.downloads.run = async (_ticket, job) => {
-    r.ctx.bridge = r.b;
+    r.rt.bridge = r.b;
     job.onProgress({ received: 1, size: PNG.length });
   };
-  await assert.rejects(r.invoke("file-download"), /hosts.stalePage/);
+  await assert.rejects(r.invoke("file-download"), /download.hostChanged/);
   assert.equal(r.progress.length, 0);
 });
 
@@ -200,16 +210,16 @@ test("switching to a host without a bridge invalidates pending Save As", async (
   const r = rig();
   const pending = r.invoke("file-download");
   await r.dialogEntered.promise;
-  r.ctx.bridge = null;
+  r.rt.bridge = null;
   r.dialogResult.resolve({ filePath: "/mock/downloads/saved.png" });
-  await assert.rejects(pending, /hosts.stalePage/);
+  await assert.rejects(pending, /download.hostChanged/);
   assert.equal(r.jobs.length, 0);
 });
 
 for (const kind of ["image", "audio"]) {
   test(`${kind}: no bridge remains an unavailable preview`, async () => {
     const r = rig();
-    r.ctx.bridge = null;
+    r.rt.bridge = null;
     const result = await r.invoke(`media-${kind}`);
     assert.equal(result.ok, false);
     assert.equal(result.reason, "unavailable");
@@ -247,7 +257,7 @@ for (const kind of ["image", "audio"]) {
       };
       const pending = r.invoke(`media-${kind}`);
       await entered.promise;
-      r.ctx.bridge = r.b;
+      r.rt.bridge = r.b;
       reply.resolve();
       const result = await pending;
       assert.equal(result.ok, false);
@@ -256,3 +266,16 @@ for (const kind of ["image", "audio"]) {
     });
   }
 }
+
+test("another live host replacing its client leaves this page's download alone, and progress returns to the asking page", async () => {
+  const r = rig({ ask: false });
+  r.ctx.downloads.run = async (_ticket, job) => {
+    r.other.bridge = { ...r.other.bridge }; // host C reconnects while host A's page downloads
+    job.onProgress({ received: 1, size: PNG.length });
+    await job.read(0, job.size);
+    return { status: "done" };
+  };
+  assert.equal((await r.invoke("file-download")).status, "done");
+  assert.ok(r.calls.every(c => c.host === "A"));
+  assert.deepEqual(r.progress.map(p => [p[0], p[1], p[2].t]), [["host-A", "files", "progress"]]);
+});

@@ -420,7 +420,7 @@ const DOWNLOAD_TICKET = /^[A-Za-z0-9-]{6,64}$/;
 // replaces the client when the connection restarts or the saved host is edited (possibly to another machine).
 const fileBridge = (e) => { const rt = runtimeOf(e); return (rt && rt.bridge) || null; };
 const checkFileBridge = (e, b) => {
-  if (fileBridge(e) !== b) throw new Error(i18nText("hosts.stalePage"));
+  if (fileBridge(e) !== b) throw new Error(i18nText("download.hostChanged"));
 };
 const bRef = (v) => {
   const s = String(v ?? "");
