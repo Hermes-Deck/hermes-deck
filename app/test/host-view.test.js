@@ -75,7 +75,7 @@ test("host switch persists the draft before guarded selection, serializes clicks
     const calls = [];
     let settle;
     const ctx = { window: {}, hostSwitchPending: false, S: { settings: { activeHost: "h1" } },
-      shownHost: () => "h1", renderStrip: () => calls.push("activity"), DR: { flush: () => calls.push("draft") }, renderHosts: () => calls.push("render"), publishDesktopView: () => calls.push("view"),
+      shownHost: () => "h1", DR: { flush: () => calls.push("draft") }, renderHosts: () => calls.push("render"), publishDesktopView: () => calls.push("view"),
       deck: { hosts: { select: id => { calls.push(id); return new Promise((resolve, no) => { settle = outcome === "resolve" ? resolve : no; }); } } },
       MV: { toast: () => calls.push("error") }, i18nText: k => k, cleanErr: String,
     };
@@ -84,19 +84,19 @@ test("host switch persists the draft before guarded selection, serializes clicks
     assert.equal(await ctx.selectHost("h1"), false); assert.deepEqual(calls, [], "the shown host is a no-op");
     const pending = ctx.selectHost("h2");
     assert.equal(await ctx.selectHost("h3"), false);
-    assert.deepEqual(calls, ["draft", "activity", "render", "view", "h2"]);
+    assert.deepEqual(calls, ["draft", "render", "view", "h2"]);
     assert.equal(ctx.hostSwitchPending, true);
     if (outcome === "resolve") settle(); else settle(new Error("stale page"));
     assert.equal(await pending, outcome === "resolve");
     assert.equal(ctx.hostSwitchPending, false, `pending is reset when the promise ${outcome}s`);
     assert.equal(calls.includes("error"), outcome === "reject");
-    assert.deepEqual(calls.slice(-3), ["activity", "render", "view"], "the status card and the bar repaint once settled");
+    assert.deepEqual(calls.slice(-2), ["render", "view"], "the bar repaints once settled");
   }
 });
 
 test("host switch honours the unsaved-mail guard and compares with the pane's own host", async () => {
   const calls = [];
-  const ctx = { window: { DeckInbox: { mail: { hasUnsaved: () => true } } }, hostSwitchPending: false, shownHost: () => "h2", renderStrip() {},
+  const ctx = { window: { DeckInbox: { mail: { hasUnsaved: () => true } } }, hostSwitchPending: false, shownHost: () => "h2",
     DR: { flush: () => calls.push("draft") }, renderHosts: () => calls.push("render"), publishDesktopView() {},
     deck: { hosts: { select: id => calls.push(id) } }, MV: { toast: () => calls.push("toast") }, i18nText: k => k, cleanErr: String };
   vm.createContext(ctx);
@@ -141,7 +141,7 @@ function sourceWorld({ host = "h1", storage = new Map(), ready = true } = {}) {
     SV: { close() {}, refresh() {} }, UD: { close() {} }, SH: { setMain: v => calls.push(["main", v]) },
     SB: { isOpen: () => false, close() {} }, allSessionsView: () => ctx.SB,
     RG: { leave() {} }, BT: null, AG: null, GC: null, WA: null,
-    renderStrip() {}, shownHost: () => ctx.S.settings.activeHost, renderHosts() {}, publishDesktopView() {}, mark() {}, renderNote() {}, renderMsgs() {}, hermesPoll() {},
+    shownHost: () => ctx.S.settings.activeHost, renderHosts() {}, publishDesktopView() {}, mark() {}, renderNote() {}, renderMsgs() {}, hermesPoll() {},
     hermesLoadHistory: sid => calls.push(["history", sid, ctx.H.nodes.get(sid)?.profile || ctx.H.hist.get(sid)?.profile]),
     MV: { toast: () => calls.push(["error"]) }, i18nText: k => k, cleanErr: String,
     refreshSettingsPane() {}, setRailView: v => calls.push(["rail", v]),
@@ -404,7 +404,7 @@ test("view publication is wired to render completion, navigation, visibility and
   assert.match(src, /addEventListener\("visibilitychange", publishDesktopView\)/);
   assert.match(functionSource("  function mark(", "  function flush("), /publishDesktopView\(\)/);
   assert.match(functionSource("  function renderMsgs(", "  \/\/ ---------------------------------------------------------------- first-run"), /displayedChat =/);
-  assert.match(functionSource("  function renderHermesMsgs(", "  async function hermesSend("), /return true/);
+  assert.match(functionSource("  function renderHermesMsgs(", "  function renderHermesStrip("), /return true/);
   assert.match(src, /selectHost,\n    hostStates:/, "Settings Switch reuses the same draft-safe path");
 });
 

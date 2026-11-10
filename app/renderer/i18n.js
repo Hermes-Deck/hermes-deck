@@ -19,16 +19,6 @@
 })(typeof window === "object" ? window : globalThis, function (root) {
   const tables = {
   "en": {
-    "status.expand": "Expand agent status",
-    "status.collapse": "Collapse agent status",
-    "status.hide": "Hide status",
-    "status.show": "Show agent status",
-    "status.work": "Open Work",
-    "status.disconnected": "Disconnected",
-    "status.idle": "Idle",
-    "status.completed": "Completed",
-    "status.failed": "Failed",
-    "status.stale": "Status unavailable",
     "mail.title": "Email drafts",
     "mail.sendInfo": "Sending requires a connected Gmail account, an exact saved version, and a separate final confirmation. No automatic retries.",
     "mail.sender": "Verify Gmail sender",
@@ -2542,16 +2532,6 @@
     "mp.needLogin": "Enter both the username and the password."
   },
   "tr": {
-    "status.expand": "Ajan durumunu genişlet",
-    "status.collapse": "Ajan durumunu daralt",
-    "status.hide": "Durumu gizle",
-    "status.show": "Ajan durumunu göster",
-    "status.work": "Çalışma panelini aç",
-    "status.disconnected": "Bağlantı kesildi",
-    "status.idle": "Boşta",
-    "status.completed": "Tamamlandı",
-    "status.failed": "Başarısız",
-    "status.stale": "Durum alınamıyor",
     "mail.title": "E-posta taslakları",
     "mail.sendInfo": "Gönderim için bağlı Gmail hesabı, kaydedilmiş belirli bir sürüm ve ayrı son onay gerekir. Otomatik tekrar yoktur.",
     "mail.sender": "Gmail göndericisini doğrula",

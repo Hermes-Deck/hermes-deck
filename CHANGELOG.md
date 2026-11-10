@@ -14,6 +14,7 @@ The desktop app, relay and Hermes plugin share one version number.
 - Markdown tables in chats fit the message column and wrap their cell text instead of growing past it; a table only scrolls sideways when something in it cannot break (a long URL or code token).
 - The top bar's host numbers sit in the bar's own flow between the breadcrumb and the right-hand controls (fleet capsule, search, Work, settings): centred while there is room, shifted left instead of overlapping when the right-hand group needs more space.
 - The chat title is no longer repeated in the top bar's breadcrumb; the chat header below shows it.
+- The collapsible agent status card above the composer (added in 1.1.0) is removed. What the agent is doing stays in one place, the live row at the end of the transcript, with the session's status line (state, sub-agents, context) above the composer as before 1.1.0.
 - Hermes chats show one tool receipt per message you sent, after the work it started. A session watched from here (a sub-agent, a TUI or Telegram run) no longer piles a row of "1 tools" receipts under its work.
 - Tool counts read "1 tool" / "2 tools" in receipts, the sub-agent views and the session statistics.
 - The live row no longer says "Running terminal · done" for a step that already finished; it says Thinking…. When this Deck receives no live reasoning for a session (it runs elsewhere), Show thinking says so instead of promising reasoning that will not come, and a turn whose model streamed no reasoning says so after its first step.
