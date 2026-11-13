@@ -19,6 +19,7 @@
   }
   const MAX_THINK = 12000; // characters of reasoning kept (the tail)
   const MAX_STEPS = 12;
+  const MAX_CMD = 200000; // characters of a running command kept for the composer's command box (its whole text)
   const STALE_MS = 15000; // event state with no event for this long and no live node is over
   const SEARCH_RE = /search|browse|web_|fetch|crawl|lookup/i;
   const STEP_END_RE = / · (done|failed)$/;
@@ -97,6 +98,9 @@
         s.phase = "tool";
         s.tool = name;
         s.arg = previewArg(pl.arguments ?? pl.args ?? pl.parameters);
+        // the whole command for the composer's command box; tool.generating carries no arguments yet
+        const full = detailArg(pl.arguments ?? pl.args ?? pl.parameters);
+        if (full || type === "tool.start") s.cmd = { tool: name, text: full, running: true };
         if (type === "tool.start" || !s.steps.length || s.steps[s.steps.length - 1].name !== name) addStep(s, name);
         s.lastAt = at;
         return [s, changed || !st];
@@ -105,6 +109,7 @@
         if (!st || st.done) return [st, false];
         const last = st.steps[st.steps.length - 1];
         if (last) last.done = true;
+        if (st.cmd) st.cmd.running = false; // stays on screen as the last command until the next one starts
         st.phase = "thinking";
         st.tool = "";
         st.arg = "";
@@ -152,6 +157,24 @@
     catch { return ""; }
   }
 
+  /**
+   * A tool call's arguments as text to read, whole: the command, code or query itself (not its JSON string, so line
+   * breaks are line breaks), then the other arguments one per line. Anything else is pretty-printed JSON.
+   */
+  const MAIN_ARGS = ["command", "code", "script", "query", "prompt", "goal", "url", "path", "pattern"];
+  function detailArg(value) {
+    if (value == null) return "";
+    try {
+      if (typeof value === "string") return value.slice(0, MAX_CMD);
+      if (typeof value !== "object" || Array.isArray(value)) return JSON.stringify(value, null, 2).slice(0, MAX_CMD);
+      const main = MAIN_ARGS.find((k) => typeof value[k] === "string" && value[k]);
+      if (!main) return Object.keys(value).length ? JSON.stringify(value, null, 2).slice(0, MAX_CMD) : "";
+      const rest = Object.entries(value).filter(([k, v]) => k !== main && v != null && v !== "")
+        .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`);
+      return (value[main] + (rest.length ? `\n\n${rest.join("\n")}` : "")).slice(0, MAX_CMD);
+    } catch { return ""; }
+  }
+
   function create(ctx) {
     const { h, i18nText, ticker, store, now = () => Date.now(), onToggle = () => {} } = ctx;
     const displayLabel = (v) => v.phase === "tool" && v.tool ? i18nText("conv.running", { tool: v.tool }) : i18nText(v.label.key, v.label.vars);
@@ -197,7 +220,7 @@
       }
       if (request === "approval" || request === "question") phase = request;
       const steps = st ? st.steps.map((x) => x.name) : (node && Array.isArray(node.steps) ? node.steps.filter((x) => x !== "Thinking").slice(-MAX_STEPS) : []);
-      return { sid, phase, tool, arg: st ? st.arg : "", since, think: st ? st.think : "", steps, source: st ? "events" : "snapshot", streamed: !!(st && st.streamed), label: label(phase, tool), node };
+      return { sid, phase, tool, arg: st ? st.arg : "", cmd: st && st.cmd && st.cmd.text ? { tool: st.cmd.tool, text: st.cmd.text, running: st.cmd.running } : null, since, think: st ? st.think : "", steps, source: st ? "events" : "snapshot", streamed: !!(st && st.streamed), label: label(phase, tool), node };
     }
 
     /** "Show thinking" on/off: remembered, and the caller asks Hermes for reasoning of the sessions it drives. */
@@ -325,7 +348,7 @@
     };
   }
 
-  const api = { create, reduce, label, fromNode, previewArg, lastView: () => lastView, thoughtSeconds: sid => measured.has(sid) ? Math.round(measured.get(sid).ms / 1000) : null, MAX_THINK, MAX_STEPS, STALE_MS };
+  const api = { create, reduce, label, fromNode, previewArg, detailArg, MAX_CMD, lastView: () => lastView, thoughtSeconds: sid => measured.has(sid) ? Math.round(measured.get(sid).ms / 1000) : null, MAX_THINK, MAX_STEPS, STALE_MS };
   if (typeof window !== "undefined") window.DeckLiveActivity = Object.freeze(api);
   if (typeof module === "object" && module.exports) module.exports = api; // Node unit tests
 })();

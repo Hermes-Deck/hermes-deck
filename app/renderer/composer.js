@@ -92,8 +92,41 @@
     const stop = h("button", { class: "btn mini conv-stop", type: "button", onclick: stopNow }, t("conv.stop"));
     row.append(spinner, label, arg, elapsed, stop);
     const slot = shell.mount("composer-status", row);
+    // The command box above the working row: the command the turn runs now (or ran last), clipped to a few lines or,
+    // unfolded, whole to its last line. The choice is remembered.
+    const stored = (k) => { try { return root.localStorage?.getItem(k); } catch { return null; } };
+    let cmdOpen = stored("deck.cmd.open") === "1", cmdShown = "";
+    const cmdTool = h("span", { class: "conv-cmd-tool" });
+    const cmdLines = h("span", { class: "conv-cmd-lines" });
+    const cmdToggleLabel = h("span", { class: "conv-cmd-more" });
+    const cmdToggle = h("button", { class: "conv-cmd-toggle", type: "button", "aria-expanded": cmdOpen ? "true" : "false", onclick: () => {
+      cmdOpen = !cmdOpen;
+      try { root.localStorage?.setItem("deck.cmd.open", cmdOpen ? "1" : ""); } catch { /* not remembered */ }
+      paintCmd();
+    } }, h("span", { class: "conv-cmd-chev", "aria-hidden": "true" }), cmdTool, cmdLines, cmdToggleLabel);
+    const cmdCopy = h("button", { class: "conv-cmd-copy", type: "button", onclick: async () => {
+      try { await root.navigator.clipboard.writeText(cmdShown); cmdCopy.textContent = t("think.copied"); root.setTimeout(() => { cmdCopy.textContent = t("think.copy"); }, 1600); } catch { /* clipboard unavailable */ }
+    } }, t("think.copy"));
+    const cmdText = h("pre", { class: "conv-cmd-text", tabindex: "0" });
+    const cmd = h("div", { class: "conv-cmd", hidden: true }, h("div", { class: "conv-cmd-head" }, cmdToggle, cmdCopy), cmdText);
+    function paintCmd(c = view?.cmd) {
+      cmd.classList.toggle("open", cmdOpen);
+      cmdToggle.setAttribute("aria-expanded", cmdOpen ? "true" : "false");
+      const more = t(cmdOpen ? "conv.cmdLess" : "conv.cmdMore");
+      if (cmdToggleLabel.textContent !== more) cmdToggleLabel.textContent = more;
+      if (!c) return;
+      const tool = t(c.running ? "conv.running" : "conv.cmdLast", { tool: c.tool });
+      if (cmdTool.textContent !== tool) cmdTool.textContent = tool;
+      if (cmdShown !== c.text) { // only a new command touches the text: a selection or scroll position in it stays
+        cmdShown = c.text;
+        cmdText.textContent = c.text;
+        cmdText.scrollTop = 0;
+        const n = c.text.split("\n").length;
+        cmdLines.textContent = n > 1 ? t("conv.cmdLines", { n }) : "";
+      }
+    }
     const filament = h("div", { class: "conv-filament", "aria-hidden": "true", "data-state": "hidden" });
-    composer.prepend(tray, slot, queue, error, filament);
+    composer.prepend(tray, cmd, slot, queue, error, filament);
     const Fil = root.DeckFilament, motion = root.matchMedia?.("(prefers-reduced-motion: reduce)");
     let arc = null;
     if (Fil && doc.createElementNS && root.ResizeObserver && root.getComputedStyle) {
@@ -120,7 +153,7 @@
     composer.after(footer);
     // The empty part of the composer belongs to the input: a click there focuses the textarea; buttons keep their own action.
     composer.addEventListener("mousedown", (e) => {
-      if (e.button !== 0 || e.target.closest("button, a, input, textarea, select, .conv-tray, .conv-queue, .conv-error")) return;
+      if (e.button !== 0 || e.target.closest("button, a, input, textarea, select, .conv-tray, .conv-queue, .conv-cmd, .conv-error")) return;
       e.preventDefault();
       input.focus();
     });
@@ -132,10 +165,14 @@
       composer.classList.toggle("conv-working", working);
       paintFilament(working, waiting);
       slot.hidden = !working;
+      const command = working ? view.cmd || null : null;
+      cmd.hidden = !command;
+      if (command) paintCmd(command);
       if (working) {
         const text = view.tool ? t("conv.running", { tool: view.tool }) : view.phase === "thinking" ? t("conv.thinking") : t(view.label?.key || "live.writing", view.label?.vars);
         if (label.textContent !== text) label.textContent = text;
-        if (arg.textContent !== (view.arg || "")) arg.textContent = view.arg || "";
+        const shortArg = command ? "" : view.arg || ""; // the command box shows it whole
+        if (arg.textContent !== shortArg) arg.textContent = shortArg;
         elapsed.textContent = `${Math.max(0, Math.floor((Date.now() - view.since) / 1000))}s`;
         stop.disabled = !stoppable(node) || stopping === sid;
       }

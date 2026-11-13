@@ -40,6 +40,23 @@
 .conv-wait::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .app .livebar.ph-approval, .app .livebar.ph-question { display: none; }
 .conv-queue { padding: 10px 14px 0; max-height: 140px; overflow: auto; }
+/* The command box above the working row: clipped to three lines, or unfolded to the whole command (scrolls inside). */
+.conv-cmd { margin: 10px 10px 0; border: 1px solid var(--line2); border-radius: 10px; background: var(--l1); min-width: 0; }
+.conv-cmd[hidden] { display: none; }
+.app .composer.compact > .conv-cmd { flex-basis: calc(100% - 20px); } /* its side margins count against the full row */
+.conv-cmd-head { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 2px 6px 2px 2px; }
+.conv-cmd-toggle { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; height: 28px; padding: 0 8px; border: 0; border-radius: 8px; background: none; color: var(--t3); font: 12px/16px var(--sans); text-align: left; cursor: pointer; }
+.conv-cmd-toggle:hover { color: var(--t1); }
+.conv-cmd-chev { flex: none; width: 6px; height: 6px; border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: rotate(-45deg); }
+.conv-cmd.open .conv-cmd-chev { transform: rotate(45deg); }
+.conv-cmd-tool { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: var(--t2); }
+.conv-cmd-lines { flex: none; font: 11.5px var(--mono); color: var(--t4); }
+.conv-cmd-more { flex: none; margin-left: auto; }
+.conv-cmd-copy { flex: none; height: 24px; padding: 0 8px; border: 1px solid var(--line2); border-radius: 6px; background: none; color: var(--t3); font: 11px var(--sans); cursor: pointer; }
+.conv-cmd-copy:hover { color: var(--t1); }
+.conv-cmd-toggle:focus-visible, .conv-cmd-copy:focus-visible, .conv-cmd-text:focus-visible { outline: 2px solid var(--brass); outline-offset: -2px; }
+.conv-cmd-text { margin: 0; padding: 0 12px; border-bottom: 9px solid transparent; font: 11.5px/1.6 var(--mono); color: var(--t2); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.conv-cmd.open .conv-cmd-text { display: block; -webkit-line-clamp: none; max-height: min(34vh, 320px); overflow: auto; scrollbar-width: thin; scrollbar-color: var(--line3) transparent; }
 .conv-queue .msg.outbox { max-width: 100%; width: 100%; margin: 0 0 8px; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--line2); background: var(--l1); opacity: 1; }
 .conv-queue .msg.outbox > .text { font: 400 var(--message-size, 17px)/var(--message-leading, 1.7) var(--message-font, var(--serif)); max-height: calc(2em * var(--message-leading, 1.7)); overflow: auto; white-space: pre-wrap; }
 .conv-queue .msg.outbox.failed { border-color: var(--red); }

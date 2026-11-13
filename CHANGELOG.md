@@ -6,6 +6,8 @@ The desktop app, relay and Hermes plugin share one version number.
 
 ## [Unreleased]
 
+- While a turn runs, the composer shows the command it is running (or ran last) in a box above the working row: clipped to three lines by default, or unfolded with **Show all** to the whole command down to its last line, with the call's other arguments and a **Copy** button. The choice is remembered.
+- Unfolding a tool call in a turn's receipt ("Worked ... tools") only unfolds it in the chat; the Run pane opens when you choose **Inspect**.
 - A reply is drawn as Markdown while it streams: bold, lists, tables and code blocks appear formatted as they arrive instead of as raw `**text**` until the turn ends.
 - Scrolling up while a reply streams keeps the view where it is: the reply goes on arriving below without pulling the transcript down, and a text selection in an earlier message stays selected. At the newest message the view follows the reply as before.
 - Markdown tables fit the chat column at every width, including a narrow split-view pane: a long file path or other code in a cell wraps after its `/` separators instead of pushing the table (and its last columns) out of view, and words stay whole. A table too wide for the reading column widens into the empty space beside it (centred, up to the pane's width) instead of scrolling inside the column; in a pane with no room beside the column words may break too, so the table still fits.

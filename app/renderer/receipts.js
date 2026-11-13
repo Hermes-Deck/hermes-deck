@@ -226,7 +226,7 @@
         if (!sid || !call) return;
         selected = { sid, call, source };
         if (inspect) openRight("work", "run");
-        emit(selected);
+        emit({ ...selected, inspect: !!inspect }); // Run follows the pick, and comes forward only on Inspect
       }
     };
   }

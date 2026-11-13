@@ -831,13 +831,13 @@
     const unsubBridge = deck.bridge?.onEvent?.(bridgeEvent), unsubRelay = deck.onRelay?.(relayEvent);
     if (typeof unsubBridge === "function") off.push(unsubBridge);
     if (typeof unsubRelay === "function") off.push(unsubRelay);
-    // A tool call picked in the chat (a receipt row, Inspect) lands on its Run row, expanded; live follow-the-turn
-    // selections only move the highlight.
+    // A tool call picked in the chat lands on its Run row, expanded, but Run is opened only by Inspect: unfolding a
+    // receipt row is reading it in place. Live follow-the-turn selections only move the highlight.
     const receiptSelection = e => {
       const d = e.detail;
       if (!d || d.source === "run") return;
       const chat = d.source !== "live";
-      selectTool(d, { open: chat, notify: false, expand: chat });
+      selectTool(d, { open: chat && d.inspect === true, notify: false, expand: chat });
     };
     doc.addEventListener("deck-tool-select", receiptSelection);
     // History tool chips in the transcript reveal their receipt (receipts.js) and open the call in Run as well.

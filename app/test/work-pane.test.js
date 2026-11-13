@@ -317,12 +317,16 @@ test("expanded surfaces use the one-pixel gutter, preserve work tabs and respect
   }
 });
 
-test("a call picked in the chat opens Run on its expanded row, scrolls to it once and creates no event loop", async () => {
+test("Inspect opens Run on the call's expanded row (unfolding a receipt row alone does not), scrolls to it once and creates no event loop", async () => {
   const emitted = [];
   const b = harness({ toolCalls: async () => [{ call: "a", tool: "terminal", status: "ok", result: "Receipt selected" }, { call: "b", tool: "patch", status: "ok", result: "Other output" }] },
     {}, { emit: detail => emitted.push(detail) });
   await b.settle();
-  b.doc.dispatchEvent({ type: "deck-tool-select", detail: { sid: "session-a", call: "a", source: "receipt" } });
+  // unfolding a call in the chat's receipt is reading it there: Run takes the selection but does not come forward
+  b.doc.dispatchEvent({ type: "deck-tool-select", detail: { sid: "session-a", call: "a", source: "receipt", inspect: false } });
+  await b.settle();
+  assert.equal(b.shell.right().tab, "plan", "a receipt row click never opens Run");
+  b.doc.dispatchEvent({ type: "deck-tool-select", detail: { sid: "session-a", call: "a", source: "receipt", inspect: true } });
   await b.settle();
   assert.equal(b.shell.right().tab, "run"); assert.match(b.text(), /Receipt selected/); assert.doesNotMatch(b.text(), /Other output/);
   const row = () => b.nodes().find(n => n.tag === "button" && n.attrs["data-call"] === "a");
