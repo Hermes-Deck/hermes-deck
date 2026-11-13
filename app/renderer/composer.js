@@ -92,8 +92,9 @@
     const stop = h("button", { class: "btn mini conv-stop", type: "button", onclick: stopNow }, t("conv.stop"));
     row.append(spinner, label, arg, elapsed, stop);
     const slot = shell.mount("composer-status", row);
-    // The command box above the working row: the command the turn runs now (or ran last), clipped to a few lines or,
-    // unfolded, whole to its last line. The choice is remembered.
+    // The command box: a layer of its own that comes out from behind the composer card (not a part of the card), with
+    // the command the turn runs now (or ran last), clipped to a few lines or, unfolded, whole to its last line. The
+    // choice is remembered.
     const stored = (k) => { try { return root.localStorage?.getItem(k); } catch { return null; } };
     let cmdOpen = stored("deck.cmd.open") === "1", cmdShown = "";
     const cmdTool = h("span", { class: "conv-cmd-tool" });
@@ -126,7 +127,8 @@
       }
     }
     const filament = h("div", { class: "conv-filament", "aria-hidden": "true", "data-state": "hidden" });
-    composer.prepend(tray, cmd, slot, queue, error, filament);
+    composer.prepend(tray, slot, queue, error, filament);
+    composer.parentNode.insertBefore(cmd, composer);
     const Fil = root.DeckFilament, motion = root.matchMedia?.("(prefers-reduced-motion: reduce)");
     let arc = null;
     if (Fil && doc.createElementNS && root.ResizeObserver && root.getComputedStyle) {

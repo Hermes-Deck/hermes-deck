@@ -37,7 +37,7 @@ test("the whole command is kept: the command itself with real line breaks, then 
   assert.deepEqual(la.view("s").cmd, { tool: "read_file", text: "/work/app/a.txt", running: true });
 });
 
-test("the box sits above the working row, shows the whole text, and folds between clipped and full", () => {
+test("the box is its own layer behind the composer, shows the whole text, and folds between clipped and full", () => {
   const env = boot();
   snap(env, node());
   live(env, {});
@@ -46,7 +46,8 @@ test("the box sits above the working row, shows the whole text, and folds betwee
   live(env, { arg: '{"command":"line 1…', cmd: { tool: "terminal", text, running: true } });
   const b = box(env);
   assert.equal(b.hidden, false);
-  assert.equal(b.nextElementSibling, env.doc.getElementById("composer-status"), "directly above the Thinking / Stop row");
+  assert.equal(b.nextElementSibling, env.doc.querySelector(".composer"), "a layer of its own, right above the composer card");
+  assert.equal(env.doc.querySelector(".composer").querySelector(".conv-cmd"), null, "not a part of the card");
   assert.equal(b.querySelector(".conv-cmd-text").textContent, text, "every line is in the box");
   assert.equal(b.querySelector(".conv-cmd-lines").textContent, "5 lines");
   assert.equal(b.querySelector(".conv-cmd-tool").textContent, "Running terminal");
@@ -76,4 +77,7 @@ test("styles: clipped to three lines, unfolded scrolls inside its own box", () =
   assert.match(css, /\.conv-cmd-text \{[^}]*white-space: pre-wrap;[^}]*-webkit-line-clamp: 3; overflow: hidden; \}/);
   assert.match(css, /\.conv-cmd\.open \.conv-cmd-text \{ display: block; -webkit-line-clamp: none; max-height: min\(34vh, 320px\); overflow: auto;/);
   assert.match(css, /\.conv-cmd\[hidden\] \{ display: none; \}/);
+  // tucked under the composer card, which stays on top
+  assert.match(css, /\.conv-cmd \{[^}]*margin: 10px auto -28px; padding-bottom: 18px;[^}]*border-radius: 14px 14px 0 0;/);
+  assert.match(css, /\.conv-cmd \+ \.composer \{ z-index: 1; \}/);
 });
