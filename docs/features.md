@@ -220,7 +220,7 @@ Hidden bots** lists the hidden ones, each with **Show** to bring it back, and ta
 (`@` optional, up to 50). Hermes agents cannot be hidden this way.
 
 **Limits.** Bot DMs come from your first 300 dialogs. Media downloads are capped at 25 MB; bigger files open in
-Telegram. Known executable and script types are saved but never opened directly.
+Telegram. Known executable and script types from Telegram are saved but never opened directly; a file downloaded from your own agent can be opened, and the app asks first when its type runs code.
 
 ## Live activity and controls
 

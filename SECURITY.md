@@ -63,7 +63,9 @@ Fixed in the internal security review of October 2026 (before the public release
 - **Telegram library:** moved from the archived GramJS package to the maintained `teleproto`; this also removed a
   transitive install script.
 - **Packaging:** ASAR integrity validation and cookie encryption fuses are enabled.
-- **Risky file types:** the renderer and main process use one list of extensions that are never opened directly.
+- **Risky file types:** the renderer and main process use one list of extensions that run code. Telegram media of
+  these types is never opened directly; a file the owner downloaded from their own agent opens only after a
+  confirmation whose default is Cancel.
 - **Weak secret storage:** Settings now warns when secrets are stored without OS encryption, including Linux's
   `basic_text` backend.
 

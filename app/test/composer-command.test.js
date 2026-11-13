@@ -13,8 +13,8 @@ const live = (env, view) => { env.fire("deck-conversation-live", { sid: "s", vie
 const box = (env) => env.doc.querySelector(".conv-cmd");
 
 test("the whole command is kept: the command itself with real line breaks, then the other arguments", () => {
-  const long = `cd /srv/app && for f in a b c; do\n  echo "$f"\ndone\n${"x".repeat(5000)}\nlast line`;
-  assert.equal(LA.detailArg({ command: long, timeout: 600, workdir: "/srv/app", background: false, empty: "" }), `${long}\n\ntimeout: 600\nworkdir: /srv/app\nbackground: false`);
+  const long = `cd /work/app && for f in a b c; do\n  echo "$f"\ndone\n${"x".repeat(5000)}\nlast line`;
+  assert.equal(LA.detailArg({ command: long, timeout: 600, workdir: "/work/app", background: false, empty: "" }), `${long}\n\ntimeout: 600\nworkdir: /work/app\nbackground: false`);
   assert.equal(LA.detailArg({ code: "print(1)\nprint(2)" }), "print(1)\nprint(2)");
   assert.equal(LA.detailArg("plain"), "plain");
   assert.equal(LA.detailArg({ a: 1, b: [2] }), JSON.stringify({ a: 1, b: [2] }, null, 2));
@@ -33,8 +33,8 @@ test("the whole command is kept: the command itself with real line breaks, then 
   assert.deepEqual(la.view("s").cmd, { tool: "terminal", text: long, running: false }, "the last command stays until the next one");
   la.event("s", "message.delta", { text: "Done" });
   assert.equal(la.view("s").cmd.text, long);
-  la.event("s", "tool.start", { name: "read_file", tool_id: "b", args: { path: "/srv/app/a.txt" } });
-  assert.deepEqual(la.view("s").cmd, { tool: "read_file", text: "/srv/app/a.txt", running: true });
+  la.event("s", "tool.start", { name: "read_file", tool_id: "b", args: { path: "/work/app/a.txt" } });
+  assert.deepEqual(la.view("s").cmd, { tool: "read_file", text: "/work/app/a.txt", running: true });
 });
 
 test("the box sits above the working row, shows the whole text, and folds between clipped and full", () => {
