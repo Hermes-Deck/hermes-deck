@@ -35,6 +35,8 @@ function world() {
   const ctx = {
     i18nText: I18N.t, i18nNode: (k, v) => ({ textContent: I18N.t(k, v) }), i18nLocale: I18N.getLocale,
     Date, Math, console, requestAnimationFrame: () => 0, maybeLoadOlder() {},
+    paintMsgs(kids) { ctx.els.msgsInner.replaceChildren(...kids); }, // stable-list.js keeps unchanged rows; the list itself is what these tests read
+    hermesLiveTextEl: (text) => element("div", { class: "text" }, text), // streamed text is drawn as markdown (chat-render.test.js)
     H: { sel: "s-main", live: new Map(), hist: new Map(), echo: new Map(), requests: [], nodes: new Map() },
     EM: require("../renderer/echo-match"), OB: { size: () => 0, pending: () => 0, bubbles: () => [] }, outboxEdit() {}, outboxCancel() {}, outboxSendNow() {}, outboxRedirect() {},
     LA: { event: () => false, row: () => null, think: () => "" }, TB: { el: () => null }, hermesLiveView: () => null, liveRowRefresh() {}, nodeControllable: () => false,

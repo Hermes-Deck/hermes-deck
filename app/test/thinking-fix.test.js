@@ -47,6 +47,7 @@ function world() {
     LA, TB, hermesLiveView: () => LA.view("s", { live: false }), liveRowRefresh() {}, nodeControllable: () => false,
     S: {}, els: { msgs: {}, msgsInner: { dataset: {}, replaceChildren(...k) { this.kids = k.flat(Infinity); } } },
     BT: null, AG: null, scrollToEnd: false, window: {},
+    paintMsgs(kids) { ctx.els.msgsInner.replaceChildren(...kids); }, hermesLiveTextEl: (text) => element("div", { class: "text" }, text),
     h: element, holdRegion: () => false, bridgeOpen: () => true, hermesStatusText: () => "", hermesRequestCards: () => [],
     hermesMode: () => true, hermesLoadHistory() {}, mark() {}, renderNote() {}, hm: () => "10:00",
     dayKey: () => "d", dayLabel: () => "day", hermesPoll() {},

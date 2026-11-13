@@ -215,10 +215,32 @@
 .md hr { border: 0; border-top: 1px solid var(--vein); margin: 10px 0; }
 .md pre code { background: none; padding: 0; border-radius: 0; font: inherit; }
 .md .md-table { max-width: 100%; overflow-x: auto; margin: 6px 0 8px; }
-/* Tables fit the reading column and wrap their cells' text (auto layout gives wide columns more room); the wrapper still
-   scrolls sideways for content that cannot break (a long URL or code token, many narrow columns). */
-.md table { border-collapse: collapse; width: auto; min-width: 60%; max-width: 100%; font-size: 12.5px; }
+/* Tables fit the reading column at every width (a narrow split pane too) and wrap their cells' text; auto layout gives
+   wide columns more room. Words stay whole (`break-word`: a word is the least a column shrinks to). A path, URL or
+   code token is different: it has no spaces, so as one unbreakable box it used to set its column's minimum width and
+   push the table out of the column. Code now breaks after its separators (markdown.js adds the break points), so a
+   column needs only the longest path segment; a link may break anywhere. The wrapper scrolls sideways only when
+   there are more columns than whole words and path segments allow. */
+.md table { border-collapse: collapse; width: auto; min-width: min(60%, 100%); max-width: 100%; font-size: 12.5px; }
 .md th, .md td { border: 1px solid var(--vein); padding: 4px 9px; text-align: left; vertical-align: top; overflow-wrap: break-word; }
+.md td .md-a, .md th .md-a { overflow-wrap: anywhere; }
+.md td code, .md th code { white-space: normal; overflow-wrap: break-word; }
+.md td code, .md th code { padding: 0 2px; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+/* a very narrow chat column (a split pane beside an open side panel): fitting wins, so words may break too */
+.msgs { container: msgs / inline-size; }
+@container msgs (max-width: 400px) {
+  .md th, .md td, .md td code, .md th code { overflow-wrap: anywhere; }
+}
+/* fenced code: a frame with its own Copy button (opaque, so code never shows through it), shown on hover or keyboard focus */
+.md .md-code { position: relative; margin: 4px 0; }
+.md .md-code > pre { margin: 0; }
+.md .md-copy { position: absolute; top: 0; right: 0; z-index: 1; padding: 3px 10px; border-radius: 0 6px 0 6px; border: solid var(--vein); border-width: 0 0 1px 1px; background: var(--slate-2); color: var(--marble-dim); font: 11px var(--sans, sans-serif); cursor: pointer; opacity: 0; user-select: none; }
+.md .md-code:hover > .md-copy, .md .md-copy:focus-visible { opacity: 1; }
+.md .md-copy:hover { color: var(--marble); }
+.md .md-copy:focus-visible { outline: 2px solid var(--patina); outline-offset: 2px; }
+.md .md-copy { display: inline-grid; }
+.md .md-copy > span { grid-area: 1 / 1; text-align: center; }
+.md .md-copy-done { opacity: 0; color: var(--patina); }
 .md th { background: rgb(var(--hi-rgb) / 0.05); font-weight: 700; }
 .md [data-align="center"] { text-align: center; }
 .md [data-align="right"] { text-align: right; font-variant-numeric: tabular-nums; }

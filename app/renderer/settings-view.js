@@ -319,13 +319,14 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
       }, 0));
       kids.push(group(node("chat.modes"), h("div", { class: "sv-row sv-block" }, editor)));
       // downloads
-      const dl = s.downloads || { dir: "", ask: false };
+      const dl = s.downloads || { dir: "", ask: false, sameName: "replace" };
       const folder = h("span", { class: "sv-path", id: "s-download-dir", title: dl.dir || T("download.folderDefault") }, dl.dir || T("set.downloadsDefault"));
       const pick = h("button", { class: "btn mini", type: "button", dataset: { fk: "dl:pick" }, onclick: () => ctx.saveCall(() => ctx.deck.bridge.file.pickFolder(), T("download.folderSaved")) }, node("download.chooseFolder"));
       const reset = dl.dir ? h("button", { class: "linkbtn sv-link", type: "button", dataset: { fk: "dl:reset" }, onclick: () => ctx.saveCall(() => ctx.deck.bridge.file.resetFolder(), T("download.folderReset")) }, node("download.resetFolder")) : null;
       kids.push(group(node("set.downloads"),
         row(node("download.folder"), h("span", { class: "sv-inline" }, folder, reset, pick)),
-        switchRow("s-download-ask", node("download.ask"), dl.ask, (on) => ctx.saveCall(() => ctx.deck.settingsSave({ downloads: { ask: on } }), T("download.askSaved")), { fk: "dl:ask" })));
+        switchRow("s-download-ask", node("download.ask"), dl.ask, (on) => ctx.saveCall(() => ctx.deck.settingsSave({ downloads: { ask: on } }), T("download.askSaved")), { fk: "dl:ask" }),
+        switchRow("s-download-keep", node("download.keepBoth"), dl.sameName === "number", (on) => ctx.saveCall(() => ctx.deck.settingsSave({ downloads: { sameName: on ? "number" : "replace" } }), T("download.askSaved")), { fk: "dl:keep" })));
       if (ctx.deck && ctx.deck.updates) kids.push(updatesGroup());
     };
 

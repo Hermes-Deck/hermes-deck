@@ -182,7 +182,23 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     if (f.lang) code.dataset.lang = f.lang.slice(0, 24);
     code.textContent = body.join("\n");
     pre.appendChild(code);
-    parent.appendChild(pre);
+    // the block sits in a frame with its own Copy button (one click handler for all of them: see the end of the file)
+    const box = el("div", "md-code");
+    const copy = el("button", "md-copy");
+    copy.type = "button";
+    i18nBind(copy, "title", "A0195");
+    i18nBind(copy, "aria-label", "A0195");
+    // both labels are always in the button; a click fades "Copied" in for a moment (an animation, not a DOM change)
+    const idle = el("span", "md-copy-idle");
+    idle.appendChild(i18nNode("think.copy"));
+    const done = el("span", "md-copy-done");
+    done.setAttribute("aria-hidden", "true");
+    done.appendChild(i18nNode("think.copied"));
+    copy.appendChild(idle);
+    copy.appendChild(done);
+    box.appendChild(copy);
+    box.appendChild(pre);
+    parent.appendChild(box);
     return j < lines.length ? j + 1 : j;
   }
 
@@ -252,6 +268,25 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     return li;
   }
 
+  /**
+   * Break points inside the code spans of a table cell: a long path or identifier may wrap after a separator
+   * (`/`, `=`, `,`) instead of in the middle of a name, so a file name stays in one piece. <wbr> is not text, so copying the cell
+   * still gives the path as written.
+   */
+  function softBreaks(cell) {
+    for (const code of cell.querySelectorAll("code")) {
+      const s = code.textContent;
+      if (s.length < 16 || code.children.length) continue;
+      const parts = s.split(/(?<=[/=,])(?=[^/=,.:\s])/);
+      if (parts.length < 2) continue;
+      code.textContent = "";
+      parts.forEach((part, i) => {
+        if (i) code.appendChild(el("wbr"));
+        code.appendChild(txt(part));
+      });
+    }
+  }
+
   function table(t, depth) {
     const wrap = el("div", "md-table");
     wrap.tabIndex = 0;
@@ -276,6 +311,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
           const td = el("td");
           if (t.align[k]) td.dataset.align = t.align[k];
           inline(r[k] || "", td, depth + 1, false);
+          softBreaks(td);
           tr.appendChild(td);
         }
         tbody.appendChild(tr);
@@ -574,6 +610,33 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     const lines = s.split("\n");
     for (let i = 0; i + 1 < lines.length; i++) if (lines[i].includes("|") && tableAt(lines, i)) return true;
     return false;
+  }
+
+  // Copy buttons of code blocks: one delegated handler, so a block redrawn while its reply streams keeps working. The
+  // "Copied" feedback is an animation and leaves the DOM as it was: the transcript keeps an element whose fresh copy
+  // is identical (stable-list.js), so feedback written into the DOM would be wiped by the next streamed token.
+  async function copyCode(btn) {
+    const code = btn.parentNode && btn.parentNode.querySelector("pre > code");
+    if (!code) return;
+    try {
+      await navigator.clipboard.writeText(code.textContent);
+    } catch {
+      return; // clipboard unavailable: the label stays "Copy"
+    }
+    if (typeof btn.animate !== "function") return;
+    const show = [{ opacity: 1 }, { opacity: 1, offset: 0.85 }, { opacity: 0 }];
+    const hide = [{ opacity: 0 }, { opacity: 0, offset: 0.85 }, { opacity: 1 }];
+    const idle = btn.querySelector(".md-copy-idle");
+    const done = btn.querySelector(".md-copy-done");
+    btn.animate([{ opacity: 1 }, { opacity: 1 }], { duration: 1600 }); // stays visible without hover meanwhile
+    if (idle) idle.animate(hide, { duration: 1600 });
+    if (done) done.animate(show, { duration: 1600 });
+  }
+  if (typeof document === "object" && document.addEventListener) {
+    document.addEventListener("click", (e) => {
+      const btn = e.target && e.target.closest ? e.target.closest(".md-copy") : null;
+      if (btn) copyCode(btn);
+    });
   }
 
   window.DeckMarkdown = Object.freeze({ render, looksLike });

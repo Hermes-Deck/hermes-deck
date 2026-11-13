@@ -413,6 +413,28 @@ function workLive(sid) {
   steps.forEach((fn, i) => setTimeout(fn, 300 + i * 250));
 }
 
+// --md-live: a reply still streaming as markdown. The history holds a stored answer with a table, a fenced code block
+// and a file named by its plain path; the events then stream the next answer's text in pieces (bold, a table, an open
+// code fence), with no message.complete.
+const MD_TABLE = [
+  "| # | Task | Where | Note |", "|---|---|---|---|",
+  "| 1 | Keep the wipe step when a node is released | `workers/playbooks/provisioning/release_node.yaml` | The wipe is required; a node whose wipe failed must not go back to the pool and waits in quarantine until an operator looks at it. |",
+  "| 2 | Shorten the acceptance run | `workers/playbooks/provisioning/node_acceptance.yaml:50` | Saves about 40 minutes |",
+].join("\n");
+const MD_LIVE_HISTORY = [
+  { id: 51, role: "user", content: "Summarise the plan as a table.", timestamp: 1700000200 },
+  { id: 52, role: "assistant", content: `Here is the **plan**:\n\n${MD_TABLE}\n\n\`\`\`sh\nansible-playbook workers/playbooks/provisioning/node_acceptance.yaml --limit node-17 -e level=2\n\`\`\`\n\nThe report is at /srv/example/out/report.txt`, timestamp: 1700000210 },
+  { id: 53, role: "user", content: "And the open risks?", timestamp: 1700000220 },
+];
+let mdLiveSent = false;
+function mdLive(sid) {
+  const ev = (type, payload) => out({ jsonrpc: "2.0", method: "event", params: { type, session_id: sid, payload } });
+  const text = `Two **open risks** so far, with \`inline code\`:\n\n${MD_TABLE}\n\n1. First point\n2. Second point\n\n\`\`\`sh\necho still streaming`;
+  const pieces = text.match(/[\s\S]{1,40}/g);
+  setTimeout(() => ev("message.start", {}), 300);
+  pieces.forEach((piece, i) => setTimeout(() => ev("message.delta", { text: piece }), 400 + i * 40));
+}
+
 const FILE_PATH = "/srv/example/out/report.txt";
 const FILE_BODY = Buffer.from("line of report\n".repeat(200)); // 3,000 bytes
 const ok = (result) => ({ result });
@@ -449,6 +471,7 @@ function answer(method, p) {
       }
       if (p.session_id === "s-files") return ok({ session_id: p.session_id, messages: offset === 0 ? FILES_HISTORY : [], pagination: { limit, offset, order: "latest", returned: offset === 0 ? FILES_HISTORY.length : 0 } });
       if (flag("media")) return ok({ session_id: p.session_id, messages: offset === 0 ? MEDIA_HISTORY : [], pagination: { limit, offset, order: "latest", returned: offset === 0 ? MEDIA_HISTORY.length : 0 } });
+      if (flag("md-live")) return ok({ session_id: p.session_id, messages: offset === 0 ? MD_LIVE_HISTORY : [], pagination: { limit, offset, order: "latest", returned: offset === 0 ? MD_LIVE_HISTORY.length : 0 } });
       if (flag("work-live")) return ok({ session_id: p.session_id, messages: offset === 0 ? WORK_LIVE_HISTORY : [], pagination: { limit, offset, order: "latest", returned: offset === 0 ? WORK_LIVE_HISTORY.length : 0 } });
       if (flag("work")) return ok({ session_id: p.session_id, messages: offset === 0 ? WORK_HISTORY : [], pagination: { limit, offset, order: "latest", returned: offset === 0 ? WORK_HISTORY.length : 0 } });
       const page = offset === 0 ? HISTORY : [{ id: 9, role: "user", content: "Eski soru", timestamp: 1699999000 }];
@@ -589,6 +612,10 @@ function after(method, p) {
       ev("tool.start", { name: "terminal", tool_id: "w1" });
       ev("reasoning.delta", { text: "Checking the logs" });
     }, 30);
+  }
+  if (method === "session.messages" && flag("md-live") && !mdLiveSent && p.session_id === MAIN) {
+    mdLiveSent = true;
+    mdLive(MAIN);
   }
   if (method === "session.messages" && flag("work-live") && !workLiveSent && p.session_id === MAIN) {
     workLiveSent = true;

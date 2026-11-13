@@ -31,7 +31,7 @@ const DEFAULTS = {
   bridge: { mode: "off", target: "", python: "", stream: "~/.hermes/hermes-deck/stream.py", distribution: "" },
   // downloads of files a Hermes agent offered (main/hermes-files.js): dir = a folder the owner picked ("" = the OS
   // Downloads folder + "Hermes Deck"); ask = show a Save As dialog for every file instead
-  downloads: { dir: "", ask: false },
+  downloads: { dir: "", ask: false, sameName: "replace" },
   chatChannel: "telegram", // compatibility alias for older callers
   chat: { modes: ["telegram", "sessions", "bots"], defaultMode: "telegram" },
   firstRunDone: false,
@@ -398,7 +398,7 @@ class Settings {
       groupChatId: d.groupChatId,
       hiddenBots: d.hiddenBots,
       readReceipts: d.readReceipts !== false,
-      downloads: { dir: typeof d.downloads.dir === "string" ? d.downloads.dir : "", ask: d.downloads.ask === true },
+      downloads: { dir: typeof d.downloads.dir === "string" ? d.downloads.dir : "", ask: d.downloads.ask === true, sameName: d.downloads.sameName === "number" ? "number" : "replace" },
       desktop: { notificationMode: NOTIFICATION_MODES.includes(d.desktop.notificationMode) ? d.desktop.notificationMode : "auto", ...Object.fromEntries(DESKTOP_FLAGS.map((k) => [k, !!d.desktop[k]])), petSkin: PET_SKINS.includes(d.desktop.petSkin) ? d.desktop.petSkin : "character", petSize: PET_SIZES.includes(d.desktop.petSize) ? d.desktop.petSize : 1 },
       bridge: { ...bridge },
       chatChannel: d.chatChannel,
@@ -576,7 +576,8 @@ class Settings {
         else throw new Error(i18nText("download.badFolderSetting"));
       }
       if (dl.ask !== undefined && typeof dl.ask !== "boolean") throw new Error(i18nText("download.badFolderSetting"));
-      d.downloads = { dir, ask: dl.ask === undefined ? d.downloads.ask : dl.ask };
+      if (dl.sameName !== undefined && dl.sameName !== "replace" && dl.sameName !== "number") throw new Error(i18nText("download.badFolderSetting"));
+      d.downloads = { dir, ask: dl.ask === undefined ? d.downloads.ask : dl.ask, sameName: dl.sameName === undefined ? (d.downloads.sameName === "number" ? "number" : "replace") : dl.sameName };
     }
     if (patch.desktop && typeof patch.desktop === "object") {
       for (const k of DESKTOP_FLAGS) if (typeof patch.desktop[k] === "boolean") d.desktop[k] = patch.desktop[k];

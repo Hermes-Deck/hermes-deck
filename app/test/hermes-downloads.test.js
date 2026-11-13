@@ -149,9 +149,14 @@ test("relay download: streams into the .part and renames; a cut stream resumes w
   assert.deepEqual([...progress].sort((a, b) => a - b), progress, "progress never goes back");
   assert.equal(progress.at(-1), bytes.length);
   assert.deepEqual(fs.readdirSync(out), ["build.iso"], "no .part left, nothing overwritten");
-  // a second download of the same name never overwrites the first
+  // a second download of the same name takes the first one's place (the default) ...
   const again = await dl.run("t-again", { name: g.name, size: g.size, open: opener({ relay: client, bridge: null, sid: "s-1", path: file, grant: g }) });
-  assert.equal(again.name, "build (1).iso");
+  assert.equal(again.name, "build.iso");
+  assert.deepEqual(fs.readdirSync(out), ["build.iso"]);
+  // ... or is kept beside it when the owner chose numbered copies
+  const both = new Downloads({ dir: out, retryMs: 10, sameName: "number" });
+  const third = await both.run("t-third", { name: g.name, size: g.size, open: opener({ relay: client, bridge: null, sid: "s-1", path: file, grant: g }) });
+  assert.equal(third.name, "build (1).iso");
 });
 
 test("relay download: cancel stops the stream at once and leaves nothing; a refused file fails without retries", async (t) => {

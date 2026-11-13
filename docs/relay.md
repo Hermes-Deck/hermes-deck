@@ -152,7 +152,7 @@ limits when the plugin takes staged files, else 25 MB / 50 MB; `downloadBytes` s
 
 ## Large downloads
 
-Files the agent offered in a session (a `MEDIA:` path or a backticked path in an assistant message) download through
+Files the agent offered in a session (a `MEDIA:` path, a backticked path or a plain absolute path in an assistant message) download through
 the relay when the relay and the Hermes plugin share the same spool on this host (the same `host` id as for
 [large attachments](#large-attachments)). The plugin decides whether the file may be downloaded at all:
 `deck.file_grant` runs exactly the checks of `deck.file_read` (the path must stand in an assistant message of that

@@ -1,8 +1,9 @@
 "use strict";
 var i18nText = typeof module === "object" && module.exports ? require("./i18n").t : window.DeckI18n.t;
 // File chips in the Hermes chat view, window.DeckHermesFiles.create(ctx).
-// When an assistant message offers a file (MEDIA:/abs/path or a backticked absolute path), main parses it and the
-// history carries `m.files = [{ref, name, media}]`: an opaque ref and a name, never a host path. Each ref is drawn as
+// When an assistant message offers a file (MEDIA:/abs/path, a backticked absolute path or a plain one), main parses it
+// and the history carries `m.files = [{ref, name, media, quiet?}]`: an opaque ref and a name, never a host path. A
+// `quiet` ref (a plain path in running text) gets its chip only once the host confirmed the file. Each ref is drawn as
 // a chip with the file's icon, name, size (looked up lazily, when the chip is first drawn), a Download button with
 // progress and Cancel, and, once saved, Open and Show in folder. The page never builds a path and never sends one.
 (() => {
@@ -13,7 +14,8 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
   };
   const MAX_INFO = 3; // size lookups running at once
 
-  /** Per-chip state, kept across re-renders: key = `${sid}:${ref}`. */
+  /** Per-chip state, kept across re-renders: key = `${sid}:${ref}:${message}`. A file offered again in a later message
+   *  (the same path, rebuilt) is a chip of its own: its size is looked up afresh and it is not shown as already saved. */
   function create(ctx) {
     const { h, deck, mark, cleanErr, VB } = ctx; // VB: the shared voice-bubble player (voice-bubble.js), optional
     const state = new Map(); // key -> {info, error, dl: {ticket, received, size}, saved: {id, name}, busy}
@@ -117,20 +119,24 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
     /** One chip: an inline voice bubble for audio, else the file chip. `where`: {sid, profile}. */
     function chip(f, where) {
       if (VB && deck.bridge.file.audio && VB.isAudio(f.name)) {
-        const s = get(`${where.sid}:${f.ref}`);
+        const s = get(keyOf(f, where));
+        if (f.quiet && !s.info) return fileChip(f, where); // looked up first; drawn once the host confirmed it
         if (!s.noPlayer) return voiceChip(f, where, s);
       }
       return fileChip(f, where);
     }
 
+    const keyOf = (f, where) => `${where.sid}:${f.ref}${where.msg ? `:${where.msg}` : ""}`;
+
     function fileChip(f, where) {
-      const key = `${where.sid}:${f.ref}`;
+      const key = keyOf(f, where);
       const s = get(key);
       if (!s.asked) {
         s.asked = true;
         queue.push({ sid: where.sid, ref: f.ref, profile: where.profile, s });
         pump();
       }
+      if (f.quiet && !s.info) return null; // a plain-text mention: no chip until the host says the file is there
       const name = (s.info && s.info.name) || f.name;
       const meta = [];
       if (s.saved) meta.push(i18nText("download.saved", { name: s.saved.name }));
@@ -164,7 +170,9 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
     /** The chips of one assistant message, or null. */
     function chips(m, where) {
       if (!m || m.role !== "assistant" || !Array.isArray(m.files) || !m.files.length) return null;
-      return h("div", { class: "hfiles" }, ...m.files.map((f) => chip(f, where)));
+      const at = { ...where, msg: m.id || m.ts ? String(m.id || m.ts) : "" };
+      const drawn = m.files.map((f) => chip(f, at)).filter(Boolean);
+      return drawn.length ? h("div", { class: "hfiles" }, ...drawn) : null;
     }
 
     return { chips, chip, state };

@@ -6,6 +6,14 @@ The desktop app, relay and Hermes plugin share one version number.
 
 ## [Unreleased]
 
+- A reply is drawn as Markdown while it streams: bold, lists, tables and code blocks appear formatted as they arrive instead of as raw `**text**` until the turn ends.
+- Scrolling up while a reply streams keeps the view where it is: the reply goes on arriving below without pulling the transcript down, and a text selection in an earlier message stays selected. At the newest message the view follows the reply as before.
+- Markdown tables fit the chat column at every width, including a narrow split-view pane: a long file path or other code in a cell wraps after its `/` separators instead of pushing the table (and its last columns) out of view, and words stay whole. In a very narrow column words may break too, so the table still fits.
+- Code blocks in chats have a **Copy** button (shown on hover or keyboard focus) that copies the block's code.
+- Downloading a file whose name already exists in the download folder now replaces that file once the download is complete, instead of saving `name (1).ext`; a failed or cancelled download leaves the existing file untouched. **Settings → General → Downloads → Keep both when a file of the same name exists** brings the numbered copies back. A file that is open or running and cannot be replaced is kept, and the download is saved beside it under a numbered name.
+- A file the agent rebuilt and offered again at the same path gets a fresh **Download** chip in the new message (current size, not shown as already saved).
+- A file the agent names by its plain absolute path (for example `/home/user/out/build.zip` on a line of its reply, no `MEDIA:` prefix or backticks needed) gets a download chip too. Such a chip appears only once the host confirmed the file exists and may be downloaded, so paths that are merely mentioned stay plain text.
+
 ## [1.2.0] - 2026-11-10
 
 - Every saved host is live at once: each keeps its relay and direct connection open while the Deck runs, so replies, finished turns, approvals and questions from any host raise their notification and open that host's chat when clicked. Every host you open keeps its page warm in the background: switching back is instant with scroll, open chat and draft intact, nothing reloads.

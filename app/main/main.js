@@ -401,6 +401,8 @@ const fileOffers = new FileOffers();
 const defaultDownloadDir = () => path.join(SHOT ? app.getPath("userData") : app.getPath("downloads"), SHOT ? "downloads" : "Hermes Deck");
 const downloads = new Downloads({
   dir: () => resolveFolder({ custom: settings && settings.data.downloads ? settings.data.downloads.dir : "", fallback: defaultDownloadDir() }),
+  // a file of the same name: replaced (default) or kept beside a numbered copy (Settings > Downloads)
+  sameName: () => (settings && settings.data.downloads && settings.data.downloads.sameName === "number" ? "number" : "replace"),
 });
 ipc.handle("downloads:pick-folder", async () => {
   if (SHOT) throw new Error(i18nText("U0259")); // no native dialog during a headless run

@@ -222,10 +222,33 @@ test("refs: backticked absolute paths need a directory and an extension; code bl
   assert.deepEqual(ok.map((r) => [r.path, r.name, r.media]), [["/srv/out/notes.md", "notes.md", false], ["/srv/out/x/report.pdf", "report.pdf", false]]);
   for (const text of [
     "`/usr/bin`", "`/tmp`", "`/etc/hosts`".replace("/etc/hosts", "/hosts"), "`relative/path.txt`", "`~/notes.txt`", "`/srv/../etc/passwd.txt`",
-    "`/srv/out/*.png`", "`/srv/out/$HOME/a.txt`", "`https://example.com/a/b.txt`", "plain /srv/out/notes.md in prose",
+    "`/srv/out/*.png`", "`/srv/out/$HOME/a.txt`", "`https://example.com/a/b.txt`",
     "```\nMEDIA:/srv/out/example.pdf\n```", "```sh\ncat `/srv/out/notes.md`\n```", "`//host/share/a.txt`",
   ]) assert.deepEqual(files.extractFileRefs(text), [], text);
   assert.deepEqual(files.extractFileRefs(`MEDIA:/${"a/".repeat(600)}x.txt`), [], "over-long paths are not files");
+});
+
+test("refs: a plain absolute path with an extension is a quiet offer; URLs, relative paths and folders are not", () => {
+  const refs = (text) => files.extractFileRefs(text).map((r) => [r.path, r.media, r.quiet]);
+  assert.deepEqual(refs("plain /srv/out/notes.md in prose"), [["/srv/out/notes.md", false, true]]);
+  assert.deepEqual(refs("/home/u/builds/test.zip"), [["/home/u/builds/test.zip", false, true]], "alone in the message");
+  assert.deepEqual(refs("Built it (/home/u/builds/test.zip), **/home/u/builds/b.tar.gz**. See /home/u/builds/c.exe."),
+    [["/home/u/builds/test.zip", false, true], ["/home/u/builds/b.tar.gz", false, true], ["/home/u/builds/c.exe", false, true]], "brackets, emphasis and sentence punctuation are not part of the path");
+  assert.deepEqual(refs("| file | /home/u/out/table.csv |\nout=/home/u/out/eq.bin"), [["/home/u/out/table.csv", false, true], ["/home/u/out/eq.bin", false, true]]);
+  for (const text of [
+    "https://example.com/a/b.zip", "see example.com/a/b.zip", "relative/path/file.txt", "~/notes/file.txt", "./out/file.txt", "C:/Users/u/file.txt",
+    "the /usr/bin folder", "/tmp", "/file.txt", "a/b/c.txt and x/srv/out/y.txt", "/srv/../etc/passwd.txt", "/srv/out/*.png", "//host/share/a.txt",
+    "```\n/srv/out/example.pdf\n```", "either/or.txt", "and/or 1/2.5",
+  ]) assert.deepEqual(files.extractFileRefs(text), [], text);
+  // the same path named loudly elsewhere in the message is a normal chip
+  assert.deepEqual(refs("`/srv/out/a.txt` and again /srv/out/a.txt"), [["/srv/out/a.txt", false, false]]);
+  assert.deepEqual(refs("/srv/out/a.txt then MEDIA:/srv/out/a.txt"), [["/srv/out/a.txt", true, false]]);
+  // the page is told which chips wait for the host's confirmation
+  const offers = new files.FileOffers();
+  const got = offers.collect("s1", { role: "assistant", text: "Saved to /home/u/builds/test.zip and `/home/u/builds/loud.zip`" });
+  assert.deepEqual(got.map((f) => [f.name, f.quiet === true]), [["loud.zip", false], ["test.zip", true]]);
+  assert.equal(offers.pathOf("s1", got[1].ref), "/home/u/builds/test.zip");
+  assert.ok(!JSON.stringify(got).includes("/home/u"));
 });
 
 test("refs: duplicates collapse (a MEDIA: use wins) and a message offers at most 8 files", () => {
@@ -285,15 +308,64 @@ test("download: chunks are assembled, the size is verified and the file lands un
   assert.ok(!JSON.stringify(r).includes(folder), "the page is told an id and a name, not a path");
 });
 
-test("download: an existing name is never overwritten: report (1).txt, report (2).txt", async () => {
+test("download: a file of the same name is replaced by the finished download, and only by a finished one", async () => {
+  const folder = dir("replace");
+  fs.writeFileSync(path.join(folder, "report.txt"), "old one");
+  const dl = new files.Downloads({ dir: folder });
+  const a = await dl.run("t-rep001", { name: "report.txt", size: 3, read: chunker(Buffer.from("new")) });
+  assert.equal(a.name, "report.txt");
+  assert.equal(fs.readFileSync(path.join(folder, "report.txt"), "utf8"), "new");
+  assert.deepEqual(fs.readdirSync(folder), ["report.txt"], "no numbered copy and no .part");
+  assert.equal(dl.pathOf(a.id), path.join(folder, "report.txt"));
+  // a download that fails or is cancelled leaves the file that was there
+  await assert.rejects(dl.run("t-rep002", { name: "report.txt", size: 9, read: chunker(Buffer.from("short")) }));
+  assert.equal(fs.readFileSync(path.join(folder, "report.txt"), "utf8"), "new");
+  let n = 0;
+  const slow = async (offset, length) => { if (n++ === 0) dl.cancel("t-rep003"); return chunker(Buffer.from("zzzzzz"))(offset, length); };
+  assert.deepEqual(await dl.run("t-rep003", { name: "report.txt", size: 6, read: slow }), { status: "cancelled" });
+  assert.equal(fs.readFileSync(path.join(folder, "report.txt"), "utf8"), "new");
+  assert.deepEqual(fs.readdirSync(folder), ["report.txt"]);
+  // two downloads of one name at the same time do not write into each other
+  const dl2 = new files.Downloads({ dir: folder, chunk: 2 });
+  const [x, y] = await Promise.all([
+    dl2.run("t-rep004", { name: "report.txt", size: 6, read: chunker(Buffer.from("aaaaaa")) }),
+    dl2.run("t-rep005", { name: "report.txt", size: 6, read: chunker(Buffer.from("bbbbbb")) }),
+  ]);
+  assert.deepEqual([x.status, y.status], ["done", "done"]);
+  assert.match(fs.readFileSync(path.join(folder, "report.txt"), "utf8"), /^(a{6}|b{6})$/);
+  assert.deepEqual(fs.readdirSync(folder), ["report.txt"]);
+});
+
+test("download: a file that cannot be replaced right now is kept and the download lands beside it", (t) => {
+  const folder = dir("busy");
+  const final = path.join(folder, "tool.exe");
+  const part = `${final}.1.part`;
+  fs.writeFileSync(final, "running");
+  fs.writeFileSync(part, "fresh");
+  const real = fs.renameSync;
+  // Windows refuses to replace a file that is open or running
+  t.mock.method(fs, "renameSync", (from, to) => { if (to === final) throw Object.assign(new Error("busy"), { code: "EBUSY" }); return real(from, to); });
+  const landed = files.replaceInto(part, final);
+  assert.equal(landed, path.join(folder, "tool (1).exe"));
+  assert.equal(fs.readFileSync(final, "utf8"), "running");
+  assert.equal(fs.readFileSync(landed, "utf8"), "fresh");
+  assert.deepEqual(fs.readdirSync(folder).sort(), ["tool (1).exe", "tool.exe"]);
+});
+
+test("download: 'keep both' numbers the new file instead: report (1).txt, report (2).txt", async () => {
   const folder = dir("dup");
   fs.writeFileSync(path.join(folder, "report.txt"), "mine");
-  const dl = new files.Downloads({ dir: folder });
+  let mode = "number";
+  const dl = new files.Downloads({ dir: folder, sameName: () => mode });
   const body = Buffer.from("new");
   const a = await dl.run("t-dup001", { name: "report.txt", size: 3, read: chunker(body) });
   const b = await dl.run("t-dup002", { name: "report.txt", size: 3, read: chunker(body) });
   assert.deepEqual([a.name, b.name], ["report (1).txt", "report (2).txt"]);
   assert.equal(fs.readFileSync(path.join(folder, "report.txt"), "utf8"), "mine");
+  mode = "replace"; // the setting is read per download
+  const c = await dl.run("t-dup003", { name: "report.txt", size: 3, read: chunker(body) });
+  assert.equal(c.name, "report.txt");
+  assert.equal(fs.readFileSync(path.join(folder, "report.txt"), "utf8"), "new");
 });
 
 test("download: hostile and reserved names are made safe and stay inside the folder", async () => {
@@ -438,7 +510,7 @@ const plain = (x) => JSON.parse(JSON.stringify(x));
 
 test("setting: the default is no custom folder and no asking; the page sees both", () => {
   const { s } = settingsWorld(null);
-  assert.deepEqual(plain(s.publicView().downloads), { dir: "", ask: false });
+  assert.deepEqual(plain(s.publicView().downloads), { dir: "", ask: false, sameName: "replace" });
 });
 
 test("setting: a custom folder and 'ask each time' persist and come back after a restart", () => {
@@ -446,25 +518,33 @@ test("setting: a custom folder and 'ask each time' persist and come back after a
   const custom = path.join(TMP, "my-downloads");
   s.update({ downloads: { dir: custom } });
   s.update({ downloads: { ask: true } });
-  assert.deepEqual(plain(s.publicView().downloads), { dir: custom, ask: true }, "setting ask keeps the folder");
-  assert.deepEqual(plain(saved().downloads), { dir: custom, ask: true });
-  assert.deepEqual(plain(settingsWorld(saved()).s.publicView().downloads), { dir: custom, ask: true });
+  assert.deepEqual(plain(s.publicView().downloads), { dir: custom, ask: true, sameName: "replace" }, "setting ask keeps the folder");
+  s.update({ downloads: { sameName: "number" } });
+  assert.deepEqual(plain(s.publicView().downloads), { dir: custom, ask: true, sameName: "number" }, "keeping both keeps the rest");
+  assert.deepEqual(plain(saved().downloads), { dir: custom, ask: true, sameName: "number" });
+  assert.deepEqual(plain(settingsWorld(saved()).s.publicView().downloads), { dir: custom, ask: true, sameName: "number" });
+  s.update({ downloads: { ask: false } });
+  assert.equal(s.publicView().downloads.sameName, "number", "another option keeps it");
+  s.update({ downloads: { sameName: "replace" } });
+  assert.equal(s.publicView().downloads.sameName, "replace");
+  // a settings file written before the option existed means "replace"
+  assert.equal(settingsWorld({ downloads: { dir: "", ask: false } }).s.publicView().downloads.sameName, "replace");
 });
 
 test("setting: Reset to default clears the folder and keeps the other options", () => {
   const { s } = settingsWorld({ downloads: { dir: path.join(TMP, "x"), ask: true } });
   s.update({ downloads: { dir: "" } });
-  assert.deepEqual(plain(s.publicView().downloads), { dir: "", ask: true });
+  assert.deepEqual(plain(s.publicView().downloads), { dir: "", ask: true, sameName: "replace" });
   s.update({ downloads: { dir: null } });
   assert.equal(s.publicView().downloads.dir, "");
 });
 
 test("setting: an invalid folder value or flag is refused and changes nothing", () => {
   const { s } = settingsWorld({ downloads: { dir: path.join(TMP, "keep"), ask: false } });
-  for (const bad of [{ dir: "relative/path" }, { dir: "~/Downloads" }, { dir: 5 }, { dir: "/ok\u0000bad" }, { dir: "/" + "a".repeat(1100) }, { dir: ["/a"] }, { ask: "yes" }, { ask: 1 }]) {
+  for (const bad of [{ dir: "relative/path" }, { dir: "~/Downloads" }, { dir: 5 }, { dir: "/ok\u0000bad" }, { dir: "/" + "a".repeat(1100) }, { dir: ["/a"] }, { ask: "yes" }, { ask: 1 }, { sameName: "overwrite" }, { sameName: true }, { sameName: "" }]) {
     assert.throws(() => s.update({ downloads: bad }), /not a valid download folder/, JSON.stringify(bad));
   }
-  assert.deepEqual(plain(s.publicView().downloads), { dir: path.join(TMP, "keep"), ask: false });
+  assert.deepEqual(plain(s.publicView().downloads), { dir: path.join(TMP, "keep"), ask: false, sameName: "replace" });
   assert.equal(files.validFolderSetting("C:\\Users\\example\\Downloads"), true, "a Windows drive path is accepted as a setting");
   assert.equal(files.validFolderSetting("/srv/ok"), true);
 });
@@ -481,6 +561,8 @@ test("setting: the Turkish strings and the Settings entry exist; the folder is n
   assert.match(view, /bridge\.file\.pickFolder\(\)/);
   assert.match(view, /bridge\.file\.resetFolder\(\)/);
   assert.match(view, /downloads: \{ ask: on \}/);
+  assert.match(view, /downloads: \{ sameName: on \? "number" : "replace" \}/);
+  assert.match(main, /sameName: \(\) =>/, "the download reads the setting when it starts");
 });
 
 // ================================================================ bridge: dictation and file_read against the fake host

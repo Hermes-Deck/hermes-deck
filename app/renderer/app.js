@@ -815,11 +815,31 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     }
   }
 
+  /**
+   * Put a freshly built Hermes transcript on screen (stable-list.js): messages whose fresh copy is identical stay in
+   * place untouched, so a text selection in them survives a streamed token or a poll, and a reader who scrolled up
+   * keeps their place while the reply grows below. At the newest message the view follows the reply as before.
+   * Another session, or anything else that was in the column (a form, a Telegram chat), is cleared whole first. The
+   * modules that work on the painted list (composer.js: request tray, queue; receipts.js) are told of every paint,
+   * also one that changed nothing.
+   */
+  let stableFor = null;
+  function paintMsgs(kids) {
+    const key = `h:${H.sel || ""}`;
+    if (stableFor !== key) {
+      els.msgsInner.replaceChildren();
+      stableFor = key;
+    }
+    window.DeckStableList.paint(els.msgs, els.msgsInner, kids);
+    document.dispatchEvent(new CustomEvent("deck-transcript-paint"));
+  }
+
   function renderMsgs() {
     if (S.settings && !S.settings.firstRunDone) {
       const key = JSON.stringify(["first-run", firstRunStep, FIRST_RUN_STEPS[firstRunStep] === "device" && !!firstRunDevice, S.formBusy, S.formError]);
       if (els.msgsInner.dataset.form !== key) {
         els.msgsInner.dataset.form = key;
+        stableFor = null;
         els.msgsInner.replaceChildren(firstRunForm());
         els.msgs.scrollTop = 0;
       }
@@ -843,6 +863,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       const formKey = JSON.stringify([t.status, t.step, t.error, t.hint, S.formBusy, S.formError]);
       if (els.msgsInner.dataset.form === formKey) return;
       els.msgsInner.dataset.form = formKey;
+      stableFor = null;
       els.msgsInner.replaceChildren(t.status === "setup" ? setupForm() : loginForm());
       const first = els.msgsInner.querySelector("input");
       if (first) first.focus();
@@ -875,6 +896,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       }
     }
     kids.push(...hermesRequestCards());
+    stableFor = null; // a Telegram chat is drawn whole: its media elements are cached and move between renders
     els.msgsInner.replaceChildren(...kids);
     if (scrollToEnd) box.scrollTop = 0; // column-reverse: 0 is the newest message
     scrollToEnd = false;
@@ -3328,6 +3350,11 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     return h("div", { class: "text" }, text);
   }
 
+  /** The text of a reply that is still streaming (or just finished): the same markdown rendering as a stored one. */
+  function hermesLiveTextEl(text) {
+    return hermesTextEl({ role: "assistant", text }, null);
+  }
+
   /**
    * Notices Hermes injects as user-role messages. The model already answers them, so the chat shows each as
    * one collapsed chip. Conservative on purpose: the bracket header must open the message (or, for the OMH
@@ -3495,8 +3522,9 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
         const live = H.live.get(H.sel);
         if (live) {
           const seg = hermesLiveSegments(live, st.msgs);
-          for (const s of seg.sealed) kids.push(h("div", { class: "msg" }, h("div", { class: "text" }, s.text), h("time", { class: "t" }, i18nNode("U0594"))));
-          if (seg.text) kids.push(h("div", { class: `msg${live.done ? "" : " live"}` }, live.done ? TB.el(live.think, `${H.sel}:live`) : null, h("div", { class: "text" }, seg.text), h("time", { class: "t" }, live.done ? i18nNode("U0594") : i18nNode("U0434"))));
+          // streamed text is drawn as markdown while it arrives, like the stored message it becomes
+          for (const s of seg.sealed) kids.push(h("div", { class: "msg" }, hermesLiveTextEl(s.text), h("time", { class: "t" }, i18nNode("U0594"))));
+          if (seg.text) kids.push(h("div", { class: `msg${live.done ? "" : " live"}` }, live.done ? TB.el(live.think, `${H.sel}:live`) : null, hermesLiveTextEl(seg.text), h("time", { class: "t" }, live.done ? i18nNode("U0594") : i18nNode("U0434"))));
         }
         const row = LA.row(hermesLiveView()); // what the model is doing now, where its next message will appear
         if (row) kids.push(row);
@@ -3506,7 +3534,7 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       }
     }
     kids.push(...hermesRequestCards());
-    els.msgsInner.replaceChildren(...kids);
+    paintMsgs(kids);
     if (scrollToEnd) els.msgs.scrollTop = 0; // column-reverse: 0 is the newest message
     scrollToEnd = false;
     requestAnimationFrame(maybeLoadOlder); // a short list may still be near its top
@@ -4532,7 +4560,8 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
     if (liveRaf) return;
     liveRaf = requestAnimationFrame(() => {
       liveRaf = 0;
-      if (hermesMode() && !LA.patch(hermesLiveView())) mark("msgs");
+      // the row grows in place (streamed reasoning): a reader who scrolled up keeps their place
+      if (hermesMode() && !window.DeckStableList.hold(els.msgs, els.msgsInner, () => LA.patch(hermesLiveView()))) mark("msgs");
     });
   }
 

@@ -281,6 +281,9 @@
       if (m.t === "status" && m.status !== "open") { view = null; status(); }
     });
     shell.on("session", s => { session = s; view = null; fullRender = true; error.hidden = true; schedule(); });
+    // The Hermes transcript is repainted in place (stable-list.js): unchanged messages stay, so a repaint may remove
+    // nothing. Every paint still counts as a rebuild here: the request tray and the queue follow what it drew.
+    doc.addEventListener("deck-transcript-paint", () => { fullRender = true; schedule(); });
     doc.addEventListener("deck-language", schedule);
     root.setInterval(() => { if (!doc.hidden && view) status(); }, 1000);
     decorate();

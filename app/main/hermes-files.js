@@ -1,15 +1,17 @@
 "use strict";
 // Files the agent offers in a Hermes session, and their download to this computer.
 //
-// The agent names a file by its absolute path on the Hermes host, either as `MEDIA:/abs/path` (Hermes' own
-// delivery convention) or as a backticked absolute path in a message. This module:
+// The agent names a file by its absolute path on the Hermes host: as `MEDIA:/abs/path` (Hermes' own delivery
+// convention), as a backticked absolute path, or as a plain absolute path with a file extension standing on its own
+// in a message. This module:
 //   - extractFileRefs(text): the references in ONE assistant message (main parses them; the page only ever
 //     receives and sends back paths main has seen, see FileOffers);
 //   - FileOffers: which paths main has parsed out of which session, bounded. A download of anything else is refused
 //     here, before the host's own check (the host again requires the path to stand in that session's transcript);
 //   - Downloads: sequential chunk reads (or one relay HTTP stream, resumed with Range after a cut) assembled into a
-//     folder, never overwriting, with progress, cancel and a size check, so a half-written file is never left under
-//     the final name.
+//     folder with progress, cancel and a size check, so a half-written file is never left under the final name. A
+//     file of the same name is replaced by the finished download, or (the owner's setting) kept beside a numbered
+//     copy.
 // Core Node only, no Electron: the tests drive it with a fake chunk reader.
 const crypto = require("crypto");
 const fs = require("fs");
@@ -46,20 +48,25 @@ const TRAIL = /[.,;:!?)\]}>*_'"]+$/;
  * File references in one assistant message, in order, without duplicates.
  *   MEDIA:/abs/path         (also quoted, backticked or wrapped in Markdown emphasis)
  *   `/abs/dir/name.ext`     (inline code; needs a file extension so `/usr/bin` is not a download)
- * Returns [{path, name, media}] (media: the agent used MEDIA:, so the chip stays visible even when the file is
- * gone). Text from the user, tools or the system is never passed in here (see FileOffers.collect).
+ *   /abs/dir/name.ext       (plain text: the same rule, no spaces, and it must start a word, so the path part of a
+ *                            URL, a relative path or `~/x` is not one)
+ * Returns [{path, name, media, quiet}] (media: the agent used MEDIA:, so the chip stays visible even when the file
+ * is gone; quiet: only a plain-text mention, shown once the host confirmed the file). Text from the user, tools or the system is never passed in here (see FileOffers.collect).
  */
 function extractFileRefs(text) {
   const src = unfenced(typeof text === "string" ? text.slice(0, 200000) : "");
   const found = new Map();
-  const add = (p, media) => {
-    if (found.size >= MAX_REFS) return;
+  // quiet: named only as a plain path in running text. Such a mention is often not an offer (a source file, a
+  // log), so its chip is drawn only once the host confirmed the file can be downloaded.
+  const add = (p, media, quiet = false) => {
     const have = found.get(p);
     if (have) {
       have.media = have.media || media;
+      have.quiet = have.quiet && quiet;
       return;
     }
-    found.set(p, { path: p, name: path.posix.basename(p), media });
+    if (found.size >= MAX_REFS) return;
+    found.set(p, { path: p, name: path.posix.basename(p), media, quiet });
   };
   // No boundary before MEDIA: (Hermes accepts glued tags, MEDIA:/a.pngMEDIA:/b.png); a bare path stops at the next tag.
   const re = /MEDIA:[ \t]*(?:`([^`\n]+)`|"([^"\n]+)"|'([^'\n]+)'|((?:(?!MEDIA:)[^\s`"'])(?:(?!MEDIA:)[^\s`])*))/g;
@@ -83,6 +90,18 @@ function extractFileRefs(text) {
     const p = m[1].trim();
     if (plausiblePath(p, { needExt: true })) add(p, false);
   }
+  // A plain path: it starts the text or follows whitespace, a bracket, a quote, emphasis or one of , ; = | > and runs
+  // to the next whitespace; sentence punctuation after it is not part of it. These are the boundaries the host's own
+  // check accepts (observer.py path_offered), without ":" and "/" so "https://host/a/b.zip" and "C:/a/b.zip" stay text.
+  const bare = /(?<![^\s(\[<{"'*_,;=|>])\/[^\s`"'<>|*?]+/g;
+  while ((m = bare.exec(src))) {
+    let p = m[0];
+    for (let prev; prev !== p; ) {
+      prev = p;
+      p = p.replace(TRAIL, "");
+    }
+    if (plausiblePath(p, { needExt: true })) add(p, false, true);
+  }
   return [...found.values()];
 }
 
@@ -100,7 +119,7 @@ class FileOffers {
     return crypto.createHash("sha1").update(`${sid}\u0000${p}`).digest("hex").slice(0, 16);
   }
 
-  /** Parse one history message. Returns [{ref, name, media}] (no path); only assistant messages offer anything. */
+  /** Parse one history message. Returns [{ref, name, media, quiet?}] (no path); only assistant messages offer anything. */
   collect(sid, message) {
     if (!message || message.role !== "assistant" || typeof message.text !== "string") return [];
     const parsed = extractFileRefs(message.text);
@@ -119,7 +138,7 @@ class FileOffers {
       map.delete(ref);
       map.set(ref, r.path);
       while (map.size > OFFER_PATHS) map.delete(map.keys().next().value);
-      out.push({ ref, name: r.name, media: r.media });
+      out.push(r.quiet ? { ref, name: r.name, media: r.media, quiet: true } : { ref, name: r.name, media: r.media });
     }
     return out;
   }
@@ -189,6 +208,28 @@ function reserveName(dir, name) {
     }
   }
   throw new Error("no free file name");
+}
+
+/**
+ * Put the finished `part` under `final`, replacing a file of that name. A file that cannot be replaced right now (on
+ * Windows: it is open or running) is left alone and the download lands beside it under a free numbered name instead
+ * of failing. Returns the path it ended up at.
+ */
+function replaceInto(part, final) {
+  try {
+    fs.renameSync(part, final);
+    return final;
+  } catch (e) {
+    if (!e || !["EPERM", "EBUSY", "EACCES", "EEXIST", "ENOTEMPTY", "EISDIR"].includes(e.code)) throw e;
+  }
+  const free = reserveName(path.dirname(final), path.basename(final));
+  try {
+    fs.renameSync(part, free);
+  } catch (e) {
+    fs.rmSync(free, { force: true });
+    throw e;
+  }
+  return free;
 }
 
 const folderError = (dir, why) => Object.assign(new Error(`download folder unusable: ${why}`), { code: "folder", dir, why });
@@ -262,11 +303,14 @@ function resolveFolder({ custom, fallback }) {
  * a cut stream is reopened from the last byte written, `retries` times in a row without progress). `dir` is a folder
  * or a () => folder that may throw {code: "folder"} (see resolveFolder); a job with `target` (a path the owner picked
  * in a Save As dialog, which already asked about overwriting) goes exactly there instead. `max` caps one file (a job
- * may bring its own: the active limit of its path).
+ * may bring its own: the active limit of its path). `sameName` (a value or a () => value) says what happens to a file
+ * of the same name already in the folder: "replace" (the default: the finished download takes its place) or "number"
+ * (both are kept: "report.pdf", "report (1).pdf").
  */
 class Downloads {
-  constructor({ dir, maxActive = MAX_ACTIVE, chunk = CHUNK, max = FILE_MAX, retries = STREAM_RETRIES, retryMs = 1000 } = {}) {
+  constructor({ dir, maxActive = MAX_ACTIVE, chunk = CHUNK, max = FILE_MAX, retries = STREAM_RETRIES, retryMs = 1000, sameName = "replace" } = {}) {
     this.dir = dir; // () => folder or a string
+    this.sameName = sameName; // "replace" | "number", or a () => one of them
     this.maxActive = maxActive;
     this.chunk = chunk;
     this.max = max;
@@ -275,19 +319,32 @@ class Downloads {
     this.active = new Map(); // ticket -> {cancel}
     this.saved = new Map(); // id -> final path (bounded; Open/Show in folder name an id, never a path)
     this.seq = 0;
+    this.parts = 0;
   }
 
   folder() {
     return typeof this.dir === "function" ? this.dir() : this.dir;
   }
 
-  /** Reserve the final file: the picked target, or a free name in the folder. Folder problems become {code: "folder"}. */
+  keepsBoth() {
+    return (typeof this.sameName === "function" ? this.sameName() : this.sameName) === "number";
+  }
+
+  /**
+   * The final file: the picked target, the plain name in the folder (replaced when the download is complete), or,
+   * when both are kept, a reserved free name. Folder problems become {code: "folder"}.
+   */
   _reserve(name, target) {
     const dir = target ? path.dirname(target) : this.folder();
     try {
       if (target) {
         fs.accessSync(dir, fs.constants.W_OK);
         return { final: target, owned: false };
+      }
+      if (!this.keepsBoth()) {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.accessSync(dir, fs.constants.W_OK);
+        return { final: path.join(dir, name), owned: false, replace: true };
       }
       return { final: reserveName(dir, name), owned: true };
     } catch (e) {
@@ -315,16 +372,19 @@ class Downloads {
     let part = null;
     let fd = null;
     let owned = true; // the final file was created (empty) by us, so a failed download removes it
+    let replace = false; // the final name may hold an older file: it is replaced only by the complete download
     try {
-      ({ final, owned } = this._reserve(name, job.target));
-      part = `${final}.${process.pid}.part`;
+      ({ final, owned, replace = false } = this._reserve(name, job.target));
+      part = `${final}.${process.pid}.${++this.parts}.part`; // two downloads of one name never share a part file
       fd = fs.openSync(part, "w", 0o600);
       const offset = job.open ? await this._stream(state, fd, job, size) : await this._chunks(state, fd, job, size);
       if (offset === null) return this._abandon({ fd, part, final: owned ? final : null });
       fs.closeSync(fd);
       fd = null;
       if (offset !== size || fs.statSync(part).size !== size) throw Object.assign(new Error("incomplete download"), { code: "incomplete" });
-      fs.renameSync(part, final); // replaces the reserved empty file (or the file the owner agreed to replace)
+      // replaces the reserved empty file, the file the owner agreed to replace, or the older file of the same name
+      if (replace) final = replaceInto(part, final);
+      else fs.renameSync(part, final);
       const id = `d${++this.seq}`;
       this.saved.set(id, final);
       while (this.saved.size > 64) this.saved.delete(this.saved.keys().next().value);
@@ -447,4 +507,4 @@ class Downloads {
   }
 }
 
-module.exports = { extractFileRefs, FileOffers, Downloads, safeFileName, reserveName, resolveFolder, validFolderSetting, plausiblePath, retriable, MAX_REFS, FILE_MAX, CHUNK, STREAM_RETRIES };
+module.exports = { extractFileRefs, FileOffers, Downloads, safeFileName, reserveName, replaceInto, resolveFolder, validFolderSetting, plausiblePath, retriable, MAX_REFS, FILE_MAX, CHUNK, STREAM_RETRIES };
