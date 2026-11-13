@@ -102,7 +102,7 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
         menu: () => {
           const items = [{ label: i18nText("download.download"), disabled: !!s.dl, onclick: () => download(where.sid, f.ref, where.profile, s) }];
           if (s.saved) {
-            if (!s.saved.risky) items.push({ label: i18nText("download.open"), onclick: () => deck.bridge.file.open(s.saved.id).catch((e) => { s.error = cleanErr(e); redraw(); }) });
+            items.push({ label: i18nText("download.open"), onclick: () => deck.bridge.file.open(s.saved.id).catch((e) => { s.error = cleanErr(e); redraw(); }) });
             items.push({ label: i18nText("download.reveal"), onclick: () => deck.bridge.file.reveal(s.saved.id).catch((e) => { s.error = cleanErr(e); redraw(); }) });
           }
           if (s.dl) items.push({ label: i18nText("download.cancel"), onclick: () => deck.bridge.file.cancel(s.dl.ticket) });
@@ -148,7 +148,8 @@ var i18nText = typeof module === "object" && module.exports ? require("./i18n").
         actions.push(h("span", { class: "fstatus" }, `${size(s.dl.received)} / ${size(s.dl.size)} · ${pct}%`));
         actions.push(h("button", { class: "btn small", type: "button", onclick: () => deck.bridge.file.cancel(s.dl.ticket) }, i18nText("download.cancel")));
       } else if (s.saved) {
-        if (!s.saved.risky) actions.push(h("button", { class: "btn small", type: "button", onclick: () => deck.bridge.file.open(s.saved.id).catch((e) => { s.error = cleanErr(e); redraw(); }) }, i18nText("download.open")));
+        // every saved file can be opened; main asks before it runs one that is a program (bridge:file-open)
+        actions.push(h("button", { class: "btn small", type: "button", onclick: () => deck.bridge.file.open(s.saved.id).catch((e) => { s.error = cleanErr(e); redraw(); }) }, i18nText("download.open")));
         actions.push(h("button", { class: "btn small", type: "button", onclick: () => deck.bridge.file.reveal(s.saved.id).catch((e) => { s.error = cleanErr(e); redraw(); }) }, i18nText("download.reveal")));
         actions.push(h("button", { class: "btn small", type: "button", onclick: () => { s.saved = null; download(where.sid, f.ref, where.profile, s); } }, i18nText("download.again")));
       } else if (!s.error || s.info) {

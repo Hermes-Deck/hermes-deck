@@ -6,6 +6,7 @@ The desktop app, relay and Hermes plugin share one version number.
 
 ## [Unreleased]
 
+- A downloaded file always has an **Open** button, also an installer or a script; for a file type that runs code the app asks first, with Cancel as the default. Media from Telegram chats is still never opened this way.
 - While a turn runs, the composer shows the command it is running (or ran last) in a box above the working row: clipped to three lines by default, or unfolded with **Show all** to the whole command down to its last line, with the call's other arguments and a **Copy** button. The choice is remembered.
 - Unfolding a tool call in a turn's receipt ("Worked ... tools") only unfolds it in the chat; the Run pane opens when you choose **Inspect**.
 - A reply is drawn as Markdown while it streams: bold, lists, tables and code blocks appear formatted as they arrive instead of as raw `**text**` until the turn ends.

@@ -558,7 +558,15 @@ ipc.handle("bridge:file-open", async (_e, id) => {
   if (SHOT) throw new Error(i18nText("U0263")); // never another app's window during a headless run
   const p = downloads.pathOf(String(id ?? ""));
   if (!p || !fs.existsSync(p)) throw new Error(i18nText("download.gone"));
-  if (media.isRisky(path.basename(p))) throw new Error(i18nText("U0264")); // "Open" refuses what runs code; the file stays saved
+  // A file the owner downloaded from their own agent opens like any other, but one that runs code (an installer, a
+  // script) asks first, with Cancel as the default: one stray click must not run a program. Telegram media, which
+  // comes from other people, is still never opened this way (tg:media-open).
+  if (media.isRisky(path.basename(p))) {
+    const answer = await dialog.showMessageBox(win && !win.isDestroyed() ? win : undefined, { type: "warning", title: i18nText("download.runTitle"),
+      message: i18nText("download.runAsk", { name: path.basename(p) }), detail: i18nText("download.runDetail"),
+      buttons: [i18nText("updates.cancel"), i18nText("download.open")], defaultId: 0, cancelId: 0, noLink: true });
+    if (answer.response !== 1) return false;
+  }
   const err = await shell.openPath(p);
   if (err) throw new Error(err);
   return true;

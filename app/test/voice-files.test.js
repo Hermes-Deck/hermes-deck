@@ -424,7 +424,16 @@ test("download: size cap, concurrency cap and an empty file", async () => {
   assert.equal(fs.statSync(path.join(folder, empty.name)).size, 0);
 });
 
-test("download: risky extensions are flagged so the page offers no Open", async () => {
+test("download: risky extensions are flagged; Open is offered for every file and main asks before running a program", async () => {
+  const main = fs.readFileSync(path.join(__dirname, "../main/main.js"), "utf8");
+  const open = main.slice(main.indexOf('ipc.handle("bridge:file-open"'), main.indexOf('ipc.handle("bridge:file-reveal"'));
+  assert.match(open, /if \(media\.isRisky\(path\.basename\(p\)\)\) \{\s+const answer = await dialog\.showMessageBox\(/);
+  assert.match(open, /defaultId: 0, cancelId: 0/, "Cancel is the default");
+  assert.match(open, /if \(answer\.response !== 1\) return false;\s+\}\s+const err = await shell\.openPath\(p\);/);
+  const tg = main.slice(main.indexOf('ipc.handle("tg:media-open"'));
+  assert.match(tg.slice(0, 600), /if \(media\.isRisky\(f\.name\)\) throw/, "media from other people is still never run");
+  const page = fs.readFileSync(path.join(__dirname, "../renderer/hermes-files.js"), "utf8");
+  assert.doesNotMatch(page, /if \(!s\.saved\.risky\)/);
   const dl = new files.Downloads({ dir: dir("risky") });
   const r = await dl.run("t-risk01", { name: "run.sh", size: 1, read: chunker(Buffer.from("x")) });
   assert.equal(r.risky, true);
