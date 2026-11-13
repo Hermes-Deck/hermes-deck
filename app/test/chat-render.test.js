@@ -464,7 +464,10 @@ test("table CSS: words stay whole, code and links can break, and nothing forces 
   assert.match(rule(".md td code, .md th code"), /white-space: normal; overflow-wrap: break-word/);
   assert.match(rule(".md td .md-a, .md th .md-a"), /overflow-wrap: anywhere/);
   // a very narrow column (a split pane): fitting wins over whole words
-  assert.match(css, /\.msgs \{ container: msgs \/ inline-size; \}\n@container msgs \(max-width: 400px\) \{\n\s+\.md th, \.md td, \.md td code, \.md th code \{ overflow-wrap: anywhere; \}/);
+  assert.match(css, /\.msgs \{ container: msgs \/ inline-size; \}/);
+  // a wide table widens into the pane beside the reading column instead of scrolling inside it
+  assert.match(css, /> \.text > \.md-table \{\n\s+--table-max: max\(100%, min\(100cqw - 24px, 80rem\)\);[^\n]*\n\s+width: var\(--table-max\); max-width: none; margin-left: calc\(\(100% - var\(--table-max\)\) \/ 2\);\n\s+display: grid; grid-template-columns: minmax\(min\(var\(--col\), 100%\), max-content\); justify-content: center;/);
+  assert.match(css, /\n@container msgs \(max-width: 760px\) \{\n\s+\.md th, \.md td, \.md td code, \.md th code \{ overflow-wrap: anywhere; \}/);
   // the Copy button is opaque and reachable by keyboard
   assert.match(rule(".md .md-copy"), /background: var\(--slate-2\)/);
   assert.match(css, /\.md \.md-code:hover > \.md-copy, \.md \.md-copy:focus-visible \{ opacity: 1; \}/);

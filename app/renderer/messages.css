@@ -226,10 +226,25 @@
 .md td .md-a, .md th .md-a { overflow-wrap: anywhere; }
 .md td code, .md th code { white-space: normal; overflow-wrap: break-word; }
 .md td code, .md th code { padding: 0 2px; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
-/* a very narrow chat column (a split pane beside an open side panel): fitting wins, so words may break too */
 .msgs { container: msgs / inline-size; }
-@container msgs (max-width: 400px) {
+/* A table too wide for the reading column uses the room beside it: prose keeps its measure, but a table's box spans
+   the whole pane (100cqw = the scroller's content width) and the table sits in a centred track that is at least the
+   column and grows to the table's natural width. So a small table stays on the column's left edge, a wide one widens
+   symmetrically into the margins (up to --table-max, so cell lines stay readable on a very wide pane), and only a
+   table that cannot fit the pane even with every word wrapped scrolls sideways. Not in bubble mode
+   (the card is the frame there) and not for tables nested in a list or quote. */
+:root:not([data-agent-messages="bubble"]) .app .msgs-inner > .msg:not(.out):not(.sysmsg) > .text > .md-table {
+  --table-max: max(100%, min(100cqw - 24px, 80rem)); /* never narrower than the column; 12px clear of the rail and the scrollbar */
+  width: var(--table-max); max-width: none; margin-left: calc((100% - var(--table-max)) / 2);
+  display: grid; grid-template-columns: minmax(min(var(--col), 100%), max-content); justify-content: center;
+}
+:root:not([data-agent-messages="bubble"]) .app .msgs-inner > .msg:not(.out):not(.sysmsg) > .text > .md-table > table { justify-self: start; min-width: 0; }
+/* a pane with no room beside the column (a split pane, an open side panel): fitting wins over whole words, so a
+   table with many columns still wraps inside the pane instead of scrolling sideways */
+@container msgs (max-width: 760px) {
   .md th, .md td, .md td code, .md th code { overflow-wrap: anywhere; }
+  .md table { font-size: 12px; }
+  .md th, .md td { padding: 3px 6px; }
 }
 /* fenced code: a frame with its own Copy button (opaque, so code never shows through it), shown on hover or keyboard focus */
 .md .md-code { position: relative; margin: 4px 0; }
