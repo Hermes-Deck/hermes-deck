@@ -373,6 +373,8 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       mark("msgs", true);
     },
   });
+  // a tool call unfolded where it stands in the transcript (call-detail.js)
+  const CD = window.DeckCallDetail.create({ h, t: i18nText, deck, redraw: () => mark("msgs", true) });
   // the collapsed "Thinking" block of a finished assistant message (think-block.js)
   const TB = window.DeckThinkBlock.create({ h, i18nText });
   const BS = window.DeckBusySend;
@@ -3436,15 +3438,20 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       (!!m.think || (Array.isArray(m.calls) && m.calls.length > 0));
   }
 
-  /** The tool calls an assistant step made, in order: the tool's name and the argument it is known by. A call with an
-   *  id opens its row in the turn's receipt (receipts.js: output, duration, Inspect). */
+  /** The tool calls an assistant step made, in order: the tool's name and the argument it is known by. A click on a
+   *  call with an id unfolds that call right under its line (call-detail.js: arguments and output, whole); the
+   *  turn's receipt and the Work pane stay as they are. */
   function hermesCallsEl(calls, ts) {
     if (!Array.isArray(calls) || !calls.length) return null;
-    const reveal = (c) => () => document.dispatchEvent(new CustomEvent("deck-tool-reveal", { detail: { sid: H.sel, call: c.id, ts: ts || null } }));
-    return h("ul", { class: "tool-calls" }, calls.map((c) => h("li", null,
-      h(c.id ? "button" : "span", { class: "tc", ...(c.id ? { type: "button", title: c.arg || c.name, onclick: reveal(c) } : {}) },
-        h("span", { class: "tc-name" }, c.name),
-        c.arg ? h("code", { class: "tc-arg" }, c.arg) : null))));
+    const sid = H.sel, node = H.nodes && H.nodes.get(sid), where = { profile: node && node.profile ? node.profile : null, ts };
+    return h("ul", { class: "tool-calls" }, calls.map((c) => {
+      const open = !!c.id && CD.isOpen(sid, c.id);
+      return h("li", null,
+        h(c.id ? "button" : "span", { class: `tc${open ? " open" : ""}`, ...(c.id ? { type: "button", title: c.arg || c.name, "aria-expanded": open ? "true" : "false", onclick: () => CD.toggle(sid, c.id, where.profile) } : {}) },
+          h("span", { class: "tc-name" }, c.name),
+          c.arg ? h("code", { class: "tc-arg" }, c.arg) : null),
+        open ? CD.el(sid, c, where) : null);
+    }));
   }
 
   function hermesMsgEl(m, { stamp = true } = {}) {

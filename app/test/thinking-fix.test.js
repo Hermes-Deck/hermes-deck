@@ -33,7 +33,9 @@ const walk = (el) => [el, ...(el.kids || []).filter((x) => typeof x === "object"
 const textOf = (el) => (el.kids || []).map((k) => (typeof k === "string" ? k : k && k.textContent !== undefined ? k.textContent : textOf(k))).join("");
 const cls = (n) => (n.attrs && n.attrs.class) || "";
 
+const opened = new Set();
 function world() {
+  opened.clear();
   const clock = { t: 1_700_000_000_000 };
   const copied = [];
   const LA = LAmod.create({ h: element, i18nText: I18N.t, ticker: () => element("span"), store: null, now: () => clock.t });
@@ -47,6 +49,7 @@ function world() {
     LA, TB, hermesLiveView: () => LA.view("s", { live: false }), liveRowRefresh() {}, nodeControllable: () => false,
     S: {}, els: { msgs: {}, msgsInner: { dataset: {}, replaceChildren(...k) { this.kids = k.flat(Infinity); } } },
     BT: null, AG: null, scrollToEnd: false, window: {},
+    CD: { isOpen: (sid, id) => opened.has(`${sid}:${id}`), toggle: (sid, id) => { opened.add(`${sid}:${id}`); }, el: (sid, c) => element("div", { class: "tc-detail" }, c.id) },
     paintMsgs(kids) { ctx.els.msgsInner.replaceChildren(...kids); }, hermesLiveTextEl: (text) => element("div", { class: "text" }, text),
     h: element, holdRegion: () => false, bridgeOpen: () => true, hermesStatusText: () => "", hermesRequestCards: () => [],
     hermesMode: () => true, hermesLoadHistory() {}, mark() {}, renderNote() {}, hm: () => "10:00",
@@ -206,7 +209,13 @@ test("work steps read in order: each thought with the calls it made, one stamp p
   ]);
   const first = walk(msgs[1]).find((n) => n.tag === "button" && cls(n) === "tc");
   first.attrs.onclick();
-  assert.deepEqual(JSON.parse(JSON.stringify(fired.map((e) => [e.type, e.detail]))), [["deck-tool-reveal", { sid: "s", call: "c1", ts: 101 }]], "a call opens its row in the turn's receipt");
+  assert.deepEqual(fired, [], "a click unfolds the call in place: no receipt reveal, no Run pane");
+  w.screen();
+  const after = w.ctx.els.msgsInner.kids.filter((n) => /^msg\b/.test(cls(n)))[1];
+  const line = walk(after).find((n) => n.tag === "button" && /^tc\b/.test(cls(n)));
+  assert.equal(cls(line), "tc open");
+  assert.equal(line.attrs["aria-expanded"], "true");
+  assert.deepEqual(walk(after).filter((n) => cls(n) === "tc-detail").map(textOf), ["c1"], "only the clicked call, right under its line");
 });
 
 test("a history read asked for while one is on its way runs once more after it (a step stored meanwhile is not missed)", async () => {

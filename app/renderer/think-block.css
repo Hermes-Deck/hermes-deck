@@ -17,6 +17,16 @@
 .tool-calls .tc-name { flex: none; color: var(--t2); }
 .tool-calls .tc-arg { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding: 0; background: none; font: inherit; color: var(--t3); }
 .tool-calls button.tc { cursor: pointer; }
+.tool-calls button.tc.open { background: var(--lift); }
+.tool-calls button.tc.open .tc-name { color: var(--t1); }
+/* a call unfolded under its line (call-detail.js): arguments and output, in sans, whatever the reading font is */
+.tool-calls .tc-detail { margin: 2px 0 10px 4px; font: 12px/1.5 var(--sans); color: var(--t2); min-width: 0; }
+.tool-calls .tc-detail > .td { margin: 0 0 4px 0; box-sizing: border-box; max-width: 100%; }
+.tool-calls .tc-detail .td pre { box-sizing: border-box; max-width: 100%; }
+.tool-calls .tc-detail .td pre.td-pre, .tool-calls .tc-detail .td pre.td-val { max-height: min(46vh, 420px); user-select: text; }
+.tool-calls .tc-run { margin: 0 0 0 12px; padding: 2px 6px; border: 0; border-radius: 5px; background: none; color: var(--t4); font: 11px var(--sans); cursor: pointer; }
+.tool-calls .tc-run:hover { background: var(--l3); color: var(--t2); }
+.tool-calls .tc-run:focus-visible { outline: 2px solid var(--brass); outline-offset: 1px; }
 .tool-calls button.tc:hover { background: var(--lift); }
 .tool-calls button.tc:hover .tc-name { color: var(--t1); }
 .tool-calls button.tc:focus-visible { outline: 2px solid var(--brass); outline-offset: 1px; }

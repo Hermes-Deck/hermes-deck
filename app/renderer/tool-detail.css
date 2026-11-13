@@ -13,10 +13,10 @@
 .td-toggle[aria-pressed="true"] { background: var(--l3); color: var(--t1); }
 .td-copy { color: var(--brass); }
 .td-copy:hover { background: var(--brass-a); color: var(--brass-hi); }
-.wk-content .td pre.td-pre, .wk-content .td pre.td-val { margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg);
+.wk-content .td pre.td-pre, .wk-content .td pre.td-val, .tc-detail .td pre.td-pre, .tc-detail .td pre.td-val { margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg);
   font: 11.5px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; color: var(--t2); }
-.wk-content .td pre.td-val { max-height: 220px; padding: 4px 8px; }
-.wk-content .td pre.td-pre.fail { color: var(--red); }
+.wk-content .td pre.td-val, .tc-detail .td pre.td-val { max-height: 220px; padding: 4px 8px; }
+.wk-content .td pre.td-pre.fail, .tc-detail .td pre.td-pre.fail { color: var(--red); }
 .td-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 10px; margin: 0; }
 .td-kv dt { color: var(--t4); font: 11.5px/1.9 var(--mono); }
 .td-kv dd { margin: 0; min-width: 0; }
