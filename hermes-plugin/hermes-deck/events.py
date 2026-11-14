@@ -39,10 +39,14 @@ PREVIEW = 300
 MAX_BYTES = 50 * 1024 * 1024          # rotate to <profile>.ndjson.1 past this
 SNAP_EVERY = 30                       # seconds between gateway/cron state snapshots
 _lock = threading.Lock()
-_fh = None
-_path: Path | None = None
+_fhs: dict = {}                       # event file path -> open append handle (one per profile this process serves)
+_FH_MAX = 32
+# Tests only: a fixed profile name. Production never sets it: one multiplexed gateway serves many profiles,
+# so the name is resolved from the calling hook's own Hermes home on every call (never cached).
 _profile: str | None = None
-_snap_started = False
+_snap_homes: set = set()              # homes whose snapshot loop runs in this process
+_snap_lock = threading.Lock()
+_snap_primary: str | None = None      # the first loop's home: quotas, the quota trigger and state.db costs run there
 
 # Common credential shapes; previews may echo terminal commands or tool args.
 _SECRET_RES = [
@@ -83,15 +87,19 @@ def _clip(v) -> str | None:
 
 
 def _profile_name() -> str:
-    global _profile
-    if _profile is None:
-        try:
-            from hermes_constants import get_hermes_home
-            home = Path(get_hermes_home())
-            _profile = home.name if home.parent.name == "profiles" else "default"
-        except Exception:
-            _profile = os.environ.get("DECK_EVENTS_PROFILE", "default")
-    return _profile
+    """The profile of the calling context, resolved now from its Hermes home.
+
+    get_hermes_home() is context-local: inside a multiplexed gateway each turn (and the hooks Hermes runs for
+    it, through that home's own plugin manager) sees its own profile's home, a context without an override
+    sees the process home. Never cache the answer: the first caller's profile would name every later record."""
+    if _profile is not None:
+        return _profile
+    try:
+        from hermes_constants import get_hermes_home
+        home = str(get_hermes_home())
+    except Exception:
+        return os.environ.get("DECK_EVENTS_PROFILE", "default")
+    return _home_profile(home)
 
 
 def _deck_home() -> Path:
@@ -106,8 +114,8 @@ def _deck_dir(kind: str) -> Path:
     return _deck_home() / kind
 
 
-def _out_path() -> Path:
-    return _deck_dir("events") / f"{_profile_name()}.ndjson"
+def _out_path(profile: str | None = None) -> Path:
+    return _deck_dir("events") / f"{profile or _profile_name()}.ndjson"
 
 
 def _ctx() -> dict:
@@ -130,7 +138,8 @@ def _ctx() -> dict:
 def _emit(ev: str, **fields) -> None:
     """Append one event line. Swallows every error: observability must never break a turn."""
     try:
-        rec = {"ts": round(time.time(), 3), "ev": ev, "profile": _profile_name(), **_ctx()}
+        # pscope "call": the profile was resolved for this very call (the relay trusts such stamps, see model.js)
+        rec = {"ts": round(time.time(), 3), "ev": ev, "profile": _profile_name(), "pscope": "call", **_ctx()}
         rec.update({k: v for k, v in fields.items() if v is not None})
         _append(rec)
     except Exception:
@@ -138,32 +147,54 @@ def _emit(ev: str, **fields) -> None:
 
 
 def _append(rec: dict) -> None:
-    """Append one record as a line (rotation-safe). Swallows every error, like _emit."""
-    global _fh, _path
+    """Append one record as a line to its profile's file (rotation-safe). Swallows every error, like _emit.
+
+    The file follows the record's own ``profile`` stamp, so a record and the file it lands in never disagree."""
     try:
         line = json.dumps(rec, ensure_ascii=False, default=str) + "\n"
+        profile = rec.get("profile")
+        path = _out_path(profile if isinstance(profile, str) and _PROFILE_RE.match(profile) else None)
+        key = str(path)
         with _lock:
-            if _fh is not None:
+            fh = _fhs.get(key)
+            if fh is not None:
                 # Another process (cron worker, CLI turn) may have rotated the file under us.
                 try:
-                    if os.stat(_path).st_ino != os.fstat(_fh.fileno()).st_ino:
-                        _fh.close()
-                        _fh = None
+                    if os.stat(path).st_ino != os.fstat(fh.fileno()).st_ino:
+                        fh.close()
+                        fh = None
                 except FileNotFoundError:
-                    _fh.close()
-                    _fh = None
-            if _fh is None:
-                _path = _out_path()
-                _path.parent.mkdir(parents=True, exist_ok=True)
-                _fh = open(_path, "a", encoding="utf-8")
-            _fh.write(line)
-            _fh.flush()
-            if _fh.tell() > MAX_BYTES:
-                _fh.close()
-                os.replace(_path, _path.with_suffix(".ndjson.1"))
-                _fh = open(_path, "a", encoding="utf-8")
+                    fh.close()
+                    fh = None
+                if fh is None:
+                    _fhs.pop(key, None)
+            if fh is None:
+                while len(_fhs) >= _FH_MAX:             # bounded: a handful of profiles in practice
+                    try:
+                        _fhs.pop(next(iter(_fhs))).close()
+                    except Exception:
+                        pass
+                path.parent.mkdir(parents=True, exist_ok=True)
+                fh = _fhs[key] = open(path, "a", encoding="utf-8")
+            fh.write(line)
+            fh.flush()
+            if fh.tell() > MAX_BYTES:
+                fh.close()
+                _fhs.pop(key, None)
+                os.replace(path, path.with_suffix(".ndjson.1"))
+                _fhs[key] = open(path, "a", encoding="utf-8")
     except Exception:
         pass
+
+
+def _close_event_files() -> None:
+    """Close every cached event file handle (tests switch event directories between cases)."""
+    with _lock:
+        while _fhs:
+            try:
+                _fhs.pop(next(iter(_fhs))).close()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------- hook handlers
@@ -890,7 +921,7 @@ def _cu_record(args: dict, session_id: str, result, status, error_message) -> No
         except Exception:
             pass
         st["pinned"], st["frame"], st["elements"], st["bscale"] = None, None, {}, None
-    rec = {"type": "cu", "sid": session_id, "profile": _profile_name(), "ts": int(time.time() * 1000),
+    rec = {"type": "cu", "sid": session_id, "profile": _profile_name(), "pscope": "call", "ts": int(time.time() * 1000),
            "action": _CU_ACTIONS.get(action, "other"), "x": x, "y": y, "window": window, "frame": frame,
            "device": st["device"] if st.get("routed") else None, "ok": ok,
            "error": _clip(err) if err else None}
@@ -1359,20 +1390,59 @@ def _read_json(p: Path):
         return json.load(f)
 
 
-def _snapshot_once(home: Path) -> bool:
-    """Write one state snapshot. Returns False when this process is not the profile's gateway."""
-    gs = _read_json(home / "gateway_state.json")
-    if gs.get("pid") != os.getpid():
+def _own_gateway_record(home: Path):
+    """(gateway_state record, platforms) of the gateway serving ``home`` when that gateway is THIS process, else None.
+
+    A standalone gateway writes ``home/gateway_state.json``. A multiplexed gateway (gateway.multiplex_profiles) writes
+    one record in the root it was launched from, keying the other profiles' adapters ``<profile>:<platform>``; a
+    profile it serves gets that record with its own adapters re-keyed to bare names (Hermes' own projection rule)."""
+    try:
+        gs = _read_json(home / "gateway_state.json")
+        if isinstance(gs, dict) and gs.get("pid") == os.getpid():
+            return gs, gs.get("platforms") or {}
+    except FileNotFoundError:
+        pass
+    if home.parent.name != "profiles":
+        return None
+    try:
+        gs = _read_json(home.parent.parent / "gateway_state.json")
+    except FileNotFoundError:
+        return None
+    if not isinstance(gs, dict) or gs.get("pid") != os.getpid():
+        return None
+    name = _home_profile(str(home))
+    served = gs.get("served_profiles")
+    if isinstance(served, list) and name not in [str(p) for p in served]:
+        return None
+    prefix = f"{name}:"
+    plats = gs.get("platforms") if isinstance(gs.get("platforms"), dict) else {}
+    return gs, {k[len(prefix):]: v for k, v in plats.items() if isinstance(k, str) and k.startswith(prefix)}
+
+
+def _profile_of(home: Path) -> str:
+    """The profile a Hermes home belongs to (the tests' fixed name first)."""
+    return _profile if _profile is not None else _home_profile(str(home))
+
+
+def _snapshot_once(home: Path, quotas: bool = True) -> bool:
+    """Write one state snapshot, named after ``home``'s own profile (never the calling context's).
+    Returns False when this process is not the profile's gateway. ``quotas=False`` publishes no provider quotas
+    (only one loop per process fetches them, see _snapshot_loop)."""
+    own = _own_gateway_record(home)
+    if own is None:
         return False
+    gs, platforms = own
     snap = {
-        "ts": round(time.time(), 3), "profile": _profile_name(), "pid": gs.get("pid"),
-        "quotas": _quota_snapshot(home), "quota_refresh": _quota_ack,
+        "ts": round(time.time(), 3), "profile": _profile_of(home), "pid": gs.get("pid"),
+        "quotas": _quota_snapshot(home) if quotas else {},
         "gateway": {k: gs.get(k) for k in ("gateway_state", "active_agents", "active_work", "updated_at",
                                            "code_version", "exit_reason", "restart_requested")},
         "platforms": {name: {"state": p.get("state"), "error": _clip(p.get("error_message")),
                              "needs_attention": p.get("needs_attention")}
-                      for name, p in (gs.get("platforms") or {}).items() if isinstance(p, dict)},
+                      for name, p in platforms.items() if isinstance(p, dict)},
     }
+    if quotas:
+        snap["quota_refresh"] = _quota_ack
     try:
         jobs = _read_json(home / "cron" / "jobs.json").get("jobs") or []
         snap["cron"] = [{**{k: j.get(k) for k in _CRON_FIELDS},
@@ -1380,7 +1450,7 @@ def _snapshot_once(home: Path) -> bool:
                          "last_delivery_error": _clip(j.get("last_delivery_error"))} for j in jobs]
     except FileNotFoundError:
         snap["cron"] = []
-    out = _deck_dir("state") / f"{_profile_name()}.json"
+    out = _deck_dir("state") / f"{_profile_of(home)}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(snap, ensure_ascii=False, default=str), encoding="utf-8")
@@ -1388,12 +1458,42 @@ def _snapshot_once(home: Path) -> bool:
     return True
 
 
-def _snapshot_loop() -> None:
+def _claim_primary(key: str) -> bool:
+    """True for the one loop per process that runs quotas, the quota trigger and the state.db cost scan (the first
+    one started, or the next one once it stops), so serving more profiles never multiplies provider requests."""
+    global _snap_primary
+    with _snap_lock:
+        if _snap_primary is None:
+            _snap_primary = key
+        return _snap_primary == key
+
+
+def _snapshot_loop(home: Path | None = None) -> None:
     try:
-        from hermes_constants import get_hermes_home
-        home = Path(get_hermes_home())
+        if home is None:
+            from hermes_constants import get_hermes_home
+            home = Path(get_hermes_home())
+        home = Path(home)
     except Exception:
         return
+    global _snap_primary
+    key = str(home)
+    try:
+        # This thread's own records (state.db costs) are stamped with this home's profile, not the process home's.
+        from hermes_constants import set_hermes_home_override
+        set_hermes_home_override(home)
+    except Exception:
+        pass
+    try:
+        _snapshot_loop_body(home, key)
+    finally:
+        with _snap_lock:
+            _snap_homes.discard(key)
+            if _snap_primary == key:
+                _snap_primary = None
+
+
+def _snapshot_loop_body(home: Path, key: str) -> None:
     misses = 0
     handled = None                 # id of the newest trigger seen; one at startup counts only when it is fresh
     pending = None                 # trigger id being served: pump the quota workers until they settle
@@ -1404,7 +1504,8 @@ def _snapshot_loop() -> None:
     while True:
         try:
             now = time.monotonic()
-            trig = _read_quota_trigger()
+            primary = _claim_primary(key)
+            trig = _read_quota_trigger() if primary else None
             if trig and trig[0] != handled:
                 handled = trig[0]
                 if not first or time.time() - trig[1] < 120:
@@ -1420,8 +1521,9 @@ def _snapshot_loop() -> None:
                 elif now - pending_since > QUOTA_TIMEOUT + 15:
                     pending = None                     # a provider call is stuck: stop pumping, the relay already timed out
             if now >= next_snap:
-                if _snapshot_once(home):
-                    _db_costs_once(home)
+                if _snapshot_once(home, quotas=primary):
+                    if primary:
+                        _db_costs_once(home)
                     misses = 0
                 else:
                     misses += 1
@@ -1433,11 +1535,30 @@ def _snapshot_loop() -> None:
         time.sleep(QUOTA_POLL)
 
 
-def _start_snapshots() -> None:
-    global _snap_started
-    if not _snap_started:
-        _snap_started = True
-        threading.Thread(target=_snapshot_loop, name="deck-events-snap", daemon=True).start()
+def _start_snapshots(home=None) -> None:
+    """One snapshot loop per Hermes home this process registers the plugin for (a multiplexed gateway registers it
+    once per served profile, each inside that profile's home), each writing its own ``state/<profile>.json``."""
+    global _snap_primary
+    try:
+        if home is None:
+            from hermes_constants import get_hermes_home
+            home = get_hermes_home()
+        key = str(Path(home))
+    except Exception:
+        return
+    with _snap_lock:
+        if key in _snap_homes:
+            return
+        _snap_homes.add(key)
+        if _snap_primary is None:
+            _snap_primary = key                   # registration order: the first home keeps today's quota source
+    try:
+        threading.Thread(target=_snapshot_loop, args=(Path(key),), name="deck-events-snap", daemon=True).start()
+    except Exception:
+        with _snap_lock:
+            _snap_homes.discard(key)
+            if _snap_primary == key:
+                _snap_primary = None
 
 
 def register(ctx):

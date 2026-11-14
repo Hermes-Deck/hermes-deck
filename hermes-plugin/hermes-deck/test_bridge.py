@@ -1269,5 +1269,142 @@ class BotRosterTests(unittest.TestCase):
         self.assertFalse(reply.write({"jsonrpc": "2.0", "id": "d-7", "result": {"found": False}}), "one reply only")
 
 
+class ControlPoolTests(unittest.TestCase):
+    """R6: nothing slow runs on a control connection's reader thread; per-session order holds; a request that
+    cannot be served in time answers busy instead of staying silent, exactly once."""
+
+    def wait_for(self, cond, timeout=3):
+        import time
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if cond():
+                return True
+            time.sleep(.01)
+        return cond()
+
+    def test_per_key_order_and_a_cap_on_concurrency(self):
+        import time
+        pool = observer.OrderedPool(size=2, deadline=30)
+        lock, running, peak, done = threading.Lock(), [0], [0], []
+
+        def job(name, delay):
+            def run(task):
+                with lock:
+                    running[0] += 1
+                    peak[0] = max(peak[0], running[0])
+                time.sleep(delay)
+                with lock:
+                    running[0] -= 1
+                    done.append(name)
+            return observer.ControlTask(run, lambda: done.append("busy:" + name))
+
+        for name, key, delay in (("a1", "a", .15), ("a2", "a", 0), ("b1", "b", .05), ("c1", "c", .05), ("a3", "a", 0)):
+            pool.submit(key, job(name, delay))
+        self.assertTrue(self.wait_for(lambda: len(done) == 5))
+        self.assertLessEqual(peak[0], 2)
+        self.assertEqual([n for n in done if n.startswith("a")], ["a1", "a2", "a3"])
+        self.assertFalse(any(n.startswith("busy") for n in done))
+
+    def test_a_request_that_waits_too_long_answers_busy_and_never_runs(self):
+        import time
+        pool = observer.OrderedPool(size=1, deadline=.3)
+        release, out, abandoned = threading.Event(), [], []
+        pool.submit("s", observer.ControlTask(lambda task: release.wait(3), lambda: out.append("busy-1")))
+        waiting = observer.ControlTask(lambda task: task.settle() and out.append("ran-2"), lambda: out.append("busy-2"),
+                                       abandon=lambda: abandoned.append(2))
+        pool.submit("s", waiting)
+        self.assertTrue(self.wait_for(lambda: "busy-2" in out))
+        release.set()
+        time.sleep(.2)
+        self.assertEqual(out, ["busy-2"])             # the stuck first one keeps running (not read-only)
+        self.assertEqual(abandoned, [2])
+
+    def test_a_slow_read_answers_busy_once_and_its_late_result_is_dropped(self):
+        import time
+        pool = observer.OrderedPool(deadline=.3)
+        out = []
+
+        def slow(task):
+            time.sleep(.6)
+            if task.settle():
+                out.append("result")
+        pool.submit("s", observer.ControlTask(slow, lambda: out.append("busy"), deadline_running=True))
+        time.sleep(1.0)
+        self.assertEqual(out, ["busy"])
+
+    def test_close_drops_requests_that_have_not_started(self):
+        pool = observer.OrderedPool(size=1, deadline=30)
+        release, started, out, abandoned = threading.Event(), threading.Event(), [], []
+        pool.submit("s", observer.ControlTask(lambda task: (started.set(), release.wait(3), out.append("first")), lambda: None))
+        self.assertTrue(started.wait(2))
+        pool.submit("t", observer.ControlTask(lambda task: out.append("second"), lambda: out.append("busy"),
+                                              abandon=lambda: abandoned.append("second")))
+        pool.close()
+        release.set()
+        self.assertTrue(self.wait_for(lambda: out == ["first"]))
+        self.assertEqual(abandoned, ["second"])
+        self.assertFalse(pool.submit("u", observer.ControlTask(lambda task: out.append("late"), lambda: None)))
+
+    @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "private control socket requires AF_UNIX")
+    def test_a_slow_history_read_does_not_delay_a_session_list(self):
+        import time
+        with tempfile.TemporaryDirectory(prefix="dp-", dir="/tmp") as tmp:
+            home = Path(tmp)
+            instance = observer.Observer(home / "hermes-deck/processes")
+            ready, stop, release = threading.Event(), threading.Event(), threading.Event()
+
+            class Fanout:
+                def __init__(self): self.peers = []
+                def attach(self, peer): self.peers.append(peer)
+                def detach(self, peer): self.peers.remove(peer)
+                def write(self, obj): return all(peer.write(obj) for peer in list(self.peers))
+
+            def dispatch(request, transport=None):          # an inline gateway answer
+                return {"jsonrpc": "2.0", "id": request["id"], "result": {"sessions": []}}
+
+            server = types.ModuleType("tui_gateway.server")
+            server.dispatch = dispatch
+            server.register_live_transport = server.unregister_live_transport = lambda _: None
+            transport = types.ModuleType("tui_gateway.transport")
+            transport.FanoutTransport = Fanout
+            transport.bind_transport = lambda _: None
+            transport.reset_transport = lambda _: None
+            package = types.ModuleType("tui_gateway")
+            package.server, package.transport = server, transport
+            modules = {"tui_gateway": package, "tui_gateway.server": server, "tui_gateway.transport": transport}
+
+            def slow_messages(params):
+                release.wait(5)
+                return {"messages": [], "session_id": params.get("session_id")}
+
+            with patch.dict(sys.modules, modules), patch.object(instance, "_persist", side_effect=ready.set), \
+                    patch.object(instance, "messages", side_effect=slow_messages):
+                worker = threading.Thread(target=instance.start_control, args=(stop,), daemon=True)
+                worker.start()
+                try:
+                    self.assertTrue(ready.wait(2))
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                        client.settimeout(5)
+                        client.connect(instance.control_socket)
+                        with client.makefile("rb") as incoming:
+                            send = lambda rid, method, params: client.sendall((json.dumps(
+                                {"jsonrpc": "2.0", "id": rid, "method": method, "params": params}) + "\n").encode())
+                            send("history", "session.messages", {"session_id": "s1", "profile": "default", "limit": 40})
+                            started = time.monotonic()
+                            send("list", "session.list", {"limit": 50})
+                            first = json.loads(incoming.readline())
+                            self.assertEqual(first["id"], "list")
+                            self.assertLess(time.monotonic() - started, 1.0)
+                            release.set()
+                            second = json.loads(incoming.readline())
+                            self.assertEqual(second["id"], "history")
+                            self.assertEqual(second["result"]["session_id"], "s1")
+                finally:
+                    release.set()
+                    stop.set()
+                    worker.join(2)
+                self.assertFalse(worker.is_alive())
+
+
 if __name__ == "__main__":
     unittest_main()

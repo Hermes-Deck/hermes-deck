@@ -418,6 +418,152 @@ class EventsScript(unittest.TestCase):
         self.assertIn("OK  ", r.stdout)
 
 
+def _fake_constants(process_home: Path):
+    """A hermes_constants stand-in with Hermes' context-local home override (a multiplexed gateway's mechanism)."""
+    import contextvars
+    import types
+    override = contextvars.ContextVar("home_override", default=None)
+    mod = types.ModuleType("hermes_constants")
+    mod.set_hermes_home_override = lambda path: override.set(None if path is None else str(path))
+    mod.reset_hermes_home_override = override.reset
+    mod.get_hermes_home_override = override.get
+    mod.get_hermes_home = lambda: Path(override.get() or process_home)
+    return mod
+
+
+class ProfileIdentity(unittest.TestCase):
+    """One gateway process serves several profiles: every record, event file and state file must carry the profile of
+    the hook (or snapshot loop) that produced it, never the first profile the process happened to see."""
+
+    def setUp(self):
+        from unittest import mock
+        self.tmp = Path(tempfile.mkdtemp(prefix="hermes-deck-profile-test-"))
+        self.root = self.tmp / ".hermes"
+        self.homes = {"default": self.root}
+        for name in ("ada", "atlas"):
+            self.homes[name] = self.root / "profiles" / name
+            (self.homes[name] / "cron").mkdir(parents=True)
+        (self.root / "cron").mkdir(parents=True, exist_ok=True)
+        self.hc = _fake_constants(self.root)
+        for patcher in (mock.patch.dict(sys.modules, {"hermes_constants": self.hc}),
+                        mock.patch.dict(os.environ, {"DECK_EVENTS_DIR": str(self.tmp / "deck")})):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        os.environ.pop("DECK_EVENTS_PROFILE", None)
+        spec = importlib.util.spec_from_file_location("_deck_events_profile_test", HERE / "events.py")
+        self.de = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.de)
+        self.addCleanup(self.de._close_event_files)
+
+    def records(self, profile):
+        try:
+            text = (self.tmp / "deck" / f"{profile}.ndjson").read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return []
+        return [json.loads(line) for line in text.splitlines()]
+
+    def in_home(self, profile, fn):
+        token = self.hc.set_hermes_home_override(self.homes[profile])
+        try:
+            return fn()
+        finally:
+            self.hc.reset_hermes_home_override(token)
+
+    def test_each_hook_files_under_its_own_profile_and_no_override_is_default(self):
+        self.in_home("ada", lambda: self.de.on_pre_llm_call(session_id="s-ada", user_message="one"))
+        self.in_home("atlas", lambda: self.de.on_pre_llm_call(session_id="s-atlas", user_message="two"))
+        self.de.on_post_llm_call(session_id="s-plain")                  # no override: the process home
+        self.in_home("ada", lambda: self.de.on_post_llm_call(session_id="s-ada"))
+        ada, atlas, default = self.records("ada"), self.records("atlas"), self.records("default")
+        self.assertEqual([(r["sid"], r["profile"]) for r in ada], [("s-ada", "ada"), ("s-ada", "ada")])
+        self.assertEqual([(r["sid"], r["profile"]) for r in atlas], [("s-atlas", "atlas")])
+        self.assertEqual([(r["sid"], r["profile"]) for r in default], [("s-plain", "default")])
+        self.assertEqual({r.get("pscope") for r in ada + atlas + default}, {"call"})   # the relay trusts these stamps
+
+    def test_interleaved_profiles_on_two_threads_never_mix(self):
+        import threading
+        barrier = threading.Barrier(2)
+
+        def run(profile):
+            token = self.hc.set_hermes_home_override(self.homes[profile])
+            barrier.wait()
+            for i in range(200):
+                self.de.on_pre_tool_call(tool_name="terminal", args={"i": i}, session_id=f"s-{profile}",
+                                         tool_call_id=f"{profile}-{i}")
+            self.hc.reset_hermes_home_override(token)
+
+        threads = [threading.Thread(target=run, args=(p,)) for p in ("ada", "atlas")]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+        for profile in ("ada", "atlas"):
+            recs = self.records(profile)
+            self.assertEqual(len(recs), 200)
+            self.assertEqual({(r["sid"], r["profile"]) for r in recs}, {(f"s-{profile}", profile)})
+        self.assertEqual(self.records("default"), [])
+
+    def test_a_hook_never_raises_when_the_home_lookup_fails(self):
+        def broken():
+            raise RuntimeError("no home")
+        self.hc.get_hermes_home = broken
+        os.environ["DECK_EVENTS_PROFILE"] = "atlas"
+        self.addCleanup(os.environ.pop, "DECK_EVENTS_PROFILE", None)
+        self.assertIsNone(self.de.on_pre_llm_call(session_id="s1", user_message="x"))
+        self.assertEqual([r["profile"] for r in self.records("atlas")], ["atlas"])
+
+    def test_multiplexed_gateway_writes_one_state_file_per_served_profile(self):
+        pid = os.getpid()
+        (self.root / "gateway_state.json").write_text(json.dumps({
+            "pid": pid, "gateway_state": "running", "served_profiles": ["default", "ada"],
+            "platforms": {"telegram": {"state": "connected"}, "ada:telegram": {"state": "fatal", "error_message": "x"}},
+        }), encoding="utf-8")
+        # a stale record of an old standalone gateway in the profile's own home must not win
+        (self.homes["ada"] / "gateway_state.json").write_text(json.dumps({"pid": pid + 1}), encoding="utf-8")
+        (self.homes["ada"] / "cron" / "jobs.json").write_text(json.dumps({"jobs": [{"id": "a1", "name": "Ada job"}]}))
+        (self.root / "cron" / "jobs.json").write_text(json.dumps({"jobs": [{"id": "d1", "name": "Default job"}]}))
+        self.de._quota_snapshot = lambda home: {"claude": {"provider": "claude", "ok": True}}
+        # the snapshot is named from the loop's own home even when the calling context is another profile
+        self.assertTrue(self.in_home("atlas", lambda: self.de._snapshot_once(self.homes["ada"], quotas=False)))
+        self.assertTrue(self.in_home("ada", lambda: self.de._snapshot_once(self.root)))
+        self.assertFalse(self.de._snapshot_once(self.homes["atlas"]))     # not served by this gateway
+        state = self.tmp / "deck" / "state"
+        self.assertEqual(sorted(p.name for p in state.glob("*.json")), ["ada.json", "default.json"])
+        ada = json.loads((state / "ada.json").read_text(encoding="utf-8"))
+        default = json.loads((state / "default.json").read_text(encoding="utf-8"))
+        self.assertEqual((ada["profile"], default["profile"]), ("ada", "default"))
+        self.assertEqual([j["id"] for j in ada["cron"]], ["a1"])
+        self.assertEqual([j["id"] for j in default["cron"]], ["d1"])
+        self.assertEqual(ada["platforms"], {"telegram": {"state": "fatal", "error": "x", "needs_attention": None}})
+        self.assertEqual(ada["quotas"], {})
+        self.assertNotIn("quota_refresh", ada)
+        self.assertIn("claude", default["quotas"])
+
+    def test_one_snapshot_loop_per_home_and_one_quota_owner(self):
+        started = []
+        self.de._snapshot_loop = lambda home: started.append(home)
+        for profile in ("default", "ada", "default", "atlas", "ada"):
+            self.in_home(profile, self.de._start_snapshots)
+        import time as _time
+        deadline = _time.time() + 5
+        while len(started) < 3 and _time.time() < deadline:
+            _time.sleep(0.01)
+        self.assertEqual(sorted(map(str, started)), sorted(str(self.homes[p]) for p in ("default", "ada", "atlas")))
+        self.assertEqual(self.de._snap_primary, str(self.root))
+        self.assertFalse(self.de._claim_primary(str(self.homes["ada"])))
+        self.assertTrue(self.de._claim_primary(str(self.root)))
+
+    def test_the_snapshot_thread_stamps_its_own_profile(self):
+        seen = []
+        self.de._snapshot_loop_body = lambda home, key: seen.append(self.de._profile_name())
+        import threading
+        t = threading.Thread(target=self.de._snapshot_loop, args=(self.homes["atlas"],))  # a bare thread, as in Hermes
+        t.start()
+        t.join(5)
+        self.assertEqual(seen, ["atlas"])
+        self.assertNotIn(str(self.homes["atlas"]), self.de._snap_homes)
+
+
 if __name__ == "__main__":
     checks()
     sys.exit(run_others(sys.argv))
