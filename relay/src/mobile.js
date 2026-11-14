@@ -476,6 +476,15 @@ class MobileRelay {
     if (dirty) { try { this.persist(device); } catch {} }
     return reply;
   }
+  /**
+   * A chat this device just made is "mine" as well: start, create, createBotChat, a re-created send and a branch name
+   * the new session only in their result, never in their arguments.
+   */
+  noteResult(device, op, args, result) {
+    if (!['start', 'create', 'createBotChat', 'send', 'branchSession'].includes(op) || !result || typeof result.sid !== 'string') return;
+    const profile = typeof result.profile === 'string' ? result.profile : args?.profile ?? args?.name;
+    try { if (this.notices.noteOp(device, 'send', { sid: result.sid, profile }, false).dirty) this.persist(device); } catch {}
+  }
   // A device that never sent a kinds list gets done/approval/question/error (R14): no banner per assistant message.
   kindEnabled(device, kind) { return kindsOf(device.pushKinds).includes(kind); }
   /** Keeps a turn's reply text under every id the session is known by (stored sid and runtime id), so a done event can find it. */
@@ -616,9 +625,11 @@ class MobileRelay {
     memory.begin(message.id);
     try {
       const result = await run();
+      this.noteResult(device, message.op, args, result);
       memory.settle(message.id, true, result);
       return result;
     } catch (error) {
+      this.noteResult(device, message.op, args, error?.session); // start with an unknown outcome names the session it made
       // Timed out in the gate's queue: it never ran, so the ID is not burnt and the same action may be retried with it.
       if (error?.gate === 'queued') { device.ids.delete(message.id); this.persist(device); memory.forget(message.id); }
       else memory.settle(message.id, false, wireError(error));

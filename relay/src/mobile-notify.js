@@ -18,6 +18,7 @@ const TURN_ABANDON_MS = 6 * 3600000;
 const TEST_INTERVAL_MS = 30000;
 const SEEN_REASONS = new Set(['foreground', 'notification', 'op', 'presence']);
 /** Ops that show a person takes part in a chat (args carry `sid` + `profile`). */
+const LEGACY_POLICY = Object.freeze({ agents: Object.freeze(['default']) });
 const STAKE_OPS = new Set(['send', 'steer', 'redirect', 'interrupt', 'takeover', 'history', 'setModel', 'setEffort', 'renameSession', 'branchSession', 'steerSubagent']);
 const PROFILE_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const SID = /^[\x21-\x7e]{1,512}$/;
@@ -84,7 +85,9 @@ class NotifyCenter {
     let policy = null;
     try { policy = saved.pushPolicy ? normalizePolicy(saved.pushPolicy) : null; } catch {}
     device.pushPolicy = policy;
-    device.governor = new NotifyGovernor({ policy, kinds: device.pushKinds, state: saved.pushGovernor, now: this.now });
+    // No policy ever sent (an app from before the policy existed): its main assistant is followed, so a turn started at
+    // the desktop still reaches the phone (the relay cannot see who started a turn). An app that sends a policy decides itself.
+    device.governor = new NotifyGovernor({ policy: policy || LEGACY_POLICY, kinds: device.pushKinds, state: saved.pushGovernor, now: this.now });
     const cutoff = this.now() - STAKE_MS;
     device.stake = new Map((Array.isArray(saved.stake) ? saved.stake : []).filter(entry => Array.isArray(entry) && typeof entry[0] === 'string' && Number.isSafeInteger(entry[1]) && entry[1] > cutoff).slice(-STAKE_LIMIT));
     device.turns = new Map((Array.isArray(saved.turns) ? saved.turns : []).filter(entry => Array.isArray(entry) && typeof entry[0] === 'string' && entry[1] && typeof entry[1].id === 'string').slice(-TURN_LIMIT));
@@ -102,8 +105,8 @@ class NotifyCenter {
     try { policy = raw === undefined || raw === null ? null : normalizePolicy(raw); }
     catch { throw Object.assign(new Error('Invalid push policy'), { code: 'bad_request', status: 400 }); }
     device.pushPolicy = policy;
-    device.governor.configure(policy, device.pushKinds);
-    return policy || normalizePolicy(undefined);
+    device.governor.configure(policy || LEGACY_POLICY, device.pushKinds);
+    return policy || normalizePolicy(LEGACY_POLICY);
   }
   /** Throws `bad_request` when a registration's `policy` cannot be read (checked before the gateway is called). */
   checkPolicy(raw) {

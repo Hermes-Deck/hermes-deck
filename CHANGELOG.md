@@ -23,6 +23,9 @@ The desktop app, relay and Hermes plugin share one version number.
 - The Deck's connection to Hermes no longer lands on some other Hermes process (a CLI started for another profile) while the gateway restarts: requests then fail as not sent instead of being answered by the wrong process. Needs the updated Hermes plugin.
 - A slow chat history read no longer holds up the rest of a Deck or phone connection: history reads and other gateway requests run beside it (in order per chat), so the session list and other chats answer at once. A request that cannot start within 10 seconds now gets a "busy, retry" answer instead of no answer. Needs the updated Hermes plugin and a gateway restart.
 - Exited Hermes processes no longer leave records behind that every Deck stream re-reads several times a second: a Hermes process removes its own record, activity file and control socket when it exits, and on start removes those of exited processes in its own profile folder. The stream skips exited processes without opening their files, reads an unchanged record once, and checks once a second (instead of five times) while nothing is working. Needs the updated Hermes plugin; the first gateway start after it cleans up.
+- Phone notifications: a phone app that does not send a notification policy follows the default agent, so a turn of the main assistant that was started at the desktop still reaches the phone, while other agents' unattended chats stay quiet. An app that sends a policy decides for itself which agents it follows.
+- Phone notifications: a chat the phone has just created (a new chat, a new bot chat, a branch, or a chat re-created by a send) counts as one of its own at once, so the answer to its first message is announced.
+- Hermes plugin: provider quotas are always published in the default agent's state file when the gateway serves it, whichever agent profile registered first.
 
 ## [1.2.0] - 2026-11-10
 

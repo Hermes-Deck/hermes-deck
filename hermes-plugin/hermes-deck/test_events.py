@@ -553,6 +553,19 @@ class ProfileIdentity(unittest.TestCase):
         self.assertFalse(self.de._claim_primary(str(self.homes["ada"])))
         self.assertTrue(self.de._claim_primary(str(self.root)))
 
+    def test_the_root_home_owns_the_quotas_whatever_registered_first(self):
+        self.de._snapshot_loop = lambda home: None
+        for profile in ("atlas", "ada", "default"):        # a profile registers before the root home
+            self.in_home(profile, self.de._start_snapshots)
+        self.assertFalse(self.de._claim_primary(str(self.homes["atlas"])))
+        self.assertFalse(self.de._claim_primary(str(self.homes["ada"])))
+        self.assertTrue(self.de._claim_primary(str(self.root)))
+        with self.de._snap_lock:                            # the root loop stopped: another one takes over
+            self.de._snap_homes.discard(str(self.root))
+            self.de._snap_primary = None
+        self.assertTrue(self.de._claim_primary(str(self.homes["ada"])))
+        self.assertFalse(self.de._claim_primary(str(self.homes["atlas"])))
+
     def test_the_snapshot_thread_stamps_its_own_profile(self):
         seen = []
         self.de._snapshot_loop_body = lambda home, key: seen.append(self.de._profile_name())

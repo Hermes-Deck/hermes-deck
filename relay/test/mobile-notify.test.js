@@ -136,7 +136,7 @@ test('D13 scope mine: untouched chats stay quiet, a send or an opened history ma
   const clock = fakeClock(), nodes = {};
   const node = (sid, extra = {}) => (nodes[sid] = { sid, profile: 'default', title: 'Chat', turnId: 't0', ...extra });
   const bridge = { nodeFor: sid => nodes[sid] || null, send: async () => ({ ok: true }), history: async () => ({ messages: [] }), rpcToStored: new Map() };
-  const { mobile, device, sent, logs } = fixture(t, { now: clock, settleMs: 0, bridge });
+  const { mobile, device, sent, logs } = fixture(t, { now: clock, settleMs: 0, bridge, policy: {} }); // an app with its own policy
   mobile.bridge = () => device.bridge;
   node('auto');
   for (let i = 1; i <= 10; i++) { nodes.auto.turnId = `t${i}`; await turn(clock, mobile, device, 'auto', `t${i}`, { count: 1, gap: 1000 }); }
@@ -329,7 +329,7 @@ test('G2 policy in the registration: validated, clamped, stored with the device,
   t.after(() => again.stop());
   assert.deepEqual(again.device(device.id).governor.policy, answer.policy);
   // A registration without a policy (an old app) means the defaults again.
-  assert.deepEqual((await (await put(base)).json()).policy, { v: 1, burst: 5, quietMinutes: 10, maxQuietMinutes: 60, bypass: [], scope: 'mine', agents: [], muted: [] });
+  assert.deepEqual((await (await put(base)).json()).policy, { v: 1, burst: 5, quietMinutes: 10, maxQuietMinutes: 60, bypass: [], scope: 'mine', agents: ['default'], muted: [] }); // no policy: the main assistant is followed
   assert.equal(device.pushPolicy, null);
   // A policy that is not an object is refused before the gateway is called.
   const bad = await put({ ...base, policy: 'all' });
@@ -420,7 +420,7 @@ test('capabilities: pushPolicy follows the gateway features; an old client witho
   assert.equal(response.status, 200);
   assert.equal(registrations.length, 1);
   await finishTurns(clock, mobile, device, nodes, 3, 'auto');
-  assert.equal(sent.length, 0, 'scope mine: chats this phone never touched stay quiet');
+  assert.equal(sent.length, 3, 'no policy sent: the main assistant (profile default) is followed, also for chats started elsewhere');
   for (let i = 0; i < 8; i++) await mobile.call(device, { id: `h${i}`, op: 'history', args: { sid: `own${i}`, profile: 'default' } }).catch(() => {});
   await finishTurns(clock, mobile, device, nodes, 8, 'own');
   assert.equal(sent.length, 5, 'breaker 5');
@@ -502,4 +502,46 @@ test('persistence: a quiet window, its held counts, the stake and the open turn 
   assert.equal(device.stake.size, 200);
   const saved = JSON.parse(fs.readFileSync(`${first.file}.state`, 'utf8')).devices[device.id];
   assert.ok(Array.isArray(saved.stake) && Array.isArray(saved.turns) && saved.pushPolicy.burst === 2);
+});
+
+test('a device without a policy follows the default agent only; an app that sends a policy decides itself', async t => {
+  const clock = fakeClock(), nodes = {};
+  const bridge = { nodeFor: sid => nodes[sid] || null, rpcToStored: new Map() };
+  const finish = async (mobile, device, sid, profile) => {
+    nodes[sid] = { sid, profile, title: 'Chat', turnId: `${sid}-t` };
+    mobile.notify(device, 'native', { type: 'message.complete', sid, profile, payload: { text: 'Done.' } });
+    mobile.notify(device, 'native', { type: 'turn.complete', sid, profile, payload: { turn_id: `${sid}-t` } });
+    clock.advance(1000); await flush(mobile);
+  };
+  const legacy = fixture(t, { now: clock, bridge });
+  await finish(legacy.mobile, legacy.device, 'other-agent', 'atlas');
+  assert.equal(legacy.sent.length, 0, 'another agent\'s untouched chat stays quiet');
+  await finish(legacy.mobile, legacy.device, 'main-agent', 'default');
+  assert.deepEqual(legacy.sent.map(event => event.kind), ['done'], 'the main assistant\'s turn reaches the phone');
+  const own = fixture(t, { now: clock, bridge, policy: { scope: 'mine' } });
+  await finish(own.mobile, own.device, 'main-agent-2', 'default');
+  assert.equal(own.sent.length, 0, 'an explicit policy without followed agents follows nobody');
+});
+
+test('a chat the device just made is mine: create, start and a re-created send name it only in their result', async t => {
+  const clock = fakeClock(), nodes = {};
+  const bridge = { nodeFor: sid => nodes[sid] || null, rpcToStored: new Map(),
+    create: async args => ({ sid: 'made-1', profile: args.profile }),
+    send: async () => ({ status: 'streaming', sid: 'made-2', profile: 'atlas', recreated: true }) };
+  const { mobile, device, sent } = fixture(t, { now: clock, bridge, policy: {} });
+  mobile.bridge = () => device.bridge;
+  const finish = async sid => {
+    nodes[sid] = { sid, profile: 'atlas', title: 'Chat', turnId: `${sid}-t` };
+    mobile.notify(device, 'native', { type: 'message.complete', sid, profile: 'atlas', payload: { text: 'Done.' } });
+    mobile.notify(device, 'native', { type: 'turn.complete', sid, profile: 'atlas', payload: { turn_id: `${sid}-t` } });
+    clock.advance(1000); await flush(mobile);
+  };
+  await finish('stranger');
+  assert.equal(sent.length, 0);
+  await mobile.call(device, { id: mutation(), op: 'create', args: { profile: 'atlas' } });
+  await finish('made-1');
+  assert.equal(sent.length, 1, 'the chat this phone created');
+  await mobile.call(device, { id: mutation(), op: 'send', args: { sid: 'gone', profile: 'atlas', text: 'hello' } });
+  await finish('made-2');
+  assert.equal(sent.length, 2, 'the chat a send re-created under a new sid');
 });

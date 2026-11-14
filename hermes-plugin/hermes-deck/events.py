@@ -1463,7 +1463,12 @@ def _claim_primary(key: str) -> bool:
     one started, or the next one once it stops), so serving more profiles never multiplies provider requests."""
     global _snap_primary
     with _snap_lock:
-        if _snap_primary is None:
+        # Deterministic, not registration order: the process's own root home (profile "default") owns the quotas
+        # whenever its loop runs, so `state/default.json` keeps carrying them whichever profile registered first.
+        root = next((home for home in sorted(_snap_homes) if Path(home).parent.name != "profiles"), None)
+        if root is not None:
+            _snap_primary = root
+        elif _snap_primary is None:
             _snap_primary = key
         return _snap_primary == key
 
@@ -1551,7 +1556,7 @@ def _start_snapshots(home=None) -> None:
             return
         _snap_homes.add(key)
         if _snap_primary is None:
-            _snap_primary = key                   # registration order: the first home keeps today's quota source
+            _snap_primary = key                   # provisional: _claim_primary moves it to the root home once that runs
     try:
         threading.Thread(target=_snapshot_loop, args=(Path(key),), name="deck-events-snap", daemon=True).start()
     except Exception:
