@@ -8,7 +8,7 @@
 const { wireError, BUSY_RETRY_MS } = require('./mobile-gate');
 
 /** Ops a client may send over HTTP (announced in capabilities.httpOps.ops). Everything else: ok:false `operation`. */
-const HTTP_OPS = Object.freeze(['answerApproval', 'answerQuestion', 'send', 'create', 'createBotChat', 'interrupt', 'sessions', 'botChat', 'profiles', 'start']);
+const HTTP_OPS = Object.freeze(['answerApproval', 'answerQuestion', 'send', 'create', 'createBotChat', 'interrupt', 'sessions', 'botChat', 'profiles', 'start', 'avatar']);
 const FIELDS = new Set(['id', 'op', 'args', 'waitMs']);
 const WAIT_MAX_MS = 20000;
 const WAITERS_MAX = 8; // HTTP ops of one device held open at once (waiting for the bridge or running)

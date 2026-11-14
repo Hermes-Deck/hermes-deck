@@ -277,10 +277,11 @@ test('W7: POST /mobile/op runs the same handler as the socket: receipts, replay,
     listRequests: () => [{ id: 'request-1', profile: 'atlas', kind: 'approval' }],
     answerApproval: async () => { answers++; return { status: 'ok' }; },
     profiles: async () => [{ name: 'atlas' }],
+    avatar: async () => ({ found: true, url: 'data:image/png;base64,AAAA', mime: 'image/png', raster: false }),
   });
   const seen = [];
   mobile.deviceSeen = (d, reason) => seen.push([d.id, reason]);
-  assert.deepEqual(mobile.capabilities().httpOps, { v: 1, ops: ['answerApproval', 'answerQuestion', 'send', 'create', 'createBotChat', 'interrupt', 'sessions', 'botChat', 'profiles', 'start'] });
+  assert.deepEqual(mobile.capabilities().httpOps, { v: 1, ops: ['answerApproval', 'answerQuestion', 'send', 'create', 'createBotChat', 'interrupt', 'sessions', 'botChat', 'profiles', 'start', 'avatar'] });
   const id = mutationID();
   const body = { id, op: 'answerApproval', args: { id: 'request-1', profile: 'atlas', choice: 'once' }, waitMs: 0 };
   const first = await post(body);
@@ -292,6 +293,8 @@ test('W7: POST /mobile/op runs the same handler as the socket: receipts, replay,
   assert.deepEqual(seen, [[device.id, 'op'], [device.id, 'op']]);
   const read = await post({ id: 'read-1', op: 'profiles' });
   assert.deepEqual(read.body.result, [{ name: 'atlas' }]);
+  const avatar = await post({ id: 'read-avatar', op: 'avatar', args: { name: 'atlas' } });
+  assert.deepEqual(avatar.body.result, { found: true, url: 'data:image/png;base64,AAAA', mime: 'image/png', raster: false }, 'the notification extension reads the agent picture over HTTP');
   assert.equal(seen.length, 2, 'reads do not count as seen');
   const refused = await post({ id: 'read-2', op: 'history', args: { sid: 'session-a', profile: 'atlas' } });
   assert.deepEqual([refused.status, refused.body.ok, refused.body.error.code], [200, false, 'operation']);

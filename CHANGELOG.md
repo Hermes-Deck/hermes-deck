@@ -26,6 +26,7 @@ The desktop app, relay and Hermes plugin share one version number.
 - Phone notifications: a phone app that does not send a notification policy follows the default agent, so a turn of the main assistant that was started at the desktop still reaches the phone, while other agents' unattended chats stay quiet. An app that sends a policy decides for itself which agents it follows.
 - Phone notifications: a chat the phone has just created (a new chat, a new bot chat, a branch, or a chat re-created by a send) counts as one of its own at once, so the answer to its first message is announced.
 - Hermes plugin: provider quotas are always published in the default agent's state file when the gateway serves it, whichever agent profile registered first.
+- Phone API: the agent picture (`avatar`) can be read over `POST /mobile/op`, so a notification can show which agent it is from.
 
 ## [1.2.0] - 2026-11-10
 
