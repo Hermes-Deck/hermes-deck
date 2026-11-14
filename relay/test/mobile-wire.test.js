@@ -321,3 +321,23 @@ test('W7: waitMs holds the op until the bridge is open; without it an offline br
   assert.ok(Date.now() - started < 2000);
   assert.equal(bridge.listenerCount('status'), 0, 'the wait leaves no listener behind');
 });
+
+test('W8: start is one op (create + first message); replay keeps it single; an unknown outcome names the session', async t => {
+  const starts = [];
+  const { mobile, device, post } = await served(t, {
+    startChat: async args => { starts.push(args); if (args.text === 'lost') throw Object.assign(new Error('timed out'), { kind: 'timeout', session: { sid: 'session-9', profile: 'atlas' } }); return { sid: 'session-1', profile: 'atlas', status: 'ok' }; },
+  });
+  assert.equal(mobile.capabilities().start, true);
+  const id = mutationID();
+  const first = await mobile.call(device, { id, op: 'start', args: { profile: 'atlas', text: 'hello' } });
+  assert.deepEqual(first, { sid: 'session-1', profile: 'atlas', status: 'ok' });
+  assert.deepEqual(starts, [{ profile: 'atlas', text: 'hello', files: [] }]);
+  const http = await post({ id, op: 'start', args: { profile: 'atlas', text: 'hello' } });
+  assert.deepEqual([http.body.ok, http.body.replayed, http.body.result.sid], [true, true, 'session-1']);
+  assert.equal(starts.length, 1);
+  const lost = await outcome(mobile.call(device, { id: mutationID(), op: 'start', args: { profile: 'atlas', text: 'lost' } }));
+  assert.deepEqual([lost.error.code, lost.error.uncertain, lost.error.session], ['timeout', true, { sid: 'session-9', profile: 'atlas' }]);
+  for (const args of [{ text: 'x' }, { profile: 'atlas', text: 'x', sid: 'session-1' }]) {
+    assert.equal((await outcome(mobile.call(device, { id: mutationID(), op: 'start', args }))).error.code, 'bad_request');
+  }
+});

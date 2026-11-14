@@ -2143,7 +2143,7 @@ class BridgeClient extends EventEmitter {
   }
 
   /** Retry only an explicit missing-runtime reply, never an uncertain/timeout send. */
-  async _runtimeRequest(method, storedId, profile, params) {
+  async _runtimeRequest(method, storedId, profile, params, { recreate = false } = {}) {
     const epoch = this.epoch, key = sessionKey(profile, storedId);
     const failedBinding = this.bindings.get(key);
     try { return await this.request(method, params); }
@@ -2155,6 +2155,8 @@ class BridgeClient extends EventEmitter {
         const current = this.bindings.get(key);
         if (current && failedBinding && current.rpcId !== failedBinding.rpcId && current.epoch === epoch) {
           recovery = Promise.resolve(current.rpcId); // a late reply for the old runtime
+        } else if (recreate && this.unstored?.has(key) && !method.startsWith("native.")) {
+          recovery = this._recreate(storedId, profile); // never stored: a resume could only fail; create anew (R9)
         } else {
           if (current) {
             for (const [alias, binding] of this.bindings) if (binding.rpcId === current.rpcId && JSON.parse(alias)[0] === profile) this.bindings.delete(alias);
@@ -2206,6 +2208,10 @@ class BridgeClient extends EventEmitter {
     params.profile = profile; // always explicit, "default" included (R5)
     const r = await this.request("session.create", params);
     const { stored } = this._created(r, profile, epoch, "", true);
+    // created here, no turn stored yet (send recreate / start use it); bounded, oldest dropped first
+    this.unstored ||= new Set();
+    this.unstored.add(sessionKey(profile, stored));
+    if (this.unstored.size > 256) this.unstored.delete(this.unstored.values().next().value);
     return { sid: stored, profile };
   }
 
@@ -2421,20 +2427,73 @@ class BridgeClient extends EventEmitter {
    * Send a new turn: resume (once per connection), then prompt.submit. A busy session queues it. `files` (base64) go
    * through deck.attach_submit; `staged` ([{upload, filename}], relay spool ids) through deck.attach_staged.
    */
-  async send(sessionId, text, { profile, files, staged } = {}) {
+  async send(sessionId, text, { profile, files, staged, recreate = false } = {}) {
     const withStaged = Array.isArray(staged) && staged.length > 0;
     const withFiles = withStaged || (Array.isArray(files) && files.length > 0);
     if (withFiles && typeof text !== "string") throw kindError(i18nText("U0103"), "invalid");
     const t = withFiles ? text.trim() : checkText(text, null); // files only: the text may be empty, the host adds a default one
     // A submit is intent even if its reply is lost; never tear down a turn while _bind awaits.
-    const key = sessionKey(this._profileOf(sessionId, profile), sessionId);
+    const p = this._profileOf(sessionId, profile);
+    const key = sessionKey(p, sessionId);
     const made = this.newSessions.get(key) || this.created.get(key);
     if (made) made.submitted = true;
-    const rpcId = await this._bind(sessionId, this._profileOf(sessionId, profile));
+    let rpcId;
+    try {
+      rpcId = await this._bind(sessionId, p);
+    } catch (error) {
+      // recreate (the relay's phone sends): a session created here that never stored a turn cannot be resumed after its
+      // runtime went away (a reconnect); a new one is created in its place and the message goes there (R9)
+      if (!(recreate && this.unstored?.has(key) && error && error.kind === "host")) throw error;
+      rpcId = await this._recreate(sessionId, p);
+    }
     const method = withStaged ? STAGED_METHOD : withFiles ? ATTACH_METHOD : "prompt.submit";
     const params = withStaged ? { session_id: rpcId, text: t, files: staged } : withFiles ? { session_id: rpcId, text: t, files } : { session_id: rpcId, text: t };
-    const r = await this._runtimeRequest(method, sessionId, this._profileOf(sessionId, profile), params);
-    return { status: isPlainObject(r) && typeof r.status === "string" ? r.status.slice(0, 64) : "ok" };
+    const target = this.recreated?.get(key) || sessionId;
+    const r = await this._runtimeRequest(method, target, p, params, { recreate });
+    const moved = this.recreated?.get(key);
+    if (moved) this.recreated.delete(key);
+    this.unstored?.delete(sessionKey(p, moved || sessionId)); // a turn was accepted: Hermes stores the session now
+    const status = isPlainObject(r) && typeof r.status === "string" ? r.status.slice(0, 64) : "ok";
+    return moved ? { status, sid: moved, profile: p, recreated: true } : { status };
+  }
+
+  /**
+   * A new chat in one call (the relay's `start` op): session.create, then the first message on the same connection.
+   * When the message provably never left (offline, busy, refused by the checks), the new session is released again,
+   * so nothing is left behind. When the runtime vanished before the first message, the message goes to a re-created
+   * session (send recreate). Answers {sid, profile, status}. An outcome-unknown failure carries `session` {sid, profile}.
+   */
+  async startChat({ profile = "default", text, files, staged } = {}) {
+    const withFiles = (Array.isArray(staged) && staged.length > 0) || (Array.isArray(files) && files.length > 0);
+    if (withFiles && typeof text !== "string") throw kindError(i18nText("U0103"), "invalid");
+    if (!withFiles) checkText(text, null); // refused before anything is created
+    const made = await this.create({ profile });
+    try {
+      const r = await this.send(made.sid, text, { profile: made.profile, files, staged, recreate: true });
+      return { sid: r.sid || made.sid, profile: made.profile, status: r.status };
+    } catch (error) {
+      if (error && ["offline", "busy", "invalid", "limit"].includes(error.kind)) {
+        const node = this.newSessions.get(sessionKey(made.profile, made.sid));
+        if (node) node.submitted = false; // it never left: release the empty session (discard refuses submitted ones)
+        await this.discard(made.sid, { profile: made.profile }).catch(() => {});
+        this.unstored?.delete(sessionKey(made.profile, made.sid));
+      } else if (error && typeof error === "object") {
+        error.session = { sid: (this.recreated && this.recreated.get(sessionKey(made.profile, made.sid))) || made.sid, profile: made.profile };
+      }
+      throw error;
+    }
+  }
+
+  /** Replace a created, never-stored session whose runtime is gone by a new one; returns the new runtime id. */
+  async _recreate(storedId, profile) {
+    const key = sessionKey(profile, storedId);
+    const old = this.bindings.get(key);
+    const fresh = await this.create({ profile });
+    this.deleted.add(key);
+    this._forgetCreated(storedId, old && old.rpcId, profile);
+    this.unstored?.delete(key);
+    (this.recreated ||= new Map()).set(key, fresh.sid);
+    return this.bindings.get(sessionKey(profile, fresh.sid)).rpcId;
   }
 
   /** Explicit user action: transfer this live runtime to this caller without submitting text. */

@@ -19,6 +19,12 @@ const BUSY_RETRY_MS = 1000;
  * - Anything else (no kind, no code) is `host` + uncertain: unknown, never `bridge_error`.
  */
 function wireError(error) {
+  const out = wireCode(error);
+  // start: an outcome-unknown failure names the session it created, so the client can look before trying again
+  if (error?.session && typeof error.session.sid === 'string') out.session = { sid: error.session.sid, profile: error.session.profile };
+  return out;
+}
+function wireCode(error) {
   if (error?.wire && typeof error.wire.code === 'string') return { ...error.wire }; // a replayed outcome (ReplayMemory)
   const message = typeof error?.message === 'string' ? error.message : String(error);
   const kind = typeof error?.kind === 'string' ? error.kind : '';

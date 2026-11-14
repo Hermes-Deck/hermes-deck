@@ -123,3 +123,60 @@ test("every profile-scoped request names its profile, \"default\" included; a fo
   assert.ok(calls.filter((x) => x.method === "session.list").every((x) => x.params.profile === "default"));
   assert.deepEqual(listed.map((r) => [r.id, r.profile]), [["s-own", "default"], ["s-plain", "default"]]);
 });
+
+function hostWithCreates(onSubmit) {
+  let n = 0;
+  return client(async (method, params, calls) => {
+    if (method === "session.create") { n++; return { session_id: `rt-${n}`, stored_session_id: `s-${n}` }; }
+    if (method === "session.resume") throw Object.assign(new Error("Persisted session not found"), { rpcCode: 4007, kind: "host" });
+    if (method === "session.close") return { ok: true };
+    if (method === "prompt.submit") return onSubmit(params, calls);
+    return {};
+  });
+}
+const missing = () => Object.assign(new Error("session not found"), { rpcCode: 4001, kind: "host" });
+
+test("startChat: create and the first message on one connection, no resume", async () => {
+  const { c, calls } = hostWithCreates(() => ({ status: "queued" }));
+  assert.deepEqual(await c.startChat({ profile: "atlas", text: "hello" }), { sid: "s-1", profile: "atlas", status: "queued" });
+  assert.deepEqual(calls.map((x) => x.method), ["session.create", "prompt.submit"]);
+  assert.equal(calls[1].params.session_id, "rt-1");
+  await assert.rejects(c.startChat({ profile: "atlas", text: "   " }), (e) => e.kind === "invalid");
+  assert.equal(calls.filter((x) => x.method === "session.create").length, 1, "an empty message creates nothing");
+});
+
+test("startChat: a runtime reaped between create and submit is re-created; exactly one turn is accepted", async () => {
+  const { c, calls } = hostWithCreates((params) => { if (params.session_id === "rt-1") throw missing(); return { status: "ok" }; });
+  const started = await c.startChat({ profile: "atlas", text: "hello" });
+  assert.deepEqual(started, { sid: "s-2", profile: "atlas", status: "ok" });
+  assert.deepEqual(calls.map((x) => x.method), ["session.create", "prompt.submit", "session.create", "prompt.submit"]);
+  assert.equal(calls.filter((x) => x.method === "session.resume").length, 0);
+  const known = (x) => [...x.created.values(), ...x.newSessions.values()].map((n) => n.sid || n.id);
+  assert.equal(known(c).includes("s-1"), false, "the reaped one leaves no ghost");
+});
+
+test("send recreate: a created-then-reaped session gets the message through a new session; the desktop default still resumes", async () => {
+  const phone = hostWithCreates((params) => { if (params.session_id === "rt-1") throw missing(); return { status: "ok" }; });
+  const made = await phone.c.create({ profile: "atlas" });
+  assert.deepEqual(await phone.c.send(made.sid, "hi", { profile: "atlas", recreate: true }), { status: "ok", sid: "s-2", profile: "atlas", recreated: true });
+  // after a reconnect the binding is gone: the resume fails (never stored) and recreate creates anew
+  const again = hostWithCreates(() => ({ status: "ok" }));
+  const fresh = await again.c.create({ profile: "atlas" });
+  again.c.bindings.clear(); again.c.epoch = 2;
+  assert.deepEqual(await again.c.send(fresh.sid, "hi", { profile: "atlas", recreate: true }), { status: "ok", sid: "s-2", profile: "atlas", recreated: true });
+  // desktop (no recreate): unchanged, resume then the host's own error
+  const desk = hostWithCreates((params) => { if (params.session_id === "rt-1") throw missing(); return { status: "ok" }; });
+  const own = await desk.c.create({ profile: "atlas" });
+  await assert.rejects(desk.c.send(own.sid, "hi", { profile: "atlas" }), (e) => e.rpcCode === 4007);
+  assert.deepEqual(desk.calls.map((x) => x.method), ["session.create", "prompt.submit", "session.resume"]);
+});
+
+test("startChat: a message that never left releases the new session; an unknown outcome names it", async () => {
+  const offline = hostWithCreates(() => { throw Object.assign(new Error("offline"), { kind: "offline" }); });
+  await assert.rejects(offline.c.startChat({ profile: "atlas", text: "hello" }), (e) => e.kind === "offline" && !e.session);
+  assert.deepEqual(offline.calls.map((x) => x.method), ["session.create", "prompt.submit", "session.close"]);
+  assert.equal(offline.c.created.size + offline.c.newSessions.size, 0, "nothing left behind");
+  const timeout = hostWithCreates(() => { throw Object.assign(new Error("timed out"), { kind: "timeout" }); });
+  await assert.rejects(timeout.c.startChat({ profile: "atlas", text: "hello" }), (e) => e.kind === "timeout" && e.session.sid === "s-1" && e.session.profile === "atlas");
+  assert.equal(timeout.calls.filter((x) => x.method === "session.close").length, 0, "maybe sent: kept");
+});

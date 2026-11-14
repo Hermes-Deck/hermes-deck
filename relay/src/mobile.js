@@ -130,7 +130,7 @@ const OPS = {
   setEffort: ['sid', 'profile', 'effort'], reasoning: ['show'],
   sessions: ['profile', 'limit'], history: ['sid', 'profile', 'limit', 'offset'], profiles: [], avatar: ['name'],
   botChat: ['name', 'expect'], createBotChat: ['name', 'expect'], create: ['profile'], delete: ['sid', 'profile'],
-  send: ['sid', 'profile', 'text', 'uploads'], steer: ['sid', 'profile', 'text', 'turnId'], redirect: ['sid', 'profile', 'text', 'turnId'],
+  send: ['sid', 'profile', 'text', 'uploads'], start: ['profile', 'text', 'uploads'], steer: ['sid', 'profile', 'text', 'turnId'], redirect: ['sid', 'profile', 'text', 'turnId'],
   takeover: ['sid', 'profile'], interrupt: ['sid', 'profile', 'turnId'], modelOptions: ['sid', 'profile', 'profileOnly'], setModel: ['sid', 'profile', 'model', 'provider', 'confirm'],
   answerApproval: ['id', 'profile', 'choice'], answerQuestion: ['id', 'profile', 'answers'], transcribe: ['upload', 'mime', 'language'],
 };
@@ -207,6 +207,7 @@ class MobileRelay {
       readsNeverResume: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // subagents/subagentTail/modelOptions
       replay: true, // a repeated mutation id answers its first outcome for 10 min (last 256 per device), `pending` while it runs
       httpOps: { v: 1, ops: [...HTTP_OPS] }, // POST /mobile/op (mobile-op.js)
+      start: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // op start {profile, text, uploads?}: create + send in one
       limits: { ...(staged ? this.uploads.limits() : LIMITS), downloadBytes: direct ? this.staging.direct : LEGACY_DOWNLOAD }, uploads: { v: 1, staged }, downloads: { v: 1, direct } };
   }
   stagedReady() { return !!this.bridgeConfig && this.bridgeConfig.mode !== 'off' && this.staging.ok === true; }
@@ -610,10 +611,15 @@ class MobileRelay {
       case 'createBotChat': return bridge.createBotChat(args.name, args);
       case 'create': return bridge.create(args);
       case 'delete': return bridge.deleteSession(args.sid, args);
-      case 'send': {
+      case 'send': case 'start': {
+        // start (R9): create + first message in one op; send: a created-but-never-stored chat whose runtime is gone is
+        // re-created rather than resumed (the result then names the new sid: {status, sid, profile, recreated: true})
+        if (op === 'start' && !PROFILE_NAME.test(args.profile || '')) throw fail('bad_request', 'Explicit profile required');
+        const submit = extra => op === 'start' ? bridge.startChat({ profile: args.profile, text: args.text, ...extra })
+          : bridge.send(args.sid, args.text, { profile: args.profile, recreate: true, ...extra });
         const refs = args.uploads || [];
         if (!Array.isArray(refs) || refs.length > 10 || new Set(refs).size !== refs.length) throw fail('bad_request', 'Invalid uploads');
-        if (!refs.length) return bridge.send(args.sid, args.text, { profile: args.profile, files: [] });
+        if (!refs.length) return submit({ files: [] });
         // Staged (the plugin on this host takes spool ids): only ids travel, the plugin moves the files itself. Else the
         // old single-line path: each file read from the spool into base64, within the old limits.
         const staged = this.stagedReady();
@@ -624,9 +630,9 @@ class MobileRelay {
         }
         const { items, release } = this.uploads.take(device, refs);
         try {
-          if (staged) return await bridge.send(args.sid, args.text, { profile: args.profile, staged: items.map(item => ({ upload: item.id, filename: item.name })) });
+          if (staged) return await submit({ staged: items.map(item => ({ upload: item.id, filename: item.name })) });
           const files = items.map(item => ({ filename: item.name, content_base64: this.uploads.readBuffer(item, LIMITS.fileBytes).toString('base64') }));
-          return await bridge.send(args.sid, args.text, { profile: args.profile, files });
+          return await submit({ files });
         } catch (error) {
           if (staged && error?.rpcCode === -32601) this.staging = { ok: false, at: Date.now(), busy: null }; // an older plugin came back
           throw error;
