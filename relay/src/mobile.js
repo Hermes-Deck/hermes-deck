@@ -9,6 +9,7 @@ const compat = require('./compat');
 const { UploadSpool, LEGACY, settleBody } = require('./uploads');
 const { DownloadTickets, LEGACY_MAX: LEGACY_DOWNLOAD } = require('./downloads');
 const { wireError, wireSessionIndex, Gate, shareKey, foreground, withBackgroundBudget } = require('./mobile-gate');
+const { OpLog } = require('./oplog');
 // The old single-line limits (base64 through the plugin's stdio): what a host without staged uploads can take. With a
 // plugin that answers deck.attach_staged on this host, capabilities() reports the spool's limits instead (uploads.js).
 const LIMITS = LEGACY;
@@ -149,6 +150,7 @@ class MobileRelay {
     this.staging = { ok: false, direct: 0, at: 0, busy: null };
     this.names = { at: 0, map: new Map(), busy: null };
     this.enriching = new Map();
+    this.oplog = new OpLog(); // refused/failed ops, bridge status changes, a 60 s summary (oplog.js)
     this.BridgeClient = null;
     if (bridgeConfig && bridgeConfig.mode !== 'off') {
       try { this.BridgeClient = withBackgroundBudget(require('../../app/main/bridge').BridgeClient); }
@@ -283,6 +285,7 @@ class MobileRelay {
       const bridge = device.bridge = new this.BridgeClient(this.bridgeConfig, this.bridgeOptions);
       // A (re)connected plugin may be a newer or older one: ask again whether it takes staged uploads.
       bridge.on('status', s => { if (s?.status === 'open' && device.bridge === bridge) { this.staging.at = 0; this.probeStaging(device).catch(() => {}); } });
+      bridge.on('status', s => { if (device.bridge === bridge) this.oplog.status(device, s, bridge.pending?.size || 0); });
       for (const [event, label] of [['status', 'status'], ['snapshot', 'snapshot'], ['requests', 'requests'], ['event', 'native'], ['sessions', 'sessions']]) {
         bridge.on(event, data => {
           if (this.devices.get(device.id) !== device || !tokens.stillValid(this.tokensFile, device.id, device.hash)) return;
@@ -496,7 +499,18 @@ class MobileRelay {
     }
     return device.offers;
   }
-  async call(device, message) {
+  /** One phone op (WebSocket frame or POST /mobile/op): checks, gate, dispatch; every refusal or failure is logged. */
+  async call(device, message, meta = {}) {
+    const started = Date.now();
+    let wire = null;
+    try { return await this.callChecked(device, message, meta); }
+    catch (error) { wire = wireError(error); throw error; }
+    finally {
+      this.oplog.op({ device, op: message?.op, sid: message?.args?.sid, ms: Date.now() - started, wire, gate: device.gate?.size,
+        pending: device.bridge?.pending?.size || 0, replayed: meta.replayed === true });
+    }
+  }
+  async callChecked(device, message, meta) {
     if (!message || typeof message.id !== 'string' || !/^[A-Za-z0-9._-]{1,128}$/.test(message.id)) throw fail('bad_request', 'Invalid request ID');
     const args = message.args ?? {};
     if (!args || typeof args !== 'object' || Array.isArray(args)) throw fail('bad_request', 'Invalid arguments');
@@ -973,6 +987,7 @@ class MobileRelay {
   }
   async stop() {
     clearInterval(this.timer);
+    this.oplog.stop();
     this.pushStopped = true;
     if (this.ownSpool) this.uploads.stop();
     for (const device of this.devices.values()) { for (const ws of device.sockets) ws.terminate(); await device.bridge?.stop(); }

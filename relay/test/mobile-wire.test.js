@@ -176,3 +176,37 @@ test('W3: phone reads of an unbound session never resume it; capability readsNev
   assert.equal(new (withBackgroundBudget(BridgeClient))({ mode: 'off' }).keepStaleIndex, true);
   c.stop();
 });
+
+test('W5: the op log has one line per refused or failed op, bridge status lines and a summary; never text', async t => {
+  const { OpLog } = require('../src/oplog');
+  const { mobile, device, logs } = relayWith(t, {
+    send: () => new Promise(() => {}),
+    sessions: async () => [{ id: 'session-secret-title', title: 'A private title' }],
+    history: async () => { throw Object.assign(new Error('The Hermes request timed out; it may have completed.'), { kind: 'timeout' }); },
+  });
+  mobile.gateOptions = { limit: 1, queue: 0, waitMs: 10 };
+  const secret = 'PRIVATE-MESSAGE-TEXT';
+  mobile.call(device, { id: mutationID(), op: 'send', args: { sid: 'session-0123456789abcdef', profile: 'atlas', text: secret } }).catch(() => {});
+  await outcome(mobile.call(device, { id: mutationID(), op: 'send', args: { sid: 'session-0123456789abcdef', profile: 'atlas', text: secret } }));
+  device.gate.limit = 8;
+  await mobile.call(device, { id: 'ok-read', op: 'sessions' });
+  await outcome(mobile.call(device, { id: 'slow-read', op: 'history', args: { sid: 'session-0123456789abcdef', profile: 'atlas' } }));
+  const ops = logs.filter(l => l.t === 'mobile.op');
+  assert.equal(ops.length, 2, 'only the refused and the failed op are logged');
+  assert.deepEqual(ops.map(l => [l.op, l.code, l.sid]), [['send', 'busy', 'session-'], ['history', 'timeout', 'session-']]);
+  assert.equal(ops[0].inFlight, 1);
+  assert.ok(ops.every(l => typeof l.ms === 'number' && typeof l.pending === 'number' && typeof l.uncertain === 'boolean' && l.device.length <= 6));
+  const text = JSON.stringify(logs);
+  for (const forbidden of [secret, 'A private title', 'session-0123456789', device.id]) assert.ok(!text.includes(forbidden), forbidden);
+  // status lines and the summary
+  const sink = [];
+  const log = new OpLog({ sink: line => sink.push(JSON.parse(line)), summaryMs: 3600000 });
+  t.after(() => log.stop());
+  log.status(device, { status: 'offline', code: 'exit', error: 'ssh: host.example refused' }, 3);
+  for (const ms of [5, 10, 20, 400]) log.op({ device, op: 'history', ms, gate: { active: 2, waiting: 0 }, pending: 4 });
+  const summary = log.flush();
+  assert.deepEqual(sink[0], { at: sink[0].at, t: 'mobile.bridge', device: device.id.slice(-6), status: 'offline', code: 'exit', pending: 3 });
+  assert.ok(!JSON.stringify(sink).includes('host.example'));
+  assert.deepEqual({ ...summary, windowMs: 0 }, { t: 'mobile.summary', windowMs: 0, ops: 4, failed: 0, busy: 0, p95Ms: 400, maxPending: 4, maxInFlight: 2 });
+  assert.equal(log.flush(), null, 'no summary for an empty window');
+});
