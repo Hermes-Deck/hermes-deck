@@ -10,6 +10,7 @@ const { UploadSpool, LEGACY, settleBody } = require('./uploads');
 const { DownloadTickets, LEGACY_MAX: LEGACY_DOWNLOAD } = require('./downloads');
 const { wireError, wireSessionIndex, Gate, shareKey, foreground, withBackgroundBudget, ReplayMemory } = require('./mobile-gate');
 const { OpLog } = require('./oplog');
+const { httpOp, HTTP_OPS } = require('./mobile-op');
 // The old single-line limits (base64 through the plugin's stdio): what a host without staged uploads can take. With a
 // plugin that answers deck.attach_staged on this host, capabilities() reports the spool's limits instead (uploads.js).
 const LIMITS = LEGACY;
@@ -205,6 +206,7 @@ class MobileRelay {
       errors: { v: 2 }, // typed error codes (mobile-gate.js wireError); v1 = bridge_error + English text
       readsNeverResume: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // subagents/subagentTail/modelOptions
       replay: true, // a repeated mutation id answers its first outcome for 10 min (last 256 per device), `pending` while it runs
+      httpOps: { v: 1, ops: [...HTTP_OPS] }, // POST /mobile/op (mobile-op.js)
       limits: { ...(staged ? this.uploads.limits() : LIMITS), downloadBytes: direct ? this.staging.direct : LEGACY_DOWNLOAD }, uploads: { v: 1, staged }, downloads: { v: 1, direct } };
   }
   stagedReady() { return !!this.bridgeConfig && this.bridgeConfig.mode !== 'off' && this.staging.ok === true; }
@@ -836,6 +838,11 @@ class MobileRelay {
     if (!auth) throw fail('unauthorized', 'Mobile bearer required', 401);
     const device = this.device(auth.id);
     if (route === '/mobile/pair' && req.method === 'DELETE') return json(res, 200, await this.revoke(device));
+    if (route === '/mobile/op' && req.method === 'POST') {
+      const value = await object(req);
+      if (!tokens.stillValid(this.tokensFile, device.id, device.hash)) throw fail('unauthorized', 'Device revoked', 401);
+      return json(res, 200, await httpOp(this, device, value, { readOps: READ_OPS }));
+    }
     if (route === '/mobile/capabilities' && req.method === 'GET') {
       await this.probeStaging(device).catch(() => false);
       return json(res, 200, { ...this.capabilities(), notificationAdmission: { capacity: NOTIFICATION_CAPACITY, retained: device.notifications.size, overflow: device.notificationOverflow } });

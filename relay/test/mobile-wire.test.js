@@ -255,3 +255,69 @@ test('W6: replay memory keeps the last 256 outcomes for 10 minutes', () => {
   memory.begin('big'); memory.settle('big', true, { text: 'x'.repeat(70000) });
   assert.equal(memory.get('big'), undefined, 'an oversized result is not kept: the receipt answers duplicate');
 });
+
+/** The relay behind a real HTTP server (createServer), with a stub bridge on the paired device. */
+async function served(t, stub) {
+  const { createServer } = require('../src/server');
+  const ctx = relayWith(t, stub);
+  const relay = createServer({ token: 'x'.repeat(32), mobile: ctx.mobile, model: { snapshot: () => ({}), sessions: new Map(), tokens: () => ({}) }, fleet: { data: {} }, version: 'test' });
+  await new Promise(resolve => relay.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => relay.server.close(resolve)));
+  const base = `http://127.0.0.1:${relay.server.address().port}`;
+  const post = async (body, token = ctx.paired.token) => {
+    const response = await fetch(`${base}/mobile/op`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: typeof body === 'string' ? body : JSON.stringify(body) });
+    return { status: response.status, body: await response.json() };
+  };
+  return { ...ctx, post, base };
+}
+
+test('W7: POST /mobile/op runs the same handler as the socket: receipts, replay, allow-list, 200 + ok:false, seen hook', async t => {
+  let answers = 0;
+  const { mobile, device, post } = await served(t, {
+    listRequests: () => [{ id: 'request-1', profile: 'atlas', kind: 'approval' }],
+    answerApproval: async () => { answers++; return { status: 'ok' }; },
+    profiles: async () => [{ name: 'atlas' }],
+  });
+  const seen = [];
+  mobile.deviceSeen = (d, reason) => seen.push([d.id, reason]);
+  assert.deepEqual(mobile.capabilities().httpOps, { v: 1, ops: ['answerApproval', 'answerQuestion', 'send', 'create', 'createBotChat', 'interrupt', 'sessions', 'botChat', 'profiles', 'start'] });
+  const id = mutationID();
+  const body = { id, op: 'answerApproval', args: { id: 'request-1', profile: 'atlas', choice: 'once' }, waitMs: 0 };
+  const first = await post(body);
+  assert.deepEqual(first, { status: 200, body: { t: 'response', id, ok: true, result: { status: 'ok' } } });
+  const again = await post(body);
+  assert.deepEqual(again.body, { t: 'response', id, ok: true, result: { status: 'ok' }, replayed: true });
+  assert.equal(answers, 1);
+  assert.equal(device.ids.has(id), true, 'the same receipt table as the socket');
+  assert.deepEqual(seen, [[device.id, 'op'], [device.id, 'op']]);
+  const read = await post({ id: 'read-1', op: 'profiles' });
+  assert.deepEqual(read.body.result, [{ name: 'atlas' }]);
+  assert.equal(seen.length, 2, 'reads do not count as seen');
+  const refused = await post({ id: 'read-2', op: 'history', args: { sid: 'session-a', profile: 'atlas' } });
+  assert.deepEqual([refused.status, refused.body.ok, refused.body.error.code], [200, false, 'operation']);
+  const extra = await post({ id: 'read-3', op: 'profiles', t: 'request' });
+  assert.deepEqual([extra.status, extra.body.error.code], [200, 'bad_request']);
+  const badWait = await post({ id: 'read-4', op: 'profiles', waitMs: 20001 });
+  assert.equal(badWait.body.error.code, 'bad_request');
+  const noId = await post({ op: 'profiles' });
+  assert.deepEqual([noId.status, noId.body.ok, noId.body.error.code, 'id' in noId.body], [200, false, 'bad_request', false]);
+  assert.equal((await post({ id: 'x', op: 'profiles' }, 'not-a-token')).status, 401);
+  assert.equal((await post('{not json')).status, 400);
+  assert.equal((await post({ id: 'x', op: 'profiles', args: { pad: 'x'.repeat(70000) } })).status, 413);
+});
+
+test('W7: waitMs holds the op until the bridge is open; without it an offline bridge answers offline at once', async t => {
+  const { EventEmitter } = require('node:events');
+  const bridge = Object.assign(new EventEmitter(), { status: { status: 'connecting' }, pending: new Map(), stop: async () => {}, listRequests: () => [],
+    sessions: async () => { if (bridge.status.status !== 'open') throw Object.assign(new Error(i18nText('U0030')), { kind: 'offline' }); return [{ id: 'session-a' }]; } });
+  const { device, post } = await served(t, {});
+  device.bridge = bridge;
+  const offline = await post({ id: 'r-1', op: 'sessions' });
+  assert.deepEqual([offline.body.ok, offline.body.error.code, offline.body.error.uncertain], [false, 'offline', false]);
+  setTimeout(() => { bridge.status = { status: 'open' }; bridge.emit('status', bridge.status); }, 50);
+  const started = Date.now();
+  const waited = await post({ id: 'r-2', op: 'sessions', waitMs: 5000 });
+  assert.equal(waited.body.ok, true);
+  assert.ok(Date.now() - started < 2000);
+  assert.equal(bridge.listenerCount('status'), 0, 'the wait leaves no listener behind');
+});
