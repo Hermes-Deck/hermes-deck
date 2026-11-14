@@ -171,5 +171,55 @@ class ProfileSnapshotTests(unittest.TestCase):
                 self.assertEqual(by_profile[profile]["last_prompt_tokens"], tokens)
 
 
+class ControlEndpointTests(unittest.TestCase):
+    """The control connection goes only to the gateway's own process, never to some other live Hermes process."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name)
+
+    def record(self, profile, pid, updated):
+        base = (self.home if profile == "default" else self.home / "profiles" / profile) / "hermes-deck"
+        (base / "processes").mkdir(parents=True, exist_ok=True)
+        sock = base / f"control-{pid}-x.sock"
+        sock.touch()
+        (base / "processes" / f"{pid}.json").write_text(json.dumps(dict(
+            schema=stream.SCHEMA, pid=pid, updated_at=updated, control_socket=str(sock), nodes={})))
+        return sock.resolve()
+
+    def test_a_stale_gateway_record_never_falls_back_to_another_process(self):
+        now = time.time()
+        self.record("default", 11, now - 100)              # the gateway's record, stale (restart window)
+        self.record("ada", 22, now)                         # a live CLI process started for another profile
+        (self.home / "gateway_state.json").write_text(json.dumps({"pid": 11}))
+        with patch.object(stream, "alive", return_value=True):
+            self.assertIsNone(stream.endpoint(self.home))
+            self.assertEqual(stream.control_record(self.home), (None, None))
+            self.assertEqual(stream.endpoint(self.home, 22), (self.home / "profiles/ada/hermes-deck/control-22-x.sock").resolve())
+        with patch.object(stream, "alive", side_effect=lambda pid: pid != 11):   # the gateway is gone
+            self.assertIsNone(stream.endpoint(self.home))
+
+    def test_the_gateway_pid_prefers_its_default_base_over_profile_bases(self):
+        now = time.time()
+        named = self.record("atlas", 11, now)
+        own = self.record("default", 11, now - 5)           # one multiplexed process, one socket per profile
+        self.record("ada", 22, now)
+        (self.home / "gateway_state.json").write_text(json.dumps({"pid": 11}))
+        with patch.object(stream, "alive", return_value=True):
+            self.assertEqual(stream.endpoint(self.home), own)
+            (self.home / "hermes-deck/processes/11.json").unlink()
+            self.assertEqual(stream.endpoint(self.home), named)
+
+    def test_without_a_gateway_the_default_base_wins_deterministically(self):
+        now = time.time()
+        self.record("ada", 22, now)
+        own = self.record("default", 33, now - 10)
+        with patch.object(stream, "alive", return_value=True):
+            self.assertEqual(stream.endpoint(self.home), own)
+            (self.home / "gateway_state.json").write_text("not json")
+            self.assertEqual(stream.endpoint(self.home), own)
+
+
 if __name__ == "__main__":
     unittest_main()

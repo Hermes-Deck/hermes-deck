@@ -397,16 +397,24 @@ def collect_registered_nodes(home, now=None, alive=None):
 
 
 def control_record(home, pid=None):
-    """(control socket path, process record) of the live observer endpoint() picks, else (None, None)."""
+    """(control socket path, process record) of the live observer endpoint() picks, else (None, None).
+
+    With an explicit pid, or when the gateway's own gateway_state.json names one, only that process is acceptable:
+    another live Hermes process with the plugin (a CLI started for some profile) would answer for its own profile,
+    and the persistent connection would stay there. Without a gateway at all, the default profile's base wins over
+    named ones, then the newest record."""
     home = Path(home).resolve()
     preferred = pid
     if preferred is None:
-        try: preferred = json.loads((home/"gateway_state.json").read_text())["pid"]
-        except (OSError, ValueError, KeyError): pass
+        try:
+            named = json.loads((home/"gateway_state.json").read_text())["pid"]
+            if type(named) is int and named > 0: preferred = named
+        except (OSError, ValueError, KeyError, TypeError): pass
     candidates = []
-    for _, base in observer_bases(home):
+    for profile, base in observer_bases(home):
         for file in (base/"processes").glob("*.json"):
             try:
+                if preferred is not None and file.stem != str(preferred): continue
                 if file.resolve().parent != base/"processes" or file.stat().st_size > 2*1024*1024: continue
                 data = json.loads(file.read_text())
                 path = Path(data.get("control_socket", "")).resolve()
@@ -414,11 +422,12 @@ def control_record(home, pid=None):
                         or not alive(data.get("pid")) or time.time()-data["updated_at"]>45
                         or path.parent!=base or not path.name.startswith(f"control-{data['pid']}-") or not path.exists()):
                     continue
-                if preferred == data["pid"]: return path, data
-                candidates.append((path, data))
+                candidates.append((profile != "default", -float(data["updated_at"]), path, data))
             except (OSError, ValueError, KeyError, TypeError, RuntimeError):
                 continue
-    return candidates[0] if candidates and pid is None else (None, None)
+    if not candidates: return None, None
+    candidates.sort(key=lambda c: c[:2])
+    return candidates[0][2], candidates[0][3]
 
 
 def endpoint(home, pid=None):
