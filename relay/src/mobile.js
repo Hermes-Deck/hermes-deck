@@ -142,6 +142,13 @@ const OPS = {
 // Push bookkeeping op (mobile-notify.js): the app says it is in the foreground (G1); answered without the bridge.
 OPS.seen = ['reason'];
 READ_OPS.add('seen');
+// Read-only watch of a session running elsewhere (G11, relay-extras X3): binds it on this device's bridge so its events
+// stream to the phone; never drives it. Reads (no mutation id): they change only this device's subscriptions.
+OPS.watch = ['sid', 'profile'];
+OPS.unwatch = ['sid', 'profile'];
+READ_OPS.add('watch'); READ_OPS.add('unwatch');
+/** The bridge's watch owner for a phone: one bridge per device, one watched session per owner. */
+const WATCH_OWNER = 'mobile';
 class MobileRelay {
   constructor({ tokensFile, bridgeConfig, bridgeOptions = {}, capabilities = {}, push = null, settleMs = SETTLE_MS, uploads = null, downloads = null, atDesk = null, clock = null, pushLog = null }) {
     Object.assign(this, { tokensFile, bridgeConfig, bridgeOptions, push, settleMs });
@@ -220,6 +227,7 @@ class MobileRelay {
       replay: true, // a repeated mutation id answers its first outcome for 10 min (last 256 per device), `pending` while it runs
       httpOps: { v: 1, ops: [...HTTP_OPS] }, // POST /mobile/op (mobile-op.js)
       start: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // op start {profile, text, uploads?}: create + send in one
+      watch: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // ops watch/unwatch {sid, profile}: stream a session running elsewhere, read-only (X3)
       historyProfile: !!this.available.history, // GET /session/<sid>/messages|tools|call/<id>?profile=<name> reads only that profile (G8)
       limits: { ...(staged ? this.uploads.limits() : LIMITS), downloadBytes: direct ? this.staging.direct : LEGACY_DOWNLOAD }, uploads: { v: 1, staged }, downloads: { v: 1, direct }, ...this.notices.capabilities(this.push) };
   }
@@ -690,6 +698,24 @@ class MobileRelay {
         }
         return bridge[op](args.sid, args.id, op === 'subagentTail' ? { ...options, resume: false } : options);
       }
+      case 'watch': case 'unwatch': {
+        // One watched session per device (watching another one replaces it); it ends with the device's last live
+        // socket (upgrade(): close). Read-only: the bridge's watch binding never submits, takes over or closes.
+        if (typeof args.profile !== 'string' || !PROFILE_NAME.test(args.profile)) throw fail('bad_request', 'Explicit profile required');
+        if (typeof args.sid !== 'string' || !/^[\x21-\x7e]{1,512}$/.test(args.sid)) throw fail('bad_request', 'Invalid session ID');
+        if (typeof bridge.watch !== 'function' || typeof bridge.unwatch !== 'function') throw fail('operation', 'Watch is not available on this relay');
+        if (op === 'unwatch') {
+          bridge.unwatch(args.sid, { profile: args.profile, owner: WATCH_OWNER });
+          if (device.watching?.sid === args.sid && device.watching?.profile === args.profile) device.watching = null;
+          return { ok: true, watching: false };
+        }
+        if (![...device.sockets].some(ws => ws.mobileBridge && ws.readyState === 1)) throw fail('bad_request', 'Watch needs the live connection (WS /mobile/bridge)');
+        device.watching = { sid: args.sid, profile: args.profile };
+        const result = await bridge.watch(args.sid, { profile: args.profile, owner: WATCH_OWNER });
+        const watching = result?.watching === true;
+        if (!watching && device.watching?.sid === args.sid && device.watching?.profile === args.profile) device.watching = null;
+        return { watching, ...(typeof result?.error === 'string' && result.error ? { error: result.error.slice(0, 300) } : {}) };
+      }
       case 'sessions': return bridge.sessions(args);
       case 'sessionPage': case 'sessionIndex':
         if ('archived' in args && typeof args.archived !== 'boolean' || 'force' in args && typeof args.force !== 'boolean' || 'offset' in args && (!Number.isSafeInteger(args.offset) || args.offset < 0)) throw fail('bad_request', 'Invalid session index arguments');
@@ -955,7 +981,7 @@ class MobileRelay {
       ws.mobileBridge = true;
       ws.mobileAlive = true;
       ws.on('pong', () => { ws.mobileAlive = true; });
-      ws.on('close', () => device.sockets.delete(ws));
+      ws.on('close', () => { device.sockets.delete(ws); this.endWatch(device); });
       ws.on('error', () => {});
       ws.on('message', async (data, binary) => {
         if (binary) return ws.close(1003);
@@ -977,6 +1003,13 @@ class MobileRelay {
         ws.send(JSON.stringify({ t: 'bridge', event: 'requests', data: phoneRequests(bridge.listRequests()) }));
       } catch (error) { ws.send(JSON.stringify({ t: 'bridge', event: 'status', data: { status: 'off', error: error.message } })); }
     });
+  }
+  /** The device's last live socket closed: its watched session is disarmed (X3); the binding itself stays, as on the desktop. */
+  endWatch(device) {
+    if (!device.watching || [...device.sockets].some(ws => ws.mobileBridge && ws.readyState === 1)) return;
+    const { sid, profile } = device.watching;
+    device.watching = null;
+    try { device.bridge?.unwatch?.(sid, { profile, owner: WATCH_OWNER }); } catch {}
   }
   onHttp(req, res, url) {
     if (!url.pathname.startsWith('/mobile/')) return false;

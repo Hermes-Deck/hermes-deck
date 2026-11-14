@@ -209,3 +209,68 @@ test('X2 push client: `badge` key and kind only to a gateway that lists `badge`;
   assert.deepEqual((await client.notify('d1', { id: 'e_4', kind: 'badge', badge: 0 })), { skipped: true });
   assert.deepEqual(bodies.slice(2), [{ target: 'd1', id: 'e_3', kind: 'approval' }]);
 });
+
+// ---------------------------------------------------------------------------------------------------------- X3 watch
+function watchBridge() {
+  const calls = [];
+  return {
+    calls,
+    watch: async (sid, options) => { calls.push(['watch', sid, options]); return sid === 'leased' ? { watching: false, error: 'Session is in use by another process' } : { watching: true }; },
+    unwatch: (sid, options) => { calls.push(['unwatch', sid, options]); return { watching: false }; },
+  };
+}
+const liveSocket = () => ({ mobileBridge: true, readyState: 1, bufferedAmount: 0, send() {}, terminate() {}, close() {} });
+
+test('X3 watch: read op over the live connection; one session per device; profile required; a refusal says why', async t => {
+  const spy = watchBridge();
+  const { mobile, device } = fixture(t, { bridge: spy, bridgeConfig: { mode: 'local' } });
+  assert.equal(mobile.capabilities().watch, true);
+  const call = (op, args, id = `r.${crypto.randomUUID()}`) => mobile.call(device, { id, op, args });
+  await assert.rejects(call('watch', { sid: 's1', profile: 'default' }), error => error.code === 'bad_request', 'no live socket: refused');
+  device.sockets.add(liveSocket());
+  assert.deepEqual(await call('watch', { sid: 's1', profile: 'default' }), { watching: true });
+  assert.deepEqual(device.watching, { sid: 's1', profile: 'default' });
+  assert.deepEqual(spy.calls[0], ['watch', 's1', { profile: 'default', owner: 'mobile' }]);
+  // Watching another session: the bridge's one-per-owner rule replaces the first; the device remembers only the latest.
+  assert.deepEqual(await call('watch', { sid: 's2', profile: 'research' }), { watching: true });
+  assert.deepEqual(device.watching, { sid: 's2', profile: 'research' });
+  assert.ok(spy.calls.every(([, , options]) => options.owner === 'mobile'), 'one owner per device: bounded to one watched session');
+  assert.deepEqual(await call('watch', { sid: 'leased', profile: 'default' }), { watching: false, error: 'Session is in use by another process' });
+  assert.equal(device.watching, null);
+  for (const args of [{ sid: 's1' }, { sid: 's1', profile: '../x' }, { sid: '', profile: 'default' }, { sid: 's1', profile: 'default', extra: 1 }])
+    await assert.rejects(call('watch', args), error => error.code === 'bad_request', JSON.stringify(args));
+  assert.deepEqual(await call('unwatch', { sid: 's2', profile: 'research' }), { ok: true, watching: false });
+  assert.deepEqual(spy.calls.at(-1), ['unwatch', 's2', { profile: 'research', owner: 'mobile' }]);
+  // A read: no mutation id needed, nothing burnt; never a stake in the chat (watching is not taking part).
+  assert.equal(device.ids.size, 0);
+  assert.equal(device.stake.size, 0);
+});
+
+test('X3 watch: ends when the last live socket closes; not over HTTP; another device or the desktop token cannot touch it', async t => {
+  const { WebSocket } = require('ws');
+  const spy = watchBridge();
+  const { mobile, device, paired, file } = fixture(t, { bridge: spy, bridgeConfig: { mode: 'local' } });
+  const url = await serve(t, mobile);
+  const ws = new WebSocket(`${url.replace('http', 'ws')}/mobile/bridge`, { headers: bearer(paired.token) });
+  const frames = [];
+  ws.on('message', data => frames.push(JSON.parse(data)));
+  await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
+  ws.send(JSON.stringify({ id: 'w.1', op: 'watch', args: { sid: 's1', profile: 'default' } }));
+  for (let i = 0; i < 50 && !frames.some(frame => frame.id === 'w.1'); i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(frames.find(frame => frame.id === 'w.1').result, { watching: true });
+  // Over HTTP: not in the allow-list.
+  const http = await (await fetch(`${url}/mobile/op`, { method: 'POST', headers: { ...bearer(paired.token), 'content-type': 'application/json' }, body: JSON.stringify({ id: 'w.2', op: 'watch', args: { sid: 's1', profile: 'default' } }) })).json();
+  assert.equal(http.error.code, 'operation');
+  // The desktop relay token is not a phone: no /mobile/bridge for it.
+  const desk = await fetch(`${url}/mobile/op`, { method: 'POST', headers: { ...bearer('x'.repeat(32)), 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(desk.status, 401);
+  // A second phone's unwatch is its own: the first phone's watch stays.
+  const other = mobile.device(mobile.pair({ code: createPair(file), name: 'tablet' }).deviceId);
+  other.bridge = device.bridge;
+  await mobile.call(other, { id: 'o.1', op: 'unwatch', args: { sid: 's9', profile: 'default' } });
+  assert.deepEqual(device.watching, { sid: 's1', profile: 'default' });
+  ws.close();
+  for (let i = 0; i < 50 && device.watching; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(device.watching, null);
+  assert.deepEqual(spy.calls.filter(call => call[1] === 's1').map(call => call[0]), ['watch', 'unwatch']);
+});
