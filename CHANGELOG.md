@@ -6,6 +6,8 @@ The desktop app, relay and Hermes plugin share one version number.
 
 ## [Unreleased]
 
+- Relay, phone API: a failed request now carries a typed error code (`busy` with `retryAfterMs`, `offline`, `timeout`, `host` with the Hermes `rpcCode`, `stale`, `bad_request`, `limit`, ...) and an exact `uncertain` flag instead of `bridge_error` plus the desktop's English sentence, so the phone app can tell "busy, retry" from "failed" and never shows "Hermes queue full". `capabilities.errors` is `{v: 2}`. The desktop's messages are unchanged.
+
 ## [1.2.0] - 2026-11-10
 
 - Every saved host is live at once: each keeps its relay and direct connection open while the Deck runs, so replies, finished turns, approvals and questions from any host raise their notification and open that host's chat when clicked. Every host you open keeps its page warm in the background: switching back is instant with scroll, open chat and draft intact, nothing reloads.

@@ -141,6 +141,20 @@ const MSG = {
   get notOpen() { return i18nText("U0036"); },
 };
 
+/**
+ * Stable error kinds (fields added to the errors; every message stays as it was). The relay's mobile wire maps them to
+ * typed codes (relay/src/mobile-gate.js wireError) so a phone never has to read a sentence:
+ *   busy (queue full, nothing sent) · offline (nothing sent) · timeout / lost / closed / changed (sent or maybe sent:
+ *   outcome unknown) · host (Hermes answered an error, `rpcCode` when it gave one) · unsupported (this Hermes cannot)
+ *   · reply (Hermes answered nonsense) · stale (the request, turn or session state moved on; nothing sent)
+ *   · invalid (refused by the bridge's own checks; nothing sent) · limit (too large; nothing sent).
+ */
+const MSG_KIND = Object.freeze({ offline: "offline", timeout: "timeout", lost: "lost", closed: "closed", queueFull: "busy", changed: "changed", notOpen: "stale" });
+const kindError = (message, kind, extra) => Object.assign(new Error(message), { kind }, extra);
+const msgError = (name) => kindError(MSG[name], MSG_KIND[name]);
+/** The kind of one of the MSG sentences (the bridge's own transport errors), else undefined. */
+const kindOfMessage = (message) => MSG_KIND[Object.keys(MSG_KIND).find((name) => MSG[name] === message)];
+
 // ---------------------------------------------------------------- validation
 
 function validName(value, max) {
@@ -440,34 +454,34 @@ const validPlanRead = (p) => onlyKeys(p, ["session_id", "profile"]) && typeof p.
   (!("profile" in p) || validProfileParam(p.profile));
 
 function checkRequest(method, params) {
-  if (!METHODS.has(method)) throw new Error(i18nText("U0046"));
-  if (!isPlainObject(params)) throw new Error(i18nText("U0047"));
+  if (!METHODS.has(method)) throw kindError(i18nText("U0046"), "invalid");
+  if (!isPlainObject(params)) throw kindError(i18nText("U0047"), "invalid");
   const big = method === ATTACH_METHOD ? ATTACH_PARAMS_LIMIT : method === TRANSCRIBE_METHOD ? TRANSCRIBE_PARAMS_LIMIT : PARAMS_LIMIT;
-  if (Buffer.byteLength(JSON.stringify(params)) > big) throw new Error(i18nText(method === ATTACH_METHOD ? "attach.hermesRequestTooLarge" : method === TRANSCRIBE_METHOD ? "voice.tooLarge" : "appshot.requestTooLarge"));
-  if (["deck.drafts_list", "deck.draft_get", "deck.draft_edit", "deck.draft_sender", "deck.draft_prepare", "deck.draft_commit"].includes(method) && !require("./mail-drafts").validRequest(method, params)) throw new Error(i18nText("mail.invalid"));
-  if (method === ATTACH_METHOD && !validAttach(params)) throw new Error(i18nText("attach.hermesInvalid"));
-  if (method === STAGED_METHOD && !validStaged(params)) throw new Error(i18nText("attach.hermesInvalid"));
-  if (method === TRANSCRIBE_METHOD && !validTranscribe(params)) throw new Error(i18nText("voice.invalid"));
-  if (method === FILE_METHOD && !validFileRead(params)) throw new Error(i18nText("download.invalid"));
-  if (method === GRANT_METHOD && !validFileGrant(params)) throw new Error(i18nText("download.invalid"));
-  if (method === "session.messages" && !validHistoryRead(params)) throw new Error(i18nText("U0049"));
-  if (method === "config.set" && !validModelSet(params) && !validReasoningSet(params)) throw new Error(i18nText("U0050"));
-  if (method === "session.list" && !validSessionList(params)) throw new Error(i18nText("U0051"));
-  if (method === "session.create" && !validCreate(params)) throw new Error(i18nText("U0052"));
-  if (method === "session.title" && !validBotTitle(params)) throw new Error(i18nText("U0053"));
-  if (method === "session.delete" && !validSessionDelete(params)) throw new Error(i18nText("session.deleteInvalid"));
-  if (method === "session.close" && !validSessionClose(params)) throw new Error(i18nText("session.deleteInvalid"));
-  if (method === "deck.session_index" && !validSessionIndex(params)) throw new Error(i18nText("sessions.invalid"));
-  if (method === "deck.session_update" && !validSessionUpdate(params)) throw new Error(i18nText("sessions.invalid"));
-  if (method === "deck.reasoning_view" && !validReasoningView(params)) throw new Error(i18nText("sessions.invalid"));
-  if (method === "session.archive" && !validSessionArchive(params)) throw new Error(i18nText("sessions.invalid"));
-  if (method === "session.branch_stored" && !validSessionBranch(params)) throw new Error(i18nText("sessions.invalid"));
-  if ((method === "profiles.list" || method === "deck.version") && Object.keys(params).length) throw new Error(i18nText("U0054"));
-  if (method === "profiles.get_asset" && !validAssetRead(params)) throw new Error(i18nText("U0055"));
-  if (method.startsWith("subagent.") && !validSubagent(method, params)) throw new Error(i18nText("U0047"));
-  if (method === "deck.plan" && !validPlanRead(params)) throw new Error(i18nText("U0047"));
-  if (method === "commands.catalog" && !validCatalogRead(params)) throw new Error(i18nText("U0047"));
-  if (method.startsWith("groups.") && !groupRpc.validGroupRequest(method, params)) throw new Error(i18nText("groups.invalid"));
+  if (Buffer.byteLength(JSON.stringify(params)) > big) throw kindError(i18nText(method === ATTACH_METHOD ? "attach.hermesRequestTooLarge" : method === TRANSCRIBE_METHOD ? "voice.tooLarge" : "appshot.requestTooLarge"), "limit");
+  if (["deck.drafts_list", "deck.draft_get", "deck.draft_edit", "deck.draft_sender", "deck.draft_prepare", "deck.draft_commit"].includes(method) && !require("./mail-drafts").validRequest(method, params)) throw kindError(i18nText("mail.invalid"), "invalid");
+  if (method === ATTACH_METHOD && !validAttach(params)) throw kindError(i18nText("attach.hermesInvalid"), "invalid");
+  if (method === STAGED_METHOD && !validStaged(params)) throw kindError(i18nText("attach.hermesInvalid"), "invalid");
+  if (method === TRANSCRIBE_METHOD && !validTranscribe(params)) throw kindError(i18nText("voice.invalid"), "invalid");
+  if (method === FILE_METHOD && !validFileRead(params)) throw kindError(i18nText("download.invalid"), "invalid");
+  if (method === GRANT_METHOD && !validFileGrant(params)) throw kindError(i18nText("download.invalid"), "invalid");
+  if (method === "session.messages" && !validHistoryRead(params)) throw kindError(i18nText("U0049"), "invalid");
+  if (method === "config.set" && !validModelSet(params) && !validReasoningSet(params)) throw kindError(i18nText("U0050"), "invalid");
+  if (method === "session.list" && !validSessionList(params)) throw kindError(i18nText("U0051"), "invalid");
+  if (method === "session.create" && !validCreate(params)) throw kindError(i18nText("U0052"), "invalid");
+  if (method === "session.title" && !validBotTitle(params)) throw kindError(i18nText("U0053"), "invalid");
+  if (method === "session.delete" && !validSessionDelete(params)) throw kindError(i18nText("session.deleteInvalid"), "invalid");
+  if (method === "session.close" && !validSessionClose(params)) throw kindError(i18nText("session.deleteInvalid"), "invalid");
+  if (method === "deck.session_index" && !validSessionIndex(params)) throw kindError(i18nText("sessions.invalid"), "invalid");
+  if (method === "deck.session_update" && !validSessionUpdate(params)) throw kindError(i18nText("sessions.invalid"), "invalid");
+  if (method === "deck.reasoning_view" && !validReasoningView(params)) throw kindError(i18nText("sessions.invalid"), "invalid");
+  if (method === "session.archive" && !validSessionArchive(params)) throw kindError(i18nText("sessions.invalid"), "invalid");
+  if (method === "session.branch_stored" && !validSessionBranch(params)) throw kindError(i18nText("sessions.invalid"), "invalid");
+  if ((method === "profiles.list" || method === "deck.version") && Object.keys(params).length) throw kindError(i18nText("U0054"), "invalid");
+  if (method === "profiles.get_asset" && !validAssetRead(params)) throw kindError(i18nText("U0055"), "invalid");
+  if (method.startsWith("subagent.") && !validSubagent(method, params)) throw kindError(i18nText("U0047"), "invalid");
+  if (method === "deck.plan" && !validPlanRead(params)) throw kindError(i18nText("U0047"), "invalid");
+  if (method === "commands.catalog" && !validCatalogRead(params)) throw kindError(i18nText("U0047"), "invalid");
+  if (method.startsWith("groups.") && !groupRpc.validGroupRequest(method, params)) throw kindError(i18nText("groups.invalid"), "invalid");
 }
 
 /** A reply: string id, no method, exactly one of result / error{message} (hermes.rs:192-204). */
@@ -1078,14 +1092,14 @@ function normalizeServerRequest(frame, refFor) {
 function secretAnswer(method, value) {
   if (value === null || value === undefined || value === "") return "";
   if (method === "vault.save_login") {
-    if (!isPlainObject(value)) throw new Error(i18nText("mp.invalid"));
+    if (!isPlainObject(value)) throw kindError(i18nText("mp.invalid"), "invalid");
     const identifier = typeof value.identifier === "string" ? value.identifier.trim() : "";
     const password = typeof value.password === "string" ? value.password : "";
     if (!identifier && !password) return "";
-    if (!identifier || !password || identifier.length > SECRET_MAX || password.length > SECRET_MAX) throw new Error(i18nText("mp.invalid"));
+    if (!identifier || !password || identifier.length > SECRET_MAX || password.length > SECRET_MAX) throw kindError(i18nText("mp.invalid"), "invalid");
     return JSON.stringify({ identifier, password });
   }
-  if (typeof value !== "string" || value.length > SECRET_MAX) throw new Error(i18nText("mp.invalid"));
+  if (typeof value !== "string" || value.length > SECRET_MAX) throw kindError(i18nText("mp.invalid"), "invalid");
   return method === "vault.code" ? value.replace(/[\s-]/g, "") : value;
 }
 
@@ -1524,7 +1538,7 @@ class BridgeClient extends EventEmitter {
     if (!p) return; // unknown or already timed out: a late reply never completes a newer call
     this.pending.delete(id);
     clearTimeout(p.timer);
-    if (error !== undefined) p.reject(Object.assign(new Error(error), { rpcCode }));
+    if (error !== undefined) p.reject(Object.assign(new Error(error), { rpcCode, kind: "host" }));
     else p.resolve(result);
   }
 
@@ -1533,7 +1547,7 @@ class BridgeClient extends EventEmitter {
     this.pending.clear();
     for (const p of all) {
       clearTimeout(p.timer);
-      p.reject(new Error(message));
+      p.reject(kindError(message, kindOfMessage(message)));
     }
   }
 
@@ -1622,11 +1636,12 @@ class BridgeClient extends EventEmitter {
     try {
       checkRequest(method, params);
     } catch (e) {
+      if (e && !e.kind) e.kind = "invalid";
       return Promise.reject(e);
     }
     const conn = this.conn;
-    if (this.stopped || !conn || !conn.ready || conn.closed) return Promise.reject(new Error(MSG.offline));
-    if (this.pending.size >= MAX_PENDING || conn.child.stdin.writableLength > MAX_WRITE_BUFFER) return Promise.reject(new Error(MSG.queueFull));
+    if (this.stopped || !conn || !conn.ready || conn.closed) return Promise.reject(msgError("offline"));
+    if (this.pending.size >= MAX_PENDING || conn.child.stdin.writableLength > MAX_WRITE_BUFFER) return Promise.reject(msgError("queueFull"));
     const id = `${this.ns}-${this.counter++}`;
     const line = `${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`;
     const big = method === ATTACH_METHOD || method === TRANSCRIBE_METHOD;
@@ -1636,7 +1651,7 @@ class BridgeClient extends EventEmitter {
         const p = this.pending.get(id);
         if (p && p.timer === timer) {
           this.pending.delete(id);
-          reject(new Error(MSG.timeout));
+          reject(msgError("timeout"));
         }
       }, deadline);
       this.pending.set(id, { resolve, reject, timer, method });
@@ -1687,7 +1702,7 @@ class BridgeClient extends EventEmitter {
   async sessions({ limit = 50, profile } = {}) {
     const params = { limit: Math.min(200, Math.max(1, Number(limit) || 50)) };
     if (profile !== undefined) {
-      if (typeof profile !== "string" || !PROFILE_RE.test(profile)) throw new Error(i18nText("U0081"));
+      if (typeof profile !== "string" || !PROFILE_RE.test(profile)) throw kindError(i18nText("U0081"), "invalid");
       params.profile = profile;
     }
     return projectSessions(await this.request("session.list", params), params.profile);
@@ -1701,7 +1716,7 @@ class BridgeClient extends EventEmitter {
    * no paging, no archived view: `legacy` is true and archived pages are empty).
    */
   async sessionPage({ profile = "default", archived = false, offset = 0 } = {}) {
-    if (!validProfileParam(profile)) throw new Error(i18nText("U0081"));
+    if (!validProfileParam(profile)) throw kindError(i18nText("U0081"), "invalid");
     const params = { limit: INDEX_PAGE, archived: archived ? "only" : "exclude" };
     if (profile !== "default") params.profile = profile;
     if (offset) params.offset = offset;
@@ -1756,6 +1771,7 @@ class BridgeClient extends EventEmitter {
         } catch (e) {
           info.ok = false;
           info.error = String((e && e.message) || e).slice(0, 200);
+          info.code = (e && e.kind) || "host"; // stable kind for the relay's typed errors (the sentence stays for the desktop)
         }
         profiles.push(info);
       }
@@ -1777,7 +1793,7 @@ class BridgeClient extends EventEmitter {
   async renameSession(sessionId, { profile, title } = {}) {
     checkSid(sessionId);
     const clean = cleanTitle(title);
-    if (clean === null) throw new Error(i18nText("sessions.invalid"));
+    if (clean === null) throw kindError(i18nText("sessions.invalid"), "invalid");
     const params = { session_id: sessionId, title: clean };
     const p = this._profileOf(sessionId, profile);
     if (p && p !== "default") params.profile = p;
@@ -1792,7 +1808,7 @@ class BridgeClient extends EventEmitter {
   /** Pin or unpin one stored session (Hermes keeps pinned ones out of its auto-archive sweep). */
   async pinSession(sessionId, { profile, pinned } = {}) {
     checkSid(sessionId);
-    if (typeof pinned !== "boolean") throw new Error(i18nText("sessions.invalid"));
+    if (typeof pinned !== "boolean") throw kindError(i18nText("sessions.invalid"), "invalid");
     const params = { session_id: sessionId, pinned };
     const p = this._profileOf(sessionId, profile);
     if (p && p !== "default") params.profile = p;
@@ -1804,10 +1820,10 @@ class BridgeClient extends EventEmitter {
   /** Archive or unarchive one stored session (messages are kept). A session running right now is refused. */
   async archiveSession(sessionId, { profile, archived } = {}) {
     checkSid(sessionId);
-    if (typeof archived !== "boolean") throw new Error(i18nText("sessions.invalid"));
+    if (typeof archived !== "boolean") throw kindError(i18nText("sessions.invalid"), "invalid");
     const node = this.nodeFor(sessionId, profile);
     if (archived && node && node.terminalAt === null && (node.active || node.state === "thinking" || node.state === "working" || node.state === "searching")) {
-      throw new Error(i18nText("sessions.busy"));
+      throw kindError(i18nText("sessions.busy"), "stale");
     }
     const params = { session_id: sessionId, archived };
     const p = this._profileOf(sessionId, profile);
@@ -1824,7 +1840,7 @@ class BridgeClient extends EventEmitter {
   async branchSession(sessionId, { profile } = {}) {
     checkSid(sessionId);
     const p = this._profileOf(sessionId, profile) || "default";
-    if (p !== "default" && !PROFILE_RE.test(p)) throw new Error(i18nText("U0081"));
+    if (p !== "default" && !PROFILE_RE.test(p)) throw kindError(i18nText("U0081"), "invalid");
     const epoch = this.epoch;
     const params = { parent_session_id: sessionId, idempotency_key: require("crypto").randomUUID() };
     if (p !== "default") params.profile = p;
@@ -1839,7 +1855,7 @@ class BridgeClient extends EventEmitter {
   /** Read-only persisted history (latest window, then older pages by offset). Never resumes a session. */
   async history(sessionId, { profile = "default", limit = 40, offset = 0 } = {}) {
     checkSid(sessionId);
-    if (typeof profile !== "string" || !PROFILE_RE.test(profile)) throw new Error(i18nText("U0081"));
+    if (typeof profile !== "string" || !PROFILE_RE.test(profile)) throw kindError(i18nText("U0081"), "invalid");
     const lim = Number.isInteger(limit) && limit >= 1 && limit <= 100 ? limit : 40;
     const off = Number.isInteger(offset) && offset >= 0 ? offset : 0;
     const r = await this.request("session.messages", { session_id: sessionId, profile, limit: lim, offset: off, order: "latest", inline_images: false });
@@ -1858,7 +1874,7 @@ class BridgeClient extends EventEmitter {
    * composer for the owner to edit; nothing is sent to the agent. `audio` is a Buffer (webm/ogg/wav...).
    */
   async transcribe(audio, mime, { language } = {}) {
-    if (!Buffer.isBuffer(audio) || !audio.length || audio.length > TRANSCRIBE_AUDIO_MAX) throw new Error(i18nText("voice.invalid"));
+    if (!Buffer.isBuffer(audio) || !audio.length || audio.length > TRANSCRIBE_AUDIO_MAX) throw kindError(i18nText("voice.invalid"), "invalid");
     const params = { audio_base64: audio.toString("base64"), mime: typeof mime === "string" ? mime : "audio/webm" };
     // Only an explicit hint is sent: without one Hermes' own stt config (auto-detect by default) decides.
     if (typeof language === "string" && LANGUAGE_RE.test(language.toLowerCase())) params.language = language.toLowerCase();
@@ -1878,10 +1894,10 @@ class BridgeClient extends EventEmitter {
     if (p && p !== "default") params.profile = p;
     const r = await this.request(FILE_METHOD, params);
     if (!isPlainObject(r) || typeof r.data !== "string" || !Number.isSafeInteger(r.size) || r.size < 0 || r.size > FILE_SIZE_MAX || !Number.isSafeInteger(r.length) || r.length < 0 || r.length > length) {
-      throw new Error(i18nText("download.badReply"));
+      throw kindError(i18nText("download.badReply"), "reply");
     }
     const bytes = Buffer.from(r.data, "base64");
-    if (bytes.length !== r.length) throw new Error(i18nText("download.badReply"));
+    if (bytes.length !== r.length) throw kindError(i18nText("download.badReply"), "reply");
     return { size: r.size, mtime: num(r.mtime), offset: r.offset, length: r.length, eof: r.eof === true, bytes };
   }
 
@@ -1897,7 +1913,7 @@ class BridgeClient extends EventEmitter {
     if (p && p !== "default") params.profile = p;
     const r = await this.request(GRANT_METHOD, params);
     if (!isPlainObject(r) || typeof r.id !== "string" || !DOWNLOAD_ID_RE.test(r.id) || !Number.isSafeInteger(r.size) || r.size < 0 || r.size > DOWNLOAD_BYTES_MAX) {
-      throw new Error(i18nText("download.badReply"));
+      throw kindError(i18nText("download.badReply"), "reply");
     }
     return { id: r.id, name: typeof r.name === "string" ? r.name.slice(0, 255) : "", size: r.size, mtime: num(r.mtime) };
   }
@@ -1983,17 +1999,17 @@ class BridgeClient extends EventEmitter {
     }
     const params = { session_id: storedId, omit_messages: true, inline_images: false, ...(lazy ? { lazy: true } : {}) };
     if (profile && profile !== "default") {
-      if (!PROFILE_RE.test(profile)) throw new Error(i18nText("U0081"));
+      if (!PROFILE_RE.test(profile)) throw kindError(i18nText("U0081"), "invalid");
       params.profile = profile;
     }
     const r = await this.request("session.resume", params);
-    if (this.epoch !== epoch || !this.conn) throw new Error(MSG.changed);
+    if (this.epoch !== epoch || !this.conn) throw msgError("changed");
     const rpcId = isPlainObject(r) && typeof r.session_id === "string" ? r.session_id : "";
-    if (!rpcId || rpcId.length > 512) throw new Error(i18nText("U0082"));
+    if (!rpcId || rpcId.length > 512) throw kindError(i18nText("U0082"), "reply");
     const info = isPlainObject(r.info) ? r.info : {};
     const canonical = [r.stored_session_id, r.session_key, r.resumed, info.stored_session_id].find((v) => typeof v === "string" && v && v.length <= 512);
     const existing = this.rpcToStored.get(rpcId);
-    if (existing && existing.profile !== profile) throw new Error(MSG.changed);
+    if (existing && existing.profile !== profile) throw msgError("changed");
     const meanwhile = this.bindings.get(key);
     if (watch && meanwhile && meanwhile.epoch === epoch) return meanwhile.rpcId; // a send bound it while this resumed
     for (const id of new Set([storedId, canonical].filter(Boolean))) this.bindings.set(sessionKey(profile, id), { rpcId, epoch });
@@ -2110,7 +2126,7 @@ class BridgeClient extends EventEmitter {
       let rpcId;
       try { rpcId = await recovery; }
       finally { if (this.recovering.get(key) === recovery) this.recovering.delete(key); }
-      if (epoch !== this.epoch) throw new Error(MSG.changed);
+      if (epoch !== this.epoch) throw msgError("changed");
       // Native observer controls address stored IDs + turn/pid, not gateway runtime IDs.
       return this.request(method, { ...params, session_id: method.startsWith("native.") ? storedId : rpcId });
     }
@@ -2143,7 +2159,7 @@ class BridgeClient extends EventEmitter {
    * idempotency key makes a retried create return the same session instead of a second one.
    */
   async create({ profile = "default" } = {}) {
-    if (profile !== "default" && !PROFILE_RE.test(profile)) throw new Error(i18nText("U0081"));
+    if (profile !== "default" && !PROFILE_RE.test(profile)) throw kindError(i18nText("U0081"), "invalid");
     const epoch = this.epoch;
     const params = { idempotency_key: require("crypto").randomUUID() };
     if (profile !== "default") params.profile = profile;
@@ -2154,13 +2170,13 @@ class BridgeClient extends EventEmitter {
 
   /** Bind a session.create reply and show the new session until a snapshot lists it. */
   _created(r, profile, epoch, title, railNew = false) {
-    if (this.epoch !== epoch || !this.conn) throw new Error(MSG.changed);
+    if (this.epoch !== epoch || !this.conn) throw msgError("changed");
     const rpcId = isPlainObject(r) && typeof r.session_id === "string" ? r.session_id : "";
-    if (!rpcId || rpcId.length > 512) throw new Error(i18nText("U0082"));
+    if (!rpcId || rpcId.length > 512) throw kindError(i18nText("U0082"), "reply");
     const stored = typeof r.stored_session_id === "string" && r.stored_session_id && r.stored_session_id.length <= 512 ? r.stored_session_id : rpcId;
     const key = sessionKey(profile, stored);
     const existing = this.rpcToStored.get(rpcId);
-    if (existing && existing.profile !== profile) throw new Error(MSG.changed);
+    if (existing && existing.profile !== profile) throw msgError("changed");
     this.bindings.set(key, { rpcId, epoch });
     this.rpcToStored.set(rpcId, { sid: stored, profile });
     const node = { ...normalizeNode({ session_id: stored, profile_name: profile, state: "idle", updated_at: Date.now() / 1000, source: "deck", title }), rpcId, fresh: true };
@@ -2193,13 +2209,13 @@ class BridgeClient extends EventEmitter {
 
   /** One profile's slash commands (commands.catalog, projected). Older hosts answer -32601: the caller shows none. */
   async commandCatalog(profile) {
-    if (!validProfileParam(profile)) throw new Error(i18nText("U0081"));
+    if (!validProfileParam(profile)) throw kindError(i18nText("U0081"), "invalid");
     return projectCommandCatalog(await this.request("commands.catalog", { profile }));
   }
 
   /** A profile's avatar picture (profiles.get_asset), checked and size-capped; {found:false} when there is none. */
   async avatar(name) {
-    if (typeof name !== "string" || !PROFILE_RE.test(name)) throw new Error(i18nText("U0081"));
+    if (typeof name !== "string" || !PROFILE_RE.test(name)) throw kindError(i18nText("U0081"), "invalid");
     return projectAvatar(await this.request("profiles.get_asset", { name, asset: "avatar" }));
   }
 
@@ -2231,12 +2247,12 @@ class BridgeClient extends EventEmitter {
     try {
       list = groupRpc.roomMembers(members);
     } catch {
-      throw new Error(i18nText("groups.pickRange", { min: groupRpc.MIN_MEMBERS, max: groupRpc.MAX_MEMBERS }));
+      throw kindError(i18nText("groups.pickRange", { min: groupRpc.MIN_MEMBERS, max: groupRpc.MAX_MEMBERS }), "invalid");
     }
     const params = { room_id: `deck-${require("crypto").randomUUID()}`, name: String(name || "").trim(), members: list };
     const r = await this.request("groups.create", params);
     const room = groupRpc.projectRoom(r && r.room);
-    if (!room) throw new Error(i18nText("U0056"));
+    if (!room) throw kindError(i18nText("U0056"), "reply");
     return room;
   }
 
@@ -2281,20 +2297,20 @@ class BridgeClient extends EventEmitter {
    * lookup all throw, so nothing ever mints a second chat beside the real one.
    */
   async botChat(profile, { expect = false } = {}) {
-    if (typeof profile !== "string" || !PROFILE_RE.test(profile)) throw new Error(i18nText("U0081"));
+    if (typeof profile !== "string" || !PROFILE_RE.test(profile)) throw kindError(i18nText("U0081"), "invalid");
     const params = { title: BOT_CHAT_TITLE, include_hidden: true, limit: 200 };
     if (profile !== "default") params.profile = profile;
     let r;
     try {
       r = await this.request("session.list", params);
     } catch (e) {
-      throw new Error(i18nText("U0083", { BOT_CHAT_TITLE: BOT_CHAT_TITLE, message: e.message }));
+      throw kindError(i18nText("U0083", { BOT_CHAT_TITLE: BOT_CHAT_TITLE, message: e.message }), (e && e.kind) || "host", e && e.rpcCode !== undefined ? { rpcCode: e.rpcCode } : undefined);
     }
     const rows = isPlainObject(r) && Array.isArray(r.sessions) ? r.sessions.filter(isPlainObject) : [];
     // an exact-title lookup answers at most one row, with the lineage tip as resolved_id; anything else is
     // a host that ignored `title` and listed recent sessions instead
     if (rows.length > 1 || (rows.length === 1 && !(typeof rows[0].resolved_id === "string" && isBotChatRow(rows[0])))) {
-      throw new Error(i18nText("U0084", { BOT_CHAT_TITLE: BOT_CHAT_TITLE }));
+      throw kindError(i18nText("U0084", { BOT_CHAT_TITLE: BOT_CHAT_TITLE }), "unsupported");
     }
     if (rows.length === 1 && sidOrNull(rows[0].id)) {
       const chat = projectBotChat(rows[0], profile);
@@ -2305,7 +2321,7 @@ class BridgeClient extends EventEmitter {
     const mine = this.botPending.get(profile);
     if (mine && mine.pending && mine.epoch === this.epoch) return { ...mine.chat, pending: true }; // created here; stored on its first turn
     if (expect || this.botSeen.has(profile)) {
-      throw new Error(i18nText("U0085", { BOT_CHAT_TITLE: BOT_CHAT_TITLE }));
+      throw kindError(i18nText("U0085", { BOT_CHAT_TITLE: BOT_CHAT_TITLE }), "stale");
     }
     return null;
   }
@@ -2317,7 +2333,7 @@ class BridgeClient extends EventEmitter {
    * A title already taken means someone else just created it: that one is adopted. Never sends a prompt.
    */
   async createBotChat(profile, { expect = false } = {}) {
-    if (typeof profile !== "string" || !PROFILE_RE.test(profile)) throw new Error(i18nText("U0081"));
+    if (typeof profile !== "string" || !PROFILE_RE.test(profile)) throw kindError(i18nText("U0081"), "invalid");
     const inflight = this.minting.get(profile);
     if (inflight) return inflight;
     const p = (async () => {
@@ -2347,13 +2363,13 @@ class BridgeClient extends EventEmitter {
         this._forgetCreated(stored, rpcId, profile);
         const winner = await this.botChat(profile);
         if (winner) return { ...winner, created: false, adopted: true };
-        throw new Error(i18nText("U0086", { BOT_CHAT_TITLE: BOT_CHAT_TITLE }));
+        throw kindError(i18nText("U0086", { BOT_CHAT_TITLE: BOT_CHAT_TITLE }), "stale");
       }
       if ([MSG.timeout, MSG.lost, MSG.offline, MSG.closed, MSG.queueFull].includes(e.message)) throw e;
       // an older host without session.title: Hermes applies the title after the first turn (pending_title)
       pending = true;
     }
-    if (this.epoch !== epoch) throw new Error(MSG.changed);
+    if (this.epoch !== epoch) throw msgError("changed");
     const chat = { sid: stored, id: stored, profile, title: BOT_CHAT_TITLE, preview: "", lastActive: Date.now() / 1000, messageCount: 0 };
     this.botPending.set(profile, { chat, epoch, pending });
     if (!pending) this.botSeen.add(profile);
@@ -2367,7 +2383,7 @@ class BridgeClient extends EventEmitter {
   async send(sessionId, text, { profile, files, staged } = {}) {
     const withStaged = Array.isArray(staged) && staged.length > 0;
     const withFiles = withStaged || (Array.isArray(files) && files.length > 0);
-    if (withFiles && typeof text !== "string") throw new Error(i18nText("U0103"));
+    if (withFiles && typeof text !== "string") throw kindError(i18nText("U0103"), "invalid");
     const t = withFiles ? text.trim() : checkText(text, null); // files only: the text may be empty, the host adds a default one
     // A submit is intent even if its reply is lost; never tear down a turn while _bind awaits.
     const key = sessionKey(this._profileOf(sessionId, profile), sessionId);
@@ -2387,8 +2403,8 @@ class BridgeClient extends EventEmitter {
     const epoch = this.epoch;
     const node = this.nodeFor(sessionId, profile);
     const r = await this.request("deck.takeover", { session_id: sessionId, profile, ...(node?.ownerPid ? { owner_pid: node.ownerPid } : {}) });
-    if (epoch !== this.epoch || !this.conn) throw new Error(MSG.changed);
-    if (!isPlainObject(r) || r.ok !== true || !["transferred", "restarted"].includes(r.mode) || !sidOrNull(r.session_id)) throw new Error("Invalid takeover reply");
+    if (epoch !== this.epoch || !this.conn) throw msgError("changed");
+    if (!isPlainObject(r) || r.ok !== true || !["transferred", "restarted"].includes(r.mode) || !sidOrNull(r.session_id)) throw kindError("Invalid takeover reply", "reply");
     const key = sessionKey(profile, sessionId);
     const old = this.bindings.get(key);
     this.watchOnly.delete(r.session_id); // an explicit takeover drives the session from here on
@@ -2421,7 +2437,7 @@ class BridgeClient extends EventEmitter {
     checkSid(sessionId);
     const profile = this._profileOf(sessionId, opts.profile);
     const node = this.nodeFor(sessionId, profile);
-    if (opts.turnId !== undefined && opts.turnId !== null && (!node || opts.turnId !== node.turnId)) throw new Error(i18nText("U0089"));
+    if (opts.turnId !== undefined && opts.turnId !== null && (!node || opts.turnId !== node.turnId)) throw kindError(i18nText("U0089"), "stale");
     if (node && controllable(node)) return this._native("native.interrupt", sessionId, undefined, opts.turnId, profile);
     const b = this.bindings.get(sessionKey(profile, sessionId));
     // a watch-only binding is read-only: Stop stays with whoever drives the turn
@@ -2429,14 +2445,14 @@ class BridgeClient extends EventEmitter {
       const r = await this._runtimeRequest("session.interrupt", sessionId, profile, { session_id: b.rpcId });
       return { status: isPlainObject(r) && typeof r.status === "string" ? r.status.slice(0, 64) : "interrupted" };
     }
-    throw new Error(i18nText("U0087"));
+    throw kindError(i18nText("U0087"), "stale");
   }
 
   async _native(method, sessionId, text, turnId, profile) {
     checkSid(sessionId);
     const node = this.nodeFor(sessionId, profile);
-    if (!node || !controllable(node)) throw new Error(i18nText("U0088"));
-    if (turnId !== undefined && turnId !== null && turnId !== node.turnId) throw new Error(i18nText("U0089"));
+    if (!node || !controllable(node)) throw kindError(i18nText("U0088"), "stale");
+    if (turnId !== undefined && turnId !== null && turnId !== node.turnId) throw kindError(i18nText("U0089"), "stale");
     // Session id, owner pid and turn id must all match the executing agent on the host.
     const params = { session_id: sessionId, turn_id: node.turnId, owner_pid: node.ownerPid };
     if (text !== undefined) params.text = text;
@@ -2522,8 +2538,8 @@ class BridgeClient extends EventEmitter {
 
   /** Session-scoped model switch (`<id> --provider <slug> --session`); never global. */
   async setModel(sessionId, { model, provider, confirm = false, profile } = {}) {
-    if (typeof model !== "string" || !MODEL_ID_RE.test(model)) throw new Error(i18nText("U0090"));
-    if (typeof provider !== "string" || !SLUG_RE.test(provider)) throw new Error(i18nText("U0091"));
+    if (typeof model !== "string" || !MODEL_ID_RE.test(model)) throw kindError(i18nText("U0090"), "invalid");
+    if (typeof provider !== "string" || !SLUG_RE.test(provider)) throw kindError(i18nText("U0091"), "invalid");
     const rpcId = await this._bind(sessionId, this._profileOf(sessionId, profile));
     const params = { session_id: rpcId, key: "model", value: `${model} --provider ${provider} --session` };
     if (confirm === true) params.confirm_expensive_model = true;
@@ -2540,7 +2556,7 @@ class BridgeClient extends EventEmitter {
 
   /** Session-scoped reasoning level (Hermes keeps it on the session; config.yaml is never written). */
   async setEffort(sessionId, { effort, profile } = {}) {
-    if (!REASONING_EFFORTS.includes(effort)) throw new Error(i18nText("pick.badEffort"));
+    if (!REASONING_EFFORTS.includes(effort)) throw kindError(i18nText("pick.badEffort"), "invalid");
     const rpcId = await this._bind(sessionId, this._profileOf(sessionId, profile));
     const r = await this.request("config.set", { session_id: rpcId, key: "reasoning", value: effort });
     const v = isPlainObject(r) && typeof r.value === "string" ? r.value : effort;
@@ -2565,7 +2581,7 @@ class BridgeClient extends EventEmitter {
       choices: [...req.choices],
       current,
       answer: choice => {
-        if (!current() || !["once", "deny"].includes(choice)) return Promise.reject(new Error(MSG.notOpen));
+        if (!current() || !["once", "deny"].includes(choice)) return Promise.reject(msgError("notOpen"));
         used = true; // consume before writing; failure is never retried from a stale banner
         return this.answerApproval(id, choice, { profile: req.profile });
       },
@@ -2575,24 +2591,24 @@ class BridgeClient extends EventEmitter {
   answerApproval(id, choice, { profile } = {}) {
     const matches = this.listRequests().filter((r) => r.id === id);
     const req = matches.length === 1 ? matches[0] : null;
-    if (!req || !validProfileParam(req.profile) || req.kind !== "approval") return Promise.reject(new Error(MSG.notOpen));
-    if (profile !== undefined && (!validProfileParam(profile) || req.profile !== profile)) return Promise.reject(new Error(MSG.notOpen));
-    if (!req.choices.includes(choice)) return Promise.reject(new Error(i18nText("U0092")));
+    if (!req || !validProfileParam(req.profile) || req.kind !== "approval") return Promise.reject(msgError("notOpen"));
+    if (profile !== undefined && (!validProfileParam(profile) || req.profile !== profile)) return Promise.reject(msgError("notOpen"));
+    if (!req.choices.includes(choice)) return Promise.reject(kindError(i18nText("U0092"), "invalid"));
     return this._answer(req, { choice });
   }
 
   answerQuestion(id, answers, { profile } = {}) {
     const matches = this.listRequests().filter((r) => r.id === id);
     const req = matches.length === 1 ? matches[0] : null;
-    if (!req || !validProfileParam(req.profile) || req.kind !== "question") return Promise.reject(new Error(MSG.notOpen));
-    if (profile !== undefined && (!validProfileParam(profile) || req.profile !== profile)) return Promise.reject(new Error(MSG.notOpen));
-    if (!isPlainObject(answers)) return Promise.reject(new Error(i18nText("U0093")));
+    if (!req || !validProfileParam(req.profile) || req.kind !== "question") return Promise.reject(msgError("notOpen"));
+    if (profile !== undefined && (!validProfileParam(profile) || req.profile !== profile)) return Promise.reject(msgError("notOpen"));
+    if (!isPlainObject(answers)) return Promise.reject(kindError(i18nText("U0093"), "invalid"));
     const qids = new Set(req.questions.map((q) => q.qid));
     const out = {};
     for (const [qid, value] of Object.entries(answers)) {
-      if (!qids.has(qid)) return Promise.reject(new Error(i18nText("U0094")));
+      if (!qids.has(qid)) return Promise.reject(kindError(i18nText("U0094"), "invalid"));
       const v = Array.isArray(value) ? value.map(String).join(", ") : value;
-      if (typeof v !== "string" || v.length > 4000) return Promise.reject(new Error(i18nText("U0095")));
+      if (typeof v !== "string" || v.length > 4000) return Promise.reject(kindError(i18nText("U0095"), "invalid"));
       out[qid] = v;
     }
     return this._answer(req, { answers: out });
@@ -2606,8 +2622,8 @@ class BridgeClient extends EventEmitter {
   answerSecret(id, value, { profile } = {}) {
     const matches = this.listRequests().filter((r) => r.id === id);
     const req = matches.length === 1 ? matches[0] : null;
-    if (!req || !validProfileParam(req.profile) || req.kind !== "secret") return Promise.reject(new Error(MSG.notOpen));
-    if (profile !== undefined && (!validProfileParam(profile) || req.profile !== profile)) return Promise.reject(new Error(MSG.notOpen));
+    if (!req || !validProfileParam(req.profile) || req.kind !== "secret") return Promise.reject(msgError("notOpen"));
+    if (profile !== undefined && (!validProfileParam(profile) || req.profile !== profile)) return Promise.reject(msgError("notOpen"));
     let answer;
     try {
       answer = secretAnswer(req.method, value);
@@ -2620,7 +2636,7 @@ class BridgeClient extends EventEmitter {
   async _answer(req, result) {
     const captured = [...this.openRequests].find(([, prior]) => prior.id === req.id && prior.rpcId === req.rpcId
       && this._sessionRef(prior.rpcId, prior.profile ? { profile: prior.profile } : {}).profile === req.profile);
-    if (!captured) throw new Error(MSG.notOpen);
+    if (!captured) throw msgError("notOpen");
     const [key, arrival] = captured;
     const conn = this.conn;
     const epoch = this.epoch;
@@ -2628,7 +2644,7 @@ class BridgeClient extends EventEmitter {
     if (!conn || !conn.ready || conn.closed || this.stopped || this.answering.has(answerKey)
       || req.at !== arrival.at || req.kind !== arrival.kind || req.command !== arrival.command
       || req.description !== arrival.description || JSON.stringify(req.choices) !== JSON.stringify(arrival.choices)
-      || JSON.stringify(req.questions) !== JSON.stringify(arrival.questions)) throw new Error(MSG.notOpen);
+      || JSON.stringify(req.questions) !== JSON.stringify(arrival.questions)) throw msgError("notOpen");
     this.answering.add(answerKey); // synchronous: native action and open card cannot both write
     try {
       const r = await this.request("request.answer", { id: req.id, result });
@@ -2645,7 +2661,7 @@ class BridgeClient extends EventEmitter {
 
   _profileOf(sessionId, profile) {
     if (profile !== undefined) {
-      if (!validProfileParam(profile)) throw new Error(i18nText("U0081"));
+      if (!validProfileParam(profile)) throw kindError(i18nText("U0081"), "invalid");
       return profile;
     }
     const profiles = new Set();
@@ -2655,7 +2671,7 @@ class BridgeClient extends EventEmitter {
       if (sid === sessionId) profiles.add(p);
     }
     for (const r of this.recent) if (r.id === sessionId) profiles.add(r.profile);
-    if (profiles.size > 1) throw new Error("Session profile is ambiguous; select a profile.");
+    if (profiles.size > 1) throw kindError("Session profile is ambiguous; select a profile.", "invalid");
     return profiles.values().next().value || "default";
   }
 
@@ -2727,16 +2743,16 @@ function controllable(node) {
 }
 
 function checkSid(sid) {
-  if (typeof sid !== "string" || !SID_RE.test(sid)) throw new Error(i18nText("U0102"));
+  if (typeof sid !== "string" || !SID_RE.test(sid)) throw kindError(i18nText("U0102"), "invalid");
 }
 
 function checkSubagentId(id) {
-  if (typeof id !== "string" || !SUBAGENT_ID_RE.test(id)) throw new Error(i18nText("U0047"));
+  if (typeof id !== "string" || !SUBAGENT_ID_RE.test(id)) throw kindError(i18nText("U0047"), "invalid");
 }
 
 function checkText(text, max) {
-  if (typeof text !== "string" || !text.trim()) throw new Error(i18nText("U0103"));
-  if (max && text.length > max) throw new Error(i18nText("A0034", { v: max.toLocaleString(i18nLocale()) }));
+  if (typeof text !== "string" || !text.trim()) throw kindError(i18nText("U0103"), "invalid");
+  if (max && text.length > max) throw kindError(i18nText("A0034", { v: max.toLocaleString(i18nLocale()) }), "invalid");
   return text;
 }
 

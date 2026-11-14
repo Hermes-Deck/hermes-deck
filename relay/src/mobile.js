@@ -8,6 +8,7 @@ const { atomicWriteJson, readJson } = require('./util');
 const compat = require('./compat');
 const { UploadSpool, LEGACY, settleBody } = require('./uploads');
 const { DownloadTickets, LEGACY_MAX: LEGACY_DOWNLOAD } = require('./downloads');
+const { wireError, wireSessionIndex } = require('./mobile-gate');
 // The old single-line limits (base64 through the plugin's stdio): what a host without staged uploads can take. With a
 // plugin that answers deck.attach_staged on this host, capabilities() reports the spool's limits instead (uploads.js).
 const LIMITS = LEGACY;
@@ -199,6 +200,7 @@ class MobileRelay {
       sessionBrowser: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', reasoning: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off',
       work: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', subagents: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', commands: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off',
       workspace: !!this.available.workspace, desktop: !!this.available.desktop, push: !!this.push?.configured, transcribeLanguage: true,
+      errors: { v: 2 }, // typed error codes (mobile-gate.js wireError); v1 = bridge_error + English text
       limits: { ...(staged ? this.uploads.limits() : LIMITS), downloadBytes: direct ? this.staging.direct : LEGACY_DOWNLOAD }, uploads: { v: 1, staged }, downloads: { v: 1, direct } };
   }
   stagedReady() { return !!this.bridgeConfig && this.bridgeConfig.mode !== 'off' && this.staging.ok === true; }
@@ -542,7 +544,7 @@ class MobileRelay {
       case 'sessions': return bridge.sessions(args);
       case 'sessionPage': case 'sessionIndex':
         if ('archived' in args && typeof args.archived !== 'boolean' || 'force' in args && typeof args.force !== 'boolean' || 'offset' in args && (!Number.isSafeInteger(args.offset) || args.offset < 0)) throw fail('bad_request', 'Invalid session index arguments');
-        return bridge[op](args);
+        return op === 'sessionIndex' ? wireSessionIndex(await bridge.sessionIndex(args)) : bridge[op](args);
       case 'renameSession': case 'pinSession': case 'archiveSession': case 'branchSession': case 'discard': case 'setEffort': case 'takeover':
         if (!PROFILE_NAME.test(args.profile || '')) throw fail('bad_request', 'Explicit profile required');
         return bridge[op](args.sid, args);
@@ -768,7 +770,7 @@ class MobileRelay {
           const result = await this.call(device, message);
           if (ws.readyState === 1) ws.send(JSON.stringify({ t: 'response', id: message.id, ok: true, result }));
         } catch (error) {
-          if (ws.readyState === 1) ws.send(JSON.stringify({ t: 'response', id: message?.id, ok: false, error: { code: error.code || 'bridge_error', message: error.message, uncertain: error.uncertain === true || !error.code } }));
+          if (ws.readyState === 1) ws.send(JSON.stringify({ t: 'response', id: message?.id, ok: false, error: wireError(error) }));
         }
       });
       try {
@@ -783,7 +785,7 @@ class MobileRelay {
     if (!url.pathname.startsWith('/mobile/')) return false;
     this.handle(req, res, url).catch(error => {
       if (res.headersSent) res.destroy();
-      else { settleBody(req, res); json(res, error.status || 500, { error: { code: error.code || 'bridge_error', message: error.message, uncertain: error.uncertain === true || !error.code } }); }
+      else { settleBody(req, res); json(res, error.status || 500, { error: wireError(error) }); }
     });
     return true;
   }
