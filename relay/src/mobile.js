@@ -13,7 +13,9 @@ const { OpLog } = require('./oplog');
 const { httpOp, HTTP_OPS } = require('./mobile-op');
 const { kindsOf } = require('./mobile-notify-policy');
 const { NotifyCenter, gatewayEvent } = require('./mobile-notify');
-const { searchMessages, SCAN_TOTAL, MAX_LIMIT: SEARCH_LIMIT } = require('./message-search');
+// Loaded on first use: only a relay with a history store searches (the standalone mobile layout has neither).
+let messageSearch = null;
+const search = () => (messageSearch ||= require('./message-search'));
 // The old single-line limits (base64 through the plugin's stdio): what a host without staged uploads can take. With a
 // plugin that answers deck.attach_staged on this host, capabilities() reports the spool's limits instead (uploads.js).
 const LIMITS = LEGACY;
@@ -245,7 +247,7 @@ class MobileRelay {
       historyProfile: !!this.available.history,
       liveActivity: this.push?.offers?.('liveActivity') === true, // PUT/DELETE /mobile/activity; content-free liveactivity updates (X7)
       profileHue: true, // profiles rows may carry `hue` (one of seven names) from ui_meta['hermes-deck'].hue; read-only (X6)
-      searchMessages: this.history?.hermes ? { v: 1, scanRows: SCAN_TOTAL, maxLimit: SEARCH_LIMIT } : false, // X5: op searchMessages // GET /session/<sid>/messages|tools|call/<id>?profile=<name> reads only that profile (G8)
+      searchMessages: this.history?.hermes ? { v: 1, scanRows: search().SCAN_TOTAL, maxLimit: search().MAX_LIMIT } : false, // X5: op searchMessages // GET /session/<sid>/messages|tools|call/<id>?profile=<name> reads only that profile (G8)
       limits: { ...(staged ? this.uploads.limits() : LIMITS), downloadBytes: direct ? this.staging.direct : LEGACY_DOWNLOAD }, uploads: { v: 1, staged }, downloads: { v: 1, direct }, ...this.notices.capabilities(this.push) };
   }
   stagedReady() { return !!this.bridgeConfig && this.bridgeConfig.mode !== 'off' && this.staging.ok === true; }
@@ -777,7 +779,7 @@ class MobileRelay {
     if (op === 'searchMessages') {
       // Same reach as the history reads a phone already has (every session of every profile on this host), read-only.
       if (!this.history?.hermes) throw fail('unavailable', 'Message history is not available on this relay', 503);
-      return searchMessages(this.history.hermes, args, { claudeProfile: this.history.claudeProfile });
+      return search().searchMessages(this.history.hermes, args, { claudeProfile: this.history.claudeProfile });
     }
     const bridge = this.bridge(device);
     switch (op) {
