@@ -508,7 +508,7 @@ async function start(cfg) {
   // Large downloads (downloads.js): deck.file_grant tickets in <spool>/downloads, streamed by GET /downloads/<id> and
   // /mobile/files/<id>; DECK_DOWNLOAD_MAX caps one file on this side (default 8 GiB).
   const downloads = new DownloadTickets({ spool: uploads, ...(cfg.downloads || downloadConfig({})) });
-  const mobile = new MobileRelay({ uploads, downloads, tokensFile: cfg.mobileDevicesFile || path.join(cfg.dataDir, "mobile-devices.json"), bridgeConfig: cfg.mobileBridge, push: new MobilePushClient(), atDesk: () => presence.atDesk(cfg.pushDeskIdleS), capabilities: { history: !!history, workspace: !!workspace && !!fallback?.available, desktop: false }, history });
+  const mobile = new MobileRelay({ uploads, downloads, tokensFile: cfg.mobileDevicesFile || path.join(cfg.dataDir, "mobile-devices.json"), bridgeConfig: cfg.mobileBridge, push: new MobilePushClient(), atDesk: () => presence.atDesk(cfg.pushDeskIdleS), capabilities: { history: !!history, workspace: !!workspace && !!fallback?.available, desktop: false, screen: !!driver }, history });
   // R4: every phone bridge reports which profile owns each live session; the model takes it over event stamps.
   if (mobile.BridgeClient) mobile.BridgeClient = reconcilingBridge(mobile.BridgeClient, model);
   const host = { protocol: compat.PROTOCOL, plugins: compat.pluginCache(cfg.hermesRoot || null), update: () => compat.updateStatus(cfg.dataDir) };

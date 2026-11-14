@@ -34,6 +34,7 @@ The desktop app, relay and Hermes plugin share one version number.
 - Phone API: search the text of past messages across every agent (`searchMessages`, `capabilities.searchMessages`), newest first with highlighted snippets; secrets in messages are masked in the snippets.
 - Agents: a profile can name its colour (`ui_meta['hermes-deck'].hue`, one of seven), and the phone draws that agent in the same colour on every device (`hue` on the profile rows, `capabilities.profileHue`).
 - Phone notifications: with an updated push gateway, a Live Activity on the Lock Screen follows a long turn (needs you, back to working, finished, failed) and takes the place of that chat's banners while it runs (`PUT /mobile/activity`, `capabilities.liveActivity`); no conversation content is pushed.
+- Phone API: `capabilities.screen` tells the phone it may show the bot screen's frames and offer Stop, through the two routes it could already reach; leasing and granting stay on the computer (`desktop` is unchanged).
 
 ## [1.2.0] - 2026-11-10
 

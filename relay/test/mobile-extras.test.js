@@ -587,3 +587,27 @@ test('X7 push client: activity routes and liveactivity events only to a gateway 
   assert.deepEqual(await client.notify('d1', { id: 'e_2', kind: 'liveactivity', activity: 'a_1', live }), { skipped: true });
   assert.equal(requests.length, 3);
 });
+
+// --------------------------------------------------------------------------------------------------- X8 screen subset
+test('X8 screen: a narrower flag for frames + Stop when the bot screen driver runs; desktop stays false; no route widened', async t => {
+  const { mobile, paired } = fixture(t);
+  assert.equal(mobile.capabilities().screen, false);
+  assert.equal(mobile.capabilities().desktop, false);
+  const withDriver = new MobileRelay({ tokensFile: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'deck-screen-')), 'd.json'), capabilities: { desktop: false, screen: true } });
+  t.after(() => withDriver.stop());
+  assert.deepEqual(withDriver.capabilities().screen, { v: 1, frames: true, stop: true });
+  assert.equal(withDriver.capabilities().desktop, false);
+  // What a phone token reaches is unchanged: the same routes as before this lane (the filter in server.js is untouched).
+  const { createServer } = require('../src/server');
+  const reached = [];
+  const relay = createServer({ token: 'x'.repeat(32), mobile, model: { snapshot: () => ({}), sessions: new Map(), tokens: () => ({}) }, fleet: { data: {} }, version: 'test',
+    hooks: { onHttp: (req, res, url) => { reached.push(`${req.method} ${url.pathname}`); res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); return true; } } });
+  await new Promise(resolve => relay.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => relay.server.close(resolve)));
+  const url = `http://127.0.0.1:${relay.server.address().port}`;
+  assert.equal((await fetch(`${url}/cu/host/frame.png`, { headers: bearer(paired.token) })).status, 200);
+  assert.equal((await fetch(`${url}/desktop/stop`, { method: 'POST', headers: bearer(paired.token), body: '{}' })).status, 200);
+  for (const [method, route] of [['POST', '/cu/host/frame.png'], ['GET', '/desktop/stop'], ['POST', '/spaces/x'], ['POST', '/hermes/config']])
+    assert.equal((await fetch(`${url}${route}`, { method, headers: bearer(paired.token), body: method === 'POST' ? '{}' : undefined })).status, 403, `${method} ${route}`);
+  assert.deepEqual(reached, ['GET /cu/host/frame.png', 'POST /desktop/stop']);
+});

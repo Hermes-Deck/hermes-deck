@@ -231,7 +231,10 @@ class MobileRelay {
       takeover: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off',
       sessionBrowser: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', reasoning: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off',
       work: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', subagents: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', commands: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off',
-      workspace: !!this.available.workspace, desktop: !!this.available.desktop, push: !!this.push?.configured, transcribeLanguage: true,
+      workspace: !!this.available.workspace, desktop: !!this.available.desktop,
+      // X8: the Screen subset a phone may use, through routes a phone token already reaches: GET /cu/<frame> (frames named
+      // by the `cu` items of WS /events) and POST /desktop/stop. Never lease or grant; `desktop` stays as it was.
+      screen: this.available.screen ? { v: 1, frames: true, stop: true } : false, push: !!this.push?.configured, transcribeLanguage: true,
       errors: { v: 2 }, // typed error codes (mobile-gate.js wireError); v1 = bridge_error + English text
       readsNeverResume: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // subagents/subagentTail/modelOptions
       replay: true, // a repeated mutation id answers its first outcome for 10 min (last 256 per device), `pending` while it runs
