@@ -178,7 +178,7 @@ function config(env = process.env, mem = os.totalmem()) {
  * Deck connections carry device heartbeats (presence.js), CDP tunnel frames (cdp.js), driver frames (driver.js)
  * and Workspace requests (workspace.js: host picks, the agent host's browser view).
  */
-function deckHooks(presence, gateway, driver = null, workspace = null, bundles = null, spaces = null, spaceTunnel = null) {
+function deckHooks(presence, gateway, driver = null, workspace = null, bundles = null, spaces = null, spaceTunnel = null, mobile = null) {
   return {
     // tunnelled CDP answers, driver output (screenshots) and space tunnel answers ([0xD6], viewer files, MCP) are large
     maxPayload: gateway || driver || spaces || spaceTunnel ? 64 * 1024 * 1024 : undefined,
@@ -196,6 +196,8 @@ function deckHooks(presence, gateway, driver = null, workspace = null, bundles =
         if (!m || typeof m !== "object") return true;
         if (m.t === "heartbeat") {
           presence.heartbeat(ws, { ...m, device: { id: ws.mobileDevice.id, name: m.device?.name || "iPhone" }, hosting: { browser: false, desktop: false }, driverOk: false });
+          // A phone in use (unlocked, recent input) counts as "seen" for its push breaker (mobile-notify.js, G1).
+          if (mobile && m.locked !== true && !(Number(m.idleSec) >= 60)) mobile.seenDevice(ws.mobileDevice.id, "presence");
           return true;
         }
         if (m.t === "ws-input" && workspace?.holders.get(String(m.slug || "")) !== ws) return true;
@@ -501,7 +503,7 @@ async function start(cfg) {
   });
   let quitRelay = null; // set by the entry point below: stop, then exit so the service manager starts the relay again
   const hermesConfig = new HermesConfig({ ...(cfg.hermesConfig || hermesConfigOptions({})), root: cfg.hermesRoot || (cfg.hermesConfig || {}).root, quit: () => (quitRelay ? quitRelay() : null) });
-  const srv = createServer({ hermesConfig, hostUpdate, mobile, host, uploads, downloads, token: cfg.token, queryToken: !!cfg.queryToken, model, fleet, version: VERSION, hooks: deckHooks(presence, gateway, driver, workspace, bundles, spaces, spaceTunnel), history, plans, bundles });
+  const srv = createServer({ hermesConfig, hostUpdate, mobile, host, uploads, downloads, token: cfg.token, queryToken: !!cfg.queryToken, model, fleet, version: VERSION, hooks: deckHooks(presence, gateway, driver, workspace, bundles, spaces, spaceTunnel, mobile), history, plans, bundles });
   broadcast = srv.broadcast;
   if (workspace) workspace.setBroadcast(srv.broadcast);
 

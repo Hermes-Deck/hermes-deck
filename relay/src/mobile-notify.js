@@ -61,6 +61,16 @@ function requestRecord(source) {
   return null;
 }
 
+/**
+ * The event body towards the push gateway (PROGRAMME "Push gateway contract for D9"): `collapse` only when the gateway
+ * offers it, kind `digest` only when offered (else the digest travels as `done`). Old gateways reject unknown keys.
+ */
+function gatewayEvent(push, id, item) {
+  const offers = feature => typeof push?.offers === 'function' && push.offers(feature) === true;
+  const kind = item.kind === 'digest' ? (offers('digest') ? 'digest' : 'done') : item.kind;
+  return { id, kind, ...(offers('collapse') && /^[a-f0-9]{32}$/.test(item.thread || '') ? { collapse: item.thread } : {}) };
+}
+
 class NotifyCenter {
   constructor({ now, log } = {}) {
     this.now = now || Date.now;
@@ -228,7 +238,7 @@ class NotifyCenter {
   release(device, item) {
     if (item.kind === 'digest' || item.test) return { action: 'bypass', digest: null };
     const verdict = device.governor.release({ kind: item.kind, chat: item.thread || collapseId(device.id, item.profile, item.sid) });
-    this.log(device, verdict.action === 'hold' ? 'held' : 'sent', item, verdict.action === 'bypass' ? { bypass: true } : undefined);
+    if (verdict.action === 'hold') this.log(device, 'held', item);
     return verdict;
   }
   /** Sweep: a quiet window that ended with held events yields one digest (the caller stores and pushes it). */
@@ -259,4 +269,4 @@ class NotifyCenter {
   }
 }
 
-module.exports = { NotifyCenter, requestRecord, collapseId, digestCollapse, isSubagentNode, STAKE_MS, REPLY_SETTLE_MS, TURN_ABANDON_MS, TEST_INTERVAL_MS, STAKE_OPS };
+module.exports = { NotifyCenter, gatewayEvent, requestRecord, collapseId, digestCollapse, isSubagentNode, STAKE_MS, REPLY_SETTLE_MS, TURN_ABANDON_MS, TEST_INTERVAL_MS, STAKE_OPS };

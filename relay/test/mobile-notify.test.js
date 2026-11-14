@@ -201,3 +201,96 @@ test('D13: scope all, followed and muted agents; sub-agent sessions never push t
   for (const secret of ['Step 1', 'Main', 'Helper', 'Which file', 'List']) assert.ok(!text.includes(secret), secret);
   assert.ok([...logs, ...muted.logs].every(line => line.t === 'push' && (line.sid === null || line.sid.length <= 8)));
 });
+
+// Finished turns in `chats` distinct chats, all in scope, each its own push candidate.
+async function finishTurns(clock, mobile, device, nodes, chats, prefix = 'c') {
+  for (let i = 0; i < chats; i++) {
+    const sid = `${prefix}${i}`;
+    nodes[sid] = { sid, profile: 'default', title: 'Chat', turnId: `${sid}-t${clock()}` };
+    mobile.notify(device, 'native', reply(sid, `Answer ${i}.`));
+    mobile.notify(device, 'native', { type: 'turn.complete', sid, profile: 'default', payload: { turn_id: nodes[sid].turnId } });
+    clock.advance(1000);
+    await flush(mobile);
+  }
+}
+
+test('D9 breaker in the relay: 5 pushes, then quiet; one digest after 10 minutes with counts only; doubling while unseen', async t => {
+  const clock = fakeClock(), nodes = {};
+  const { mobile, device, sent, logs } = fixture(t, { now: clock, policy: { scope: 'all' }, bridge: { nodeFor: sid => nodes[sid] || null } });
+  await finishTurns(clock, mobile, device, nodes, 8);
+  mobile.notify(device, 'requests', [{ id: 'r1', sid: 'c1', profile: 'default', kind: 'approval', at: clock(), command: 'ls', description: 'List' }]);
+  await flush(mobile);
+  assert.equal(sent.length, 5, 'five pushes, then the quiet window');
+  assert.equal([...device.notifications.values()].filter(item => item.delivery === 'held').length, 4);
+  assert.equal(logs.filter(line => line.decision === 'held').length, 4);
+  clock.advance(9 * 60000); mobile.govern(device); await flush(mobile);
+  assert.equal(sent.length, 5, 'nothing inside the window');
+  clock.advance(60000); mobile.govern(device); await flush(mobile);
+  assert.equal(sent.length, 6, 'one digest when the window ends');
+  const digest = device.notifications.get(sent[5].id);
+  assert.equal(sent[5].kind, 'done', 'a gateway without the digest feature gets the digest as done');
+  assert.deepEqual([digest.kind, digest.counts, digest.body, digest.title], ['digest', { updates: 4, chats: 4, needsYou: 1 }, '', '']);
+  assert.ok(logs.some(line => line.decision === 'digest' && line.counts.updates === 4));
+  // Still unseen: the next window is 20 minutes; one more held event yields one more digest at its end.
+  await finishTurns(clock, mobile, device, nodes, 2, 'd');
+  assert.equal(sent.length, 6);
+  clock.advance(19 * 60000); mobile.govern(device); await flush(mobile);
+  assert.equal(sent.length, 6, 'the second window is twice as long');
+  clock.advance(60000); mobile.govern(device); await flush(mobile);
+  assert.equal(sent.length, 7);
+  assert.deepEqual(device.notifications.get(sent[6].id).counts, { updates: 2, chats: 2, needsYou: 0 });
+});
+
+test('G1 seen: POST /mobile/seen, the seen op, any mutation and a foreground heartbeat reset the breaker and drop what it held', async t => {
+  const http = require('node:http');
+  const { createServer } = require('../src/server');
+  const { deckHooks } = require('../src/index');
+  const clock = fakeClock(), nodes = {};
+  const { mobile, device, sent, paired } = fixture(t, { now: clock, policy: { scope: 'all', burst: 2 }, bridge: { nodeFor: sid => nodes[sid] || null, send: async () => ({ ok: true }) } });
+  mobile.bridge = () => device.bridge;
+  const relay = createServer({ token: 'x'.repeat(32), mobile, model: { snapshot: () => ({}), sessions: new Map(), tokens: () => ({}) }, fleet: { data: {} }, version: 'test' });
+  await new Promise(resolve => relay.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => relay.server.close(resolve)));
+  const url = `http://127.0.0.1:${relay.server.address().port}`;
+  const post = (body, token = paired.token) => fetch(`${url}/mobile/seen`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body });
+  await finishTurns(clock, mobile, device, nodes, 5);
+  assert.equal(sent.length, 2);
+  assert.deepEqual(await (await post(JSON.stringify({ reason: 'notification' }))).json(), { ok: true, held: 3 });
+  assert.deepEqual(await (await post('')).json(), { ok: true, held: 0 }, 'an empty body is fine');
+  assert.equal((await post('[1]')).status, 400);
+  assert.equal((await post('{}', 'wrong')).status, 401);
+  await finishTurns(clock, mobile, device, nodes, 3, 'e');
+  assert.equal(sent.length, 4, 'after seen the count restarts');
+  assert.deepEqual(await mobile.call(device, { id: 'seen-1', op: 'seen', args: { reason: 'foreground' } }), { ok: true, held: 1 });
+  await finishTurns(clock, mobile, device, nodes, 3, 'f');
+  await mobile.call(device, { id: mutation(), op: 'send', args: { sid: 'f0', profile: 'default', text: 'ok' } });
+  assert.equal(device.governor.state.sent, 0, 'a mutation from the phone counts as seen');
+  // /events heartbeats of the phone: unlocked and active counts; locked or idle does not.
+  await finishTurns(clock, mobile, device, nodes, 3, 'g');
+  const hooks = deckHooks({ heartbeat() {}, connect() {}, disconnect() {}, state: () => ({}) }, null, null, null, null, null, null, mobile);
+  const ws = { mobileDevice: { id: device.id } };
+  hooks.onMessage(ws, Buffer.from(JSON.stringify({ t: 'heartbeat', locked: true, idleSec: 0 })), false);
+  hooks.onMessage(ws, Buffer.from(JSON.stringify({ t: 'heartbeat', locked: false, idleSec: 300 })), false);
+  assert.equal(device.governor.state.held.updates, 1);
+  hooks.onMessage(ws, Buffer.from(JSON.stringify({ t: 'heartbeat', locked: false, idleSec: 0 })), false);
+  assert.equal(device.governor.state.held.updates, 0);
+  assert.equal(device.governor.state.sent, 0);
+});
+
+test('D9 breaker: a failed gateway call is not counted twice; bypass kinds go through a quiet window', async t => {
+  const clock = fakeClock(), nodes = {};
+  let failures = 1;
+  const { mobile, device, sent } = fixture(t, { now: clock, policy: { scope: 'all', burst: 2, bypass: ['question'] }, bridge: { nodeFor: sid => nodes[sid] || null },
+    push: { notify: async (target, event) => { if (failures-- > 0) throw Object.assign(new Error('Mobile push gateway returned HTTP 503'), { status: 503 }); sent.push({ target, ...event }); } } });
+  await finishTurns(clock, mobile, device, nodes, 1);
+  assert.equal(sent.length, 0);
+  assert.equal(device.governor.state.sent, 0, 'refunded');
+  mobile.pushRetryAt.clear(); await flush(mobile);
+  assert.equal(sent.length, 1);
+  assert.equal(device.governor.state.sent, 1);
+  await finishTurns(clock, mobile, device, nodes, 2, 'h');
+  assert.equal(sent.length, 2);
+  mobile.notify(device, 'requests', [{ id: 'q', sid: 'h0', profile: 'default', kind: 'question', at: clock(), questions: [{ qid: 'a', question: 'Go on?' }] }]);
+  await flush(mobile);
+  assert.deepEqual(sent.map(event => event.kind), ['done', 'done', 'question'], 'a bypass kind is not held');
+});

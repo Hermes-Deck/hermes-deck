@@ -9,7 +9,7 @@ const compat = require('./compat');
 const { UploadSpool, LEGACY, settleBody } = require('./uploads');
 const { DownloadTickets, LEGACY_MAX: LEGACY_DOWNLOAD } = require('./downloads');
 const { kindsOf } = require('./mobile-notify-policy');
-const { NotifyCenter } = require('./mobile-notify');
+const { NotifyCenter, gatewayEvent } = require('./mobile-notify');
 // The old single-line limits (base64 through the plugin's stdio): what a host without staged uploads can take. With a
 // plugin that answers deck.attach_staged on this host, capabilities() reports the spool's limits instead (uploads.js).
 const LIMITS = LEGACY;
@@ -433,6 +433,9 @@ class MobileRelay {
     // The settle push of a still-running turn is for clients that sent a policy (they know `reply` means that now).
     try { changed = this.notices.settle(device, this.kindEnabled(device, 'reply') && !!device.pushPolicy); } catch {}
     if (changed) { try { this.persist(device); } catch {} this.flushPush().catch(() => {}); }
+    let digest = null;
+    try { digest = this.notices.tick(device); } catch {}
+    if (digest) { try { this.storeDigest(device, digest); } catch {} }
   }
   /** A turn closed into its open banner without any text: read the session's last assistant message before pushing. */
   enrichClosed(device, item) {
@@ -744,8 +747,19 @@ class MobileRelay {
     let delivery = 'accepted';
     if (!PUSH_EVENT_ID.test(id) || item.expires <= this.now()) delivery = 'expired';
     else {
-      try { await this.push.notify(deviceId, { id, kind: item.kind }); }
-      catch (error) { if (error.status === 410 && error.code === 'EVENT_EXPIRED') delivery = 'expired'; else throw error; }
+      // The burst breaker (D9.3) decides when a banner is about to leave: a held banner is counted, never sent later.
+      const owner = this.devices.get(deviceId) || this.device(deviceId);
+      const verdict = this.notices.release(owner, item);
+      if (verdict.digest) this.storeDigest(owner, verdict.digest);
+      if (verdict.action === 'hold') delivery = 'held';
+      else {
+        try { await this.push.notify(deviceId, gatewayEvent(this.push, id, item)); }
+        catch (error) {
+          if (verdict.action === 'send') owner.governor.refund(); // not delivered: a retry must not count twice
+          if (error.status === 410 && error.code === 'EVENT_EXPIRED') delivery = 'expired'; else throw error;
+        }
+        if (delivery === 'accepted') this.notices.log(owner, item.kind === 'digest' ? 'digest-sent' : 'sent', item, verdict.action === 'bypass' && item.kind !== 'digest' && !item.test ? { bypass: true } : undefined);
+      }
     }
     if (this.meta.revocations[deviceId] || !tokens.load(this.tokensFile).devices[deviceId]) return;
     const current = this.meta.devices[deviceId]?.notifications?.[id];
@@ -753,7 +767,28 @@ class MobileRelay {
     current.delivery = delivery;
     const device = this.devices.get(deviceId);
     if (device?.notifications.has(id)) device.notifications.get(id).delivery = delivery;
-    privateWrite(this.metaFile, this.meta);
+    if (device) this.persist(device); // the breaker state travels with the device's metadata
+    else privateWrite(this.metaFile, this.meta);
+  }
+  /** One digest record ("9 updates in 3 chats · 1 needs you"; counts only, no chat text), pushed past the breaker. */
+  storeDigest(device, digest) {
+    if (device.notifications.size >= NOTIFICATION_CAPACITY) return;
+    const now = this.now();
+    device.notifications.set(`e_${now}_${opaque()}`, this.notices.digestRecord(device, digest, now));
+    this.notices.log(device, 'digest', { kind: 'digest' }, { counts: digest.counts });
+    this.persist(device);
+    this.flushPush().catch(() => {});
+  }
+  /** The person looked at the phone (G1): the breaker resets and drops what it held. `{ok, held}`. */
+  seen(device, reason) {
+    const { changed, ...reply } = this.notices.seen(device, reason);
+    if (changed) this.persist(device);
+    return reply;
+  }
+  /** A foreground presence heartbeat of a paired phone on /events (index.js) counts as seen. */
+  seenDevice(id, reason = 'presence') {
+    if (typeof id !== 'string' || (!this.devices.has(id) && !this.meta.devices[id])) return;
+    try { if (tokens.load(this.tokensFile).devices[id]) this.seen(this.device(id), reason); } catch {}
   }
   async disablePush(device) {
     if (this.devices.get(device.id) !== device || !tokens.stillValid(this.tokensFile, device.id, device.hash)) throw fail('unauthorized', 'Device revoked', 401);
@@ -786,6 +821,10 @@ class MobileRelay {
   }
   sweep() {
     this.ticks++;
+    // A quiet window that outlived a restart still ends with its digest: load such devices (bounded by the pairing limit).
+    if (this.ticks % 60 === 1) for (const [id, state] of Object.entries(this.meta.devices)) {
+      if (!this.devices.has(id) && state?.observePush === true && state.pushGovernor?.quietUntil) { try { this.device(id); } catch {} }
+    }
     this.flushPush().catch(() => {});
     this.deskCheck();
     for (const device of this.devices.values()) {
@@ -994,6 +1033,14 @@ class MobileRelay {
           this.flushPush().catch(() => {});
         }
       }
+    }
+    if (route === '/mobile/seen' && req.method === 'POST') {
+      // G1: the app is in the foreground or a notification was opened. Body `{reason}` (optional).
+      const raw = (await body(req, 4096)).toString().trim();
+      let args = {};
+      if (raw) { try { args = JSON.parse(raw); } catch { throw fail('bad_request', 'Expected JSON object'); } }
+      if (!args || typeof args !== 'object' || Array.isArray(args)) throw fail('bad_request', 'Expected JSON object');
+      return json(res, 200, this.seen(device, typeof args.reason === 'string' ? args.reason : 'foreground'));
     }
     match = /^\/mobile\/notifications\/(e_\d{13}_[a-f0-9]{48}|[a-f0-9]{48})$/.exec(route);
     if (match && req.method === 'GET') {
