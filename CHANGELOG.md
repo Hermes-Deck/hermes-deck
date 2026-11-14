@@ -7,6 +7,7 @@ The desktop app, relay and Hermes plugin share one version number.
 ## [Unreleased]
 
 - One Hermes gateway that serves several agent profiles no longer files every agent's activity under one name. The Hermes plugin used to remember the first profile it saw and stamp every later event, token count and gateway state with it, so one agent's card showed another agent's running chat, last message and token use (a gateway restart only changed which agent collected everything). Every event, computer-use frame and state file now carries the profile of the agent that produced it, and every served profile gets its own gateway/cron state file; quota polling still runs once per gateway. Needs the updated Hermes plugin and a gateway restart; events already written under the wrong name stay as they are.
+- Relay: when the Hermes bridge reports which agent owns a session, that answer wins over the profile stamped on the session's events: the session, its sub-agents and its later token use move to the right agent (this also repairs sessions recorded by an older plugin while a phone is connected). `/snapshot` agents carry `scoped`: `false` means the agent's numbers may still include another agent's work and should be shown as host-wide. Needs a relay restart.
 
 ## [1.2.0] - 2026-11-10
 

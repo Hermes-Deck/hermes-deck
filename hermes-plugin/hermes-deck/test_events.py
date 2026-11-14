@@ -478,6 +478,7 @@ class ProfileIdentity(unittest.TestCase):
         self.assertEqual([(r["sid"], r["profile"]) for r in ada], [("s-ada", "ada"), ("s-ada", "ada")])
         self.assertEqual([(r["sid"], r["profile"]) for r in atlas], [("s-atlas", "atlas")])
         self.assertEqual([(r["sid"], r["profile"]) for r in default], [("s-plain", "default")])
+        self.assertEqual({r.get("pscope") for r in ada + atlas + default}, {"call"})   # the relay trusts these stamps
 
     def test_interleaved_profiles_on_two_threads_never_mix(self):
         import threading

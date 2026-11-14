@@ -138,8 +138,8 @@ def _ctx() -> dict:
 def _emit(ev: str, **fields) -> None:
     """Append one event line. Swallows every error: observability must never break a turn."""
     try:
-        profile = _profile_name()
-        rec = {"ts": round(time.time(), 3), "ev": ev, "profile": profile, **_ctx()}
+        # pscope "call": the profile was resolved for this very call (the relay trusts such stamps, see model.js)
+        rec = {"ts": round(time.time(), 3), "ev": ev, "profile": _profile_name(), "pscope": "call", **_ctx()}
         rec.update({k: v for k, v in fields.items() if v is not None})
         _append(rec)
     except Exception:
@@ -921,7 +921,7 @@ def _cu_record(args: dict, session_id: str, result, status, error_message) -> No
         except Exception:
             pass
         st["pinned"], st["frame"], st["elements"], st["bscale"] = None, None, {}, None
-    rec = {"type": "cu", "sid": session_id, "profile": _profile_name(), "ts": int(time.time() * 1000),
+    rec = {"type": "cu", "sid": session_id, "profile": _profile_name(), "pscope": "call", "ts": int(time.time() * 1000),
            "action": _CU_ACTIONS.get(action, "other"), "x": x, "y": y, "window": window, "frame": frame,
            "device": st["device"] if st.get("routed") else None, "ok": ok,
            "error": _clip(err) if err else None}

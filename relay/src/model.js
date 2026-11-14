@@ -38,6 +38,8 @@ function weekOf(day) {
   return localDay(d.getTime() / 1000);
 }
 const SPLIT_EVS = new Set(["tool_start", "tool_end", "llm", "turn_end", "session_end"]);
+const BOUND_MAX = 5000; // sids whose owning profile the bridge told us (oldest forgotten first)
+const PROFILE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 function planInfo(plan) {
   const cur = plan.items.find((i) => i.state === "active");
@@ -68,6 +70,54 @@ class Model {
     this.fine = fine; // "5-minute start epoch\tagent\tmodel" -> same counters, last 48 h (rolling 24 h range)
     this.months = months; // "YYYY-MM\tagent\tmodel": day rollups older than KEEP_DAYS, folded by prune()
     this.dirty = new Set(); // sids changed since the last takeDirty()
+    this.bound = new Map(); // sid -> profile, as the Hermes bridge reports it (wins over event stamps)
+  }
+
+  /** The profile the bridge says owns `sid`, or undefined when it has not said. */
+  profileOf(sid) {
+    return this.bound.get(sid);
+  }
+
+  /**
+   * Reconcile session identity with the bridge. `pairs` are {sid, profile} the bridge knows (snapshot nodes, its
+   * runtime -> stored bindings). Event stamps can be wrong (older plugins stamped every profile of a multiplexed
+   * gateway with one cached name), so the bridge's profile wins: the session, its sub-agents and every later event
+   * of it move to that profile. Returns the number of sessions moved.
+   */
+  reconcile(pairs) {
+    let moved = 0;
+    for (const pair of pairs || []) {
+      const sid = pair && pair.sid;
+      const profile = pair && pair.profile;
+      if (typeof sid !== "string" || !sid || typeof profile !== "string" || !PROFILE_RE.test(profile)) continue;
+      this.bound.delete(sid);
+      this.bound.set(sid, profile);
+      if (this.bound.size > BOUND_MAX) this.bound.delete(this.bound.keys().next().value);
+      const s = this.sessions.get(sid);
+      if (s) {
+        s.profileFrom = "bridge";
+        if (s.profile !== profile && this._move(s, profile)) moved += 1;
+      }
+    }
+    return moved;
+  }
+
+  _move(s, profile) {
+    if (s.stamped === undefined) s.stamped = s.profile; // what the event stream said, kept for diagnosis
+    s.profile = profile;
+    s.agent = this.agentName(profile);
+    this.dirty.add(s.sid);
+    for (const c of s.children) {
+      const child = this.sessions.get(c);
+      if (child && child.profile !== profile && !this.bound.has(c)) this._move(child, profile);
+    }
+    return true;
+  }
+
+  /** True when the session's profile is known to be right: told by the bridge, stamped per call by the plugin,
+   * or the configured external (Claude Code) source. */
+  _confirmed(s) {
+    return s.profileFrom === "bridge" || s.pscope === "call" || (!!this.externalProfile && s.profile === this.externalProfile && !s.stamped);
   }
 
   /** Summaries of sessions changed since the last call (pushed to clients with each event batch). */
@@ -89,13 +139,20 @@ class Model {
   _s(sid, ev) {
     let s = this.sessions.get(sid);
     if (!s) {
+      const bound = this.bound.get(sid);
+      const profile = bound || ev.profile;
       s = {
-        sid, profile: ev.profile, agent: this.agentName(ev.profile), state: "idle",
+        sid, profile, agent: this.agentName(profile), state: "idle",
         firstTs: ev.ts, lastTs: ev.ts, turns: 0, ntools: 0, curTool: null,
         tokens: ZERO(), children: [], recent: [],
       };
+      if (bound) {
+        s.profileFrom = "bridge";
+        if (ev.profile !== bound) s.stamped = ev.profile;
+      }
       this.sessions.set(sid, s);
     }
+    if (ev.pscope === "call" && ev.profile === s.profile) s.pscope = "call"; // a plugin that names each event's own profile
     if (typeof ev.ts === "number") {
       if (!(ev.ts <= s.lastTs)) s.lastTs = ev.ts;
       if (!(ev.ts >= s.firstTs)) s.firstTs = ev.ts;
@@ -255,6 +312,7 @@ class Model {
       case "sub_start": {
         const c = this._s(ev.child, { ...ev, sid: ev.child });
         c.parent = ev.sid;
+        if (c.profile !== s.profile && !this.bound.has(ev.child)) this._move(c, s.profile);
         c.agent = s.agent;
         if (ev.sa) c.sa = ev.sa;
         if (ev.role) c.role = ev.role;
@@ -275,6 +333,7 @@ class Model {
       case "sub_stop": {
         const c = this._s(ev.child, { ...ev, sid: ev.child });
         c.parent = c.parent || ev.sid;
+        if (c.profile !== s.profile && !this.bound.has(ev.child)) this._move(c, s.profile);
         c.agent = s.agent;
         c.state = ev.status === "completed" || ev.status === "ok" ? "done" : ev.status === "interrupted" ? "stopped" : "failed";
         if (ev.ms !== undefined) c.ms = ev.ms;
@@ -326,11 +385,14 @@ class Model {
     const today = localDay(now);
     const out = {};
     for (const [profile, p] of Object.entries(this.cfg.profiles)) {
-      out[p.name] = { name: p.name, profile, bot: p.bot, emoji: p.emoji, running: 0, subsRunning: 0, lastTs: 0, curTool: null, today: { n: 0, ...ZERO(), usd: 0 } };
+      out[p.name] = { name: p.name, profile, bot: p.bot, emoji: p.emoji, scoped: true, running: 0, subsRunning: 0, lastTs: 0, curTool: null, today: { n: 0, ...ZERO(), usd: 0 } };
     }
     for (const s of this.sessions.values()) {
       const a = out[s.agent];
       if (!a) continue;
+      // `scoped`: every session counted here has a confirmed owner. false = the numbers may include another
+      // profile's work (an unconfirmed event stamp), so a client shows them as host-wide, never as this agent's.
+      if (!this._confirmed(s)) a.scoped = false;
       if (s.lastTs > a.lastTs) a.lastTs = s.lastTs;
       if (s.state === "running" && !isStale(s, now)) {
         if (s.parent) a.subsRunning += 1;
@@ -340,7 +402,7 @@ class Model {
     }
     for (const [key, r] of this.rollEntries()) {
       const [day, agent] = key.split("\t");
-      const a = out[agent] || (out[agent] = { name: agent, profile: r.profile, running: 0, subsRunning: 0, lastTs: 0, curTool: null, today: { n: 0, ...ZERO(), usd: 0 } });
+      const a = out[agent] || (out[agent] = { name: agent, profile: r.profile, scoped: this.usageRoll !== undefined, running: 0, subsRunning: 0, lastTs: 0, curTool: null, today: { n: 0, ...ZERO(), usd: 0 } });
       if (day !== today) continue;
       for (const k of ["n", "in", "cr", "cw", "out", "rs", "usd", "sessions", "estimated_usd", "actual_usd", "equivalent_usd", "unknownCost"]) a.today[k] = (a.today[k] || 0) + (r[k] || 0);
       if (r.estimated) a.today.estimated = true;

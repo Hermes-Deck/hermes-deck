@@ -280,6 +280,28 @@ async function agentHostDesktops(cfg, dcfg) {
   return host;
 }
 
+/**
+ * The bridge class the mobile relay builds, plus one listener: each bridge snapshot's (sid, profile) pairs and its
+ * runtime -> stored bindings go to `model.reconcile`, so the bridge decides which agent owns a session. Never throws
+ * into the bridge.
+ */
+function reconcilingBridge(Base, model) {
+  return class ReconcilingBridge extends Base {
+    constructor(...args) {
+      super(...args);
+      this.on("snapshot", (snap) => {
+        try {
+          const pairs = (snap && Array.isArray(snap.nodes) ? snap.nodes : []).map((n) => ({ sid: n && n.sid, profile: n && n.profile }));
+          for (const stored of this.rpcToStored instanceof Map ? this.rpcToStored.values() : []) pairs.push(stored);
+          model.reconcile(pairs);
+        } catch {
+          /* identity repair is best effort */
+        }
+      });
+    }
+  };
+}
+
 /** Start the relay. Returns {server, port, cdpPort, model, fleet, presence, gateway, stop()} (stop saves the checkpoint). */
 async function start(cfg) {
   if (!cfg.token || cfg.token.length < 24) throw new Error("DECK_RELAY_TOKEN missing or shorter than 24 chars");
@@ -296,6 +318,11 @@ async function start(cfg) {
 
   let spaces = null; // agent spaces (set below, once the model exists)
   const ingest = (ev, live) => {
+    const owner = ev.sid ? model.profileOf(ev.sid) : undefined; // the bridge's answer beats the event's stamp (R4)
+    if (owner && owner !== ev.profile) {
+      ev.stamped = ev.profile;
+      ev.profile = owner;
+    }
     ev.agent = model.agentName(ev.profile);
     model.apply(ev, live);
     if (spaces && ev.type === "turn_end" && ev.profile) spaces.release(ev.profile); // turn over: the shared desktop is free
@@ -480,6 +507,8 @@ async function start(cfg) {
   // /mobile/files/<id>; DECK_DOWNLOAD_MAX caps one file on this side (default 8 GiB).
   const downloads = new DownloadTickets({ spool: uploads, ...(cfg.downloads || downloadConfig({})) });
   const mobile = new MobileRelay({ uploads, downloads, tokensFile: cfg.mobileDevicesFile || path.join(cfg.dataDir, "mobile-devices.json"), bridgeConfig: cfg.mobileBridge, push: new MobilePushClient(), atDesk: () => presence.atDesk(cfg.pushDeskIdleS), capabilities: { history: !!history, workspace: !!workspace && !!fallback?.available, desktop: false } });
+  // R4: every phone bridge reports which profile owns each live session; the model takes it over event stamps.
+  if (mobile.BridgeClient) mobile.BridgeClient = reconcilingBridge(mobile.BridgeClient, model);
   const host = { protocol: compat.PROTOCOL, plugins: compat.pluginCache(cfg.hermesRoot || null), update: () => compat.updateStatus(cfg.dataDir) };
   const { HostUpdate } = require("./host-update");
   const { Restarts } = require("./restarts");
@@ -702,4 +731,4 @@ if (require.main === module && process.argv.includes("--self-check")) {
     });
 }
 
-module.exports = { config, desktopsConfig, start, deckHooks, selfCheck, extraListeners, VERSION };
+module.exports = { config, desktopsConfig, start, deckHooks, selfCheck, extraListeners, reconcilingBridge, VERSION };
