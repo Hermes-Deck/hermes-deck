@@ -428,3 +428,39 @@ test('capabilities: pushPolicy follows the gateway features; an old client witho
   clock.advance(10 * 60000); mobile.govern(device); await flush(mobile);
   assert.equal(sent.length, 6, 'then one digest after 10 minutes');
 });
+
+test('decision log: one JSON line per decision with kind, profile and 8 sid characters; never text or titles; console by default', async t => {
+  let atDesk = false;
+  const clock = fakeClock(), nodes = { 'conversation-0001': { title: 'Secret title', turnId: 't1' }, 'sub-agent-0001': { title: 'Helper', parent: 'conversation-0001', subagentId: 'x', turnId: 's1' } };
+  const { mobile, device, logs } = fixture(t, { now: clock, policy: { burst: 1, muted: ['ada'] }, bridge: { nodeFor: sid => nodes[sid] || null } });
+  mobile.atDesk = () => atDesk;
+  const say = (sid, profile = 'default') => mobile.notify(device, 'native', { type: 'message.complete', sid, profile, payload: { text: 'Private words.' } });
+  say('conversation-0001');                                    // scoped-out
+  mobile.notices.stake(device, 'default', 'conversation-0001');
+  say('conversation-0001'); say('conversation-0001');          // admitted, merged
+  mobile.notify(device, 'native', { type: 'turn.complete', sid: 'conversation-0001', profile: 'default', payload: { turn_id: 't1' } }); // merged (the end)
+  await flush(mobile);                                         // sent
+  say('sub-agent-0001');                                       // subagent
+  say('chat-of-ada', 'ada');                                   // muted
+  mobile.notify(device, 'requests', [{ id: 'r', sid: 'conversation-0001', profile: 'default', kind: 'approval', at: clock(), command: 'ls', description: 'Secret description' }]);
+  await flush(mobile);                                         // admitted, held
+  atDesk = true; say('conversation-0001'); atDesk = false;     // at-desk
+  clock.advance(10 * 60000); mobile.govern(device); await flush(mobile); // digest, digest-sent
+  mobile.seen(device, 'foreground');                           // seen (nothing held: no line)
+  const decisions = logs.map(line => line.decision);
+  for (const decision of ['scoped-out', 'admitted', 'merged', 'sent', 'subagent', 'muted', 'held', 'at-desk', 'digest', 'digest-sent']) assert.ok(decisions.includes(decision), decision);
+  for (const line of logs) {
+    assert.equal(line.t, 'push');
+    assert.equal(line.device, device.id.slice(0, 8));
+    assert.ok(line.sid === null || line.sid.length <= 8);
+  }
+  assert.ok(logs.some(line => line.sid === 'conversa' && line.profile === 'default' && line.kind === 'done' && line.decision === 'sent'));
+  const text = JSON.stringify(logs);
+  for (const secret of ['Private', 'Secret', 'Helper', 'conversation-0001']) assert.ok(!text.includes(secret), secret);
+  // Without an injected writer the lines go to console.log.
+  const lines = [];
+  t.mock.method(console, 'log', line => lines.push(line));
+  const { NotifyCenter } = require('../src/mobile-notify');
+  new NotifyCenter({ now: clock }).log({ id: 'abcdefghijkl' }, 'held', { kind: 'done', profile: 'default', sid: 'session-xyz' });
+  assert.deepEqual(lines.map(line => JSON.parse(line)), [{ t: 'push', decision: 'held', device: 'abcdefgh', kind: 'done', profile: 'default', sid: 'session-' }]);
+});
