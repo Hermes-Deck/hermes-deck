@@ -201,6 +201,7 @@ class MobileRelay {
       work: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', subagents: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', commands: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off',
       workspace: !!this.available.workspace, desktop: !!this.available.desktop, push: !!this.push?.configured, transcribeLanguage: true,
       errors: { v: 2 }, // typed error codes (mobile-gate.js wireError); v1 = bridge_error + English text
+      readsNeverResume: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // subagents/subagentTail/modelOptions
       limits: { ...(staged ? this.uploads.limits() : LIMITS), downloadBytes: direct ? this.staging.direct : LEGACY_DOWNLOAD }, uploads: { v: 1, staged }, downloads: { v: 1, direct } };
   }
   stagedReady() { return !!this.bridgeConfig && this.bridgeConfig.mode !== 'off' && this.staging.ok === true; }
@@ -544,13 +545,14 @@ class MobileRelay {
         if (op === 'commands') return bridge.commandCatalog(args.profile);
         if (typeof args.sid !== 'string' || !/^[\x21-\x7e]{1,512}$/.test(args.sid)) throw fail('bad_request', 'Invalid session ID');
         const options = { profile: args.profile };
-        if (['plan', 'toolCalls', 'subagents'].includes(op)) return bridge[op](args.sid, options);
+        // Reads never resume a session (readsNeverResume): an unbound session answers available:false / [] instead.
+        if (['plan', 'toolCalls', 'subagents'].includes(op)) return bridge[op](args.sid, op === 'subagents' ? { ...options, resume: false } : options);
         if (typeof args.id !== 'string' || !/^[\x21-\x7e]{1,128}$/.test(args.id)) throw fail('bad_request', 'Invalid sub-agent ID');
         if (op === 'steerSubagent') {
           if (typeof args.text !== 'string' || !args.text.trim() || args.text.length > 32000) throw fail('bad_request', 'Invalid guidance text');
           return bridge.steerSubagent(args.sid, args.id, args.text, options);
         }
-        return bridge[op](args.sid, args.id, options);
+        return bridge[op](args.sid, args.id, op === 'subagentTail' ? { ...options, resume: false } : options);
       }
       case 'sessions': return bridge.sessions(args);
       case 'sessionPage': case 'sessionIndex':
@@ -608,7 +610,7 @@ class MobileRelay {
         if (!node || node.sid !== args.sid || node.profile !== args.profile) throw fail('bad_request', 'Live session profile does not match control target');
         return op === 'interrupt' ? bridge.interrupt(args.sid, args) : bridge[op](args.sid, args.text, args);
       }
-      case 'modelOptions': return bridge.modelOptions(args.sid, args);
+      case 'modelOptions': return bridge.modelOptions(args.sid, { ...args, resume: false }); // unbound: the profile's options
       case 'setModel': return bridge.setModel(args.sid, args);
       case 'answerApproval': case 'answerQuestion': {
         const requests = bridge.listRequests().filter(request => request.id === args.id);

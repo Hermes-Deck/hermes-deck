@@ -1759,6 +1759,7 @@ class BridgeClient extends EventEmitter {
       let legacy = false;
       for (const name of names.slice(0, INDEX_PROFILES)) {
         const info = { name, ok: true, hasMore: false, error: "" };
+        const start = rows.length;
         try {
           for (let page = 0, offset = 0; page < INDEX_PAGES; page++) {
             const r = await this.sessionPage({ profile: name, archived, offset });
@@ -1772,7 +1773,15 @@ class BridgeClient extends EventEmitter {
           info.ok = false;
           info.error = String((e && e.message) || e).slice(0, 200);
           info.code = (e && e.kind) || "host"; // stable kind for the relay's typed errors (the sentence stays for the desktop)
+          // keepStaleIndex (set by the relay for phones): the profile's rows from the last good index stay, marked stale
+          const previous = this.keepStaleIndex ? this.indexGood?.get(`${key}\u0000${name}`) : null;
+          if (previous) {
+            rows.length = start; // this profile's partial pages give way to its last complete list
+            rows.push(...previous);
+            info.stale = true;
+          }
         }
+        if (info.ok && this.keepStaleIndex) (this.indexGood ||= new Map()).set(`${key}\u0000${name}`, rows.slice(start));
         profiles.push(info);
       }
       const seen = new Set();
@@ -1987,16 +1996,46 @@ class BridgeClient extends EventEmitter {
    * at it (watch()); every other caller drives the session, which turns a watch-only binding into a normal one.
    * `lazy`: Hermes' agentless watch session (a gateway sub-agent child; see watch()).
    */
-  async _bind(storedId, profile, { watch = false, lazy = false } = {}) {
+  /**
+   * Bind (session.resume) once per (profile, session, connection epoch). Single flight: callers that arrive while a
+   * resume of the same session is in flight wait for it instead of sending another one (a slow resume used to be sent
+   * again by every caller that came before it answered), then take the binding it stored.
+   */
+  async _bind(storedId, profile, options = {}) {
     checkSid(storedId);
     profile = this._profileOf(storedId, profile);
     const key = sessionKey(profile, storedId);
-    const epoch = this.epoch;
     const b = this.bindings.get(key);
-    if (b && b.epoch === epoch) {
-      if (!watch) this._driven(b.rpcId);
+    if (b && b.epoch === this.epoch) {
+      if (!options.watch) this._driven(b.rpcId);
       return b.rpcId;
     }
+    this.binding ||= new Map();
+    const flightKey = `${key}\u0000${options.lazy ? "lazy" : ""}`;
+    const flight = this.binding.get(flightKey);
+    if (flight && flight.epoch === this.epoch) {
+      await flight.promise;
+      return this._bind(storedId, profile, options); // now bound: the fast path above, with this caller's watch semantics
+    }
+    const promise = this._bindOnce(storedId, profile, options);
+    const entry = { epoch: this.epoch, promise };
+    this.binding.set(flightKey, entry);
+    try {
+      return await promise;
+    } finally {
+      if (this.binding.get(flightKey) === entry) this.binding.delete(flightKey);
+    }
+  }
+
+  /** The bound runtime id of a stored session on this connection, or null. Never resumes anything. */
+  boundRpc(storedId, profile) {
+    const b = this.bindings.get(sessionKey(this._profileOf(storedId, profile), storedId));
+    return b && b.epoch === this.epoch && this.conn ? b.rpcId : null;
+  }
+
+  async _bindOnce(storedId, profile, { watch = false, lazy = false } = {}) {
+    const key = sessionKey(profile, storedId);
+    const epoch = this.epoch;
     const params = { session_id: storedId, omit_messages: true, inline_images: false, ...(lazy ? { lazy: true } : {}) };
     if (profile && profile !== "default") {
       if (!PROFILE_RE.test(profile)) throw kindError(i18nText("U0081"), "invalid");
@@ -2467,17 +2506,21 @@ class BridgeClient extends EventEmitter {
    * tokens, cost and their recent tool calls: {subagents: [...], failed: [...]}. A read, but it addresses the runtime
    * session, so the session is resumed (bound) on this connection first, like model options. Never replayed.
    */
-  async subagents(sessionId, { profile } = {}) {
+  async subagents(sessionId, { profile, resume = true } = {}) {
     const p = this._profileOf(sessionId, profile);
-    const rpcId = await this._bind(sessionId, p);
+    if (resume === false) checkSid(sessionId);
+    const rpcId = resume === false ? this.boundRpc(sessionId, p) : await this._bind(sessionId, p);
+    if (!rpcId) return { subagents: [], failed: [], available: false }; // resume:false and not bound on this connection
     return projectSubagents(await this._runtimeRequest("subagent.list", sessionId, p, { session_id: rpcId }));
   }
 
   /** The last 16 KB of one live child's transcript (subagent.tail) plus its detail: {id, available, text, truncated, detail}. */
-  async subagentTail(sessionId, subagentId, { profile } = {}) {
+  async subagentTail(sessionId, subagentId, { profile, resume = true } = {}) {
     checkSubagentId(subagentId);
     const p = this._profileOf(sessionId, profile);
-    const rpcId = await this._bind(sessionId, p);
+    if (resume === false) checkSid(sessionId);
+    const rpcId = resume === false ? this.boundRpc(sessionId, p) : await this._bind(sessionId, p);
+    if (!rpcId) return { id: subagentId, available: false, text: "", truncated: false, detail: null };
     return projectSubagentTail(await this._runtimeRequest("subagent.tail", sessionId, p, { session_id: rpcId, subagent_id: subagentId }), subagentId);
   }
 
@@ -2527,8 +2570,9 @@ class BridgeClient extends EventEmitter {
     return this.liveTools.get(sessionKey(this._profileOf(sessionId, profile), sessionId)) || [];
   }
 
-  async modelOptions(sessionId, { profile, profileOnly = false } = {}) {
-    if (profileOnly === true) {
+  async modelOptions(sessionId, { profile, profileOnly = false, resume = true } = {}) {
+    // resume:false (the relay's phone reads): a session not bound on this connection gets the profile's options
+    if (profileOnly === true || (resume === false && (checkSid(sessionId), !this.boundRpc(sessionId, profile)))) {
       checkSid(sessionId);
       return projectModelOptions(await this.request("model.options", { profile: this._profileOf(sessionId, profile), include_unconfigured: false, refresh: false }));
     }

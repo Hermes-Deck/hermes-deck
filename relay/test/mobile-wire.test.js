@@ -156,3 +156,23 @@ test('W2: the relay\'s own background requests use a separate budget of 2; phone
   const errors = await Promise.all([...background, ...phone]);
   assert.equal(errors.length, 15);
 });
+
+test('W3: phone reads of an unbound session never resume it; capability readsNeverResume', async t => {
+  const { c, written } = openClient();
+  const { mobile, device } = relayWith(t);
+  device.bridge = c;
+  assert.equal(mobile.capabilities().readsNeverResume, true);
+  const reads = await Promise.all(Array.from({ length: 10 }, (_, i) => mobile.call(device, { id: `sa-${i}`, op: 'subagents', args: { sid: 'session-a', profile: 'atlas' } })));
+  assert.ok(reads.every(r => r.available === false));
+  const tail = await mobile.call(device, { id: 'tail', op: 'subagentTail', args: { sid: 'session-a', profile: 'atlas', id: 'sub-1' } });
+  assert.equal(tail.available, false);
+  const options = mobile.call(device, { id: 'mo', op: 'modelOptions', args: { sid: 'session-a', profile: 'atlas' } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(written.map(frame => frame.method), ['model.options']);
+  assert.equal(written[0].params.session_id, undefined);
+  c._settle({ id: written[0].id, result: { providers: [] } });
+  await options;
+  const { withBackgroundBudget } = require('../src/mobile-gate');
+  assert.equal(new (withBackgroundBudget(BridgeClient))({ mode: 'off' }).keepStaleIndex, true);
+  c.stop();
+});

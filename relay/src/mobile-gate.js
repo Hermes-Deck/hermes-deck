@@ -125,6 +125,10 @@ const foreground = fn => FOREGROUND.run(true, fn);
 function withBackgroundBudget(BridgeClient, options = BACKGROUND) {
   if (!BridgeClient) return BridgeClient;
   return class MobileBridgeClient extends BridgeClient {
+    constructor(...args) {
+      super(...args);
+      this.keepStaleIndex = true; // sessionIndex: a failed profile keeps its last good rows, marked stale (R3b)
+    }
     request(method, params) {
       if (FOREGROUND.getStore()) return super.request(method, params);
       this.backgroundGate ||= new Gate(options);
