@@ -6,6 +6,8 @@ The desktop app, relay and Hermes plugin share one version number.
 
 ## [Unreleased]
 
+- One Hermes gateway that serves several agent profiles no longer files every agent's activity under one name. The Hermes plugin used to remember the first profile it saw and stamp every later event, token count and gateway state with it, so one agent's card showed another agent's running chat, last message and token use (a gateway restart only changed which agent collected everything). Every event, computer-use frame and state file now carries the profile of the agent that produced it, and every served profile gets its own gateway/cron state file; quota polling still runs once per gateway. Needs the updated Hermes plugin and a gateway restart; events already written under the wrong name stay as they are.
+
 ## [1.2.0] - 2026-11-10
 
 - Every saved host is live at once: each keeps its relay and direct connection open while the Deck runs, so replies, finished turns, approvals and questions from any host raise their notification and open that host's chat when clicked. Every host you open keeps its page warm in the background: switching back is instant with scroll, open chat and draft intact, nothing reloads.
