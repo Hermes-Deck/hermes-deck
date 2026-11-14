@@ -7,6 +7,7 @@ The desktop app, relay and Hermes plugin share one version number.
 ## [Unreleased]
 
 - Relay, phone API: a failed request now carries a typed error code (`busy` with `retryAfterMs`, `offline`, `timeout`, `host` with the Hermes `rpcCode`, `stale`, `bad_request`, `limit`, ...) and an exact `uncertain` flag instead of `bridge_error` plus the desktop's English sentence, so the phone app can tell "busy, retry" from "failed" and never shows "Hermes queue full". `capabilities.errors` is `{v: 2}`. The desktop's messages are unchanged.
+- Relay, phone API: each paired phone gets at most 8 requests running on the host at once; up to 32 more wait their turn for 10 seconds, then answer `busy` with `retryAfterMs` (nothing was sent, and a waiting action's request ID stays usable). Identical reads running at the same time (the same chat's history twice) share one host call, and the relay's own background reads (notification text, agent names, its keep-alive) have a separate budget of 2, so they can no longer push the phone's requests into the host's 64-request limit.
 
 ## [1.2.0] - 2026-11-10
 

@@ -8,7 +8,7 @@ const { atomicWriteJson, readJson } = require('./util');
 const compat = require('./compat');
 const { UploadSpool, LEGACY, settleBody } = require('./uploads');
 const { DownloadTickets, LEGACY_MAX: LEGACY_DOWNLOAD } = require('./downloads');
-const { wireError, wireSessionIndex } = require('./mobile-gate');
+const { wireError, wireSessionIndex, Gate, shareKey, foreground, withBackgroundBudget } = require('./mobile-gate');
 // The old single-line limits (base64 through the plugin's stdio): what a host without staged uploads can take. With a
 // plugin that answers deck.attach_staged on this host, capabilities() reports the spool's limits instead (uploads.js).
 const LIMITS = LEGACY;
@@ -151,7 +151,7 @@ class MobileRelay {
     this.enriching = new Map();
     this.BridgeClient = null;
     if (bridgeConfig && bridgeConfig.mode !== 'off') {
-      try { this.BridgeClient = require('../../app/main/bridge').BridgeClient; }
+      try { this.BridgeClient = withBackgroundBudget(require('../../app/main/bridge').BridgeClient); }
       catch { throw fail('unavailable', 'Configured mobile bridge requires the full Hermes Deck source layout including app/main/bridge.js', 503); }
     }
     this.available = capabilities;
@@ -513,16 +513,27 @@ class MobileRelay {
       if (timestamp > now + MUTATION_FUTURE) throw fail('clock_skew', 'Mutation timestamp is ahead of server time');
     }
     if (device.ids.has(message.id) || device.reads.has(message.id)) throw fail('duplicate', 'Request ID already used; refresh state before a new action');
-    if (READ_OPS.has(message.op)) {
+    // Per-device gate (mobile-gate.js): 8 ops in flight, 32 waiting up to 10 s, then `busy`; identical reads share one
+    // bridge call. A refusal here happens before an ID is burnt or a read slot is held: nothing was accepted.
+    const gate = device.gate ||= new Gate(this.gateOptions);
+    const read = READ_OPS.has(message.op), share = read ? shareKey(message.op, args) : null;
+    if (!gate.admits(share)) throw gate.refusal();
+    const run = () => gate.run(() => foreground(() => this.dispatch(device, message.op, args)), share);
+    if (read) {
       if (device.reads.size >= 64) throw fail('limit', 'Too many active reads', 429);
       device.reads.add(message.id);
-      try { return await this.dispatch(device, message.op, args); }
+      try { return await run(); }
       finally { device.reads.delete(message.id); }
     }
     if (device.ids.size >= 10000) throw fail('limit', 'Mutation limit for the seven-day window reached; reads remain available', 429);
     device.ids.add(message.id);
     this.persist(device);
-    return this.dispatch(device, message.op, args);
+    try { return await run(); }
+    catch (error) {
+      // Timed out in the gate's queue: it never ran, so the ID is not burnt and the same action may be retried with it.
+      if (error?.gate === 'queued') { device.ids.delete(message.id); this.persist(device); }
+      throw error;
+    }
   }
   async dispatch(device, op, args) {
     const bridge = this.bridge(device);
@@ -783,7 +794,7 @@ class MobileRelay {
   }
   onHttp(req, res, url) {
     if (!url.pathname.startsWith('/mobile/')) return false;
-    this.handle(req, res, url).catch(error => {
+    foreground(() => this.handle(req, res, url)).catch(error => { // a phone's request: not the relay's background budget
       if (res.headersSent) res.destroy();
       else { settleBody(req, res); json(res, error.status || 500, { error: wireError(error) }); }
     });

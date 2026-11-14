@@ -49,4 +49,88 @@ function wireSessionIndex(result) {
     ? { ...info, error: wireError({ message: info.error, kind: info.code || info.kind }).code } : info) };
 }
 
-module.exports = { wireError, wireSessionIndex, BUSY_RETRY_MS };
+const GATE = Object.freeze({ limit: 8, queue: 32, waitMs: 10000 });
+const BACKGROUND = Object.freeze({ limit: 2, queue: 32, waitMs: 10000 });
+const busyError = (message, retryAfterMs, gate) => Object.assign(new Error(message), { kind: 'busy', retryAfterMs, gate });
+
+/**
+ * At most `limit` operations run at once; up to `queue` more wait in FIFO order for at most `waitMs`, then fail `busy`
+ * (nothing ran). Concurrent calls with the same share key (identical reads) join the one already running or waiting.
+ * A finishing operation hands its slot straight to the oldest waiter, so a newcomer can never overtake the queue.
+ */
+class Gate {
+  constructor({ limit = GATE.limit, queue = GATE.queue, waitMs = GATE.waitMs } = {}) {
+    Object.assign(this, { limit, queue, waitMs });
+    this.active = 0;
+    this.waiting = [];
+    this.shared = new Map();
+  }
+  /** Synchronous: would run() take this call now (a slot, a queue place, or an identical call to join)? */
+  admits(key) { return (key != null && this.shared.has(key)) || this.active < this.limit || this.waiting.length < this.queue; }
+  /** The refusal run() gives when admits() is false. */
+  refusal() { return busyError('Too many requests in flight for this device; retry shortly', BUSY_RETRY_MS, 'full'); }
+  get size() { return { active: this.active, waiting: this.waiting.length, shared: this.shared.size }; }
+  run(fn, key = null) {
+    if (key != null && this.shared.has(key)) return this.shared.get(key);
+    const run = this.enter(fn);
+    if (key != null) {
+      this.shared.set(key, run);
+      run.then(() => {}, () => {}).then(() => { if (this.shared.get(key) === run) this.shared.delete(key); });
+    }
+    return run;
+  }
+  async enter(fn) {
+    if (this.active < this.limit) this.active++;
+    else await this.wait();
+    try { return await fn(); } finally { this.release(); }
+  }
+  wait() {
+    if (this.waiting.length >= this.queue) return Promise.reject(this.refusal());
+    return new Promise((resolve, reject) => {
+      const item = { resolve };
+      item.timer = setTimeout(() => {
+        const at = this.waiting.indexOf(item);
+        if (at >= 0) this.waiting.splice(at, 1);
+        reject(busyError('The request waited too long for a free slot and was not sent; retry shortly', 2 * BUSY_RETRY_MS, 'queued'));
+      }, this.waitMs);
+      item.timer.unref?.();
+      this.waiting.push(item);
+    });
+  }
+  release() {
+    const next = this.waiting.shift();
+    if (next) { clearTimeout(next.timer); next.resolve(); } // the slot passes to the oldest waiter
+    else this.active--;
+  }
+}
+
+/** Stable key for identical reads: op plus args with sorted keys. */
+function shareKey(op, args) {
+  const stable = value => Array.isArray(value) ? value.map(stable)
+    : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, stable(value[key])])) : value;
+  return `${op}\u0000${JSON.stringify(stable(args || {}))}`;
+}
+
+const { AsyncLocalStorage } = require('node:async_hooks');
+/** Set while a phone's op runs (MobileRelay.call); requests outside it are the relay's own background work. */
+const FOREGROUND = new AsyncLocalStorage();
+const foreground = fn => FOREGROUND.run(true, fn);
+
+/**
+ * The relay's BridgeClient with a separate budget for its own background requests: anything not issued under a
+ * phone op (notification enrichment, the profile-name roster, the staging probe, the bridge's own keep-alive reads)
+ * goes through a per-bridge Gate of 2 (+32 queued, 10 s), so background work can never crowd out the phone's ops.
+ * Phone ops are bounded by the device's own Gate in MobileRelay.call. The desktop app never uses this class.
+ */
+function withBackgroundBudget(BridgeClient, options = BACKGROUND) {
+  if (!BridgeClient) return BridgeClient;
+  return class MobileBridgeClient extends BridgeClient {
+    request(method, params) {
+      if (FOREGROUND.getStore()) return super.request(method, params);
+      this.backgroundGate ||= new Gate(options);
+      return this.backgroundGate.run(() => super.request(method, params));
+    }
+  };
+}
+
+module.exports = { wireError, wireSessionIndex, BUSY_RETRY_MS, Gate, GATE, BACKGROUND, shareKey, foreground, withBackgroundBudget };

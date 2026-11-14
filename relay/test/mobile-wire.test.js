@@ -97,3 +97,62 @@ test('W1: relay responses use the typed codes and advertise errors v2; relay cod
   const expired = await outcome(mobile.call(device, { id: mutationID(Date.now() - 8 * 86400000), op: 'create' }));
   assert.deepEqual([expired.error.code, expired.error.uncertain], ['expired_request', true]);
 });
+
+test('W2: a never-answering bridge and 200 reads from one device: at most 8 reach the bridge, the rest are busy', async t => {
+  const { c } = openClient({ request: 60000 });
+  const { mobile, device } = relayWith(t);
+  mobile.gateOptions = { limit: 8, queue: 32, waitMs: 60 };
+  device.bridge = c;
+  let peak = 0;
+  const original = c.request.bind(c);
+  c.request = (method, params) => { const p = original(method, params); peak = Math.max(peak, c.pending.size); return p; };
+  const answers = await Promise.all(Array.from({ length: 200 }, (_, i) => outcome(Promise.race([
+    mobile.call(device, { id: `read-${i}`, op: 'sessions', args: { limit: i + 1 } }),
+    new Promise(resolve => setTimeout(() => resolve('still running'), 300)),
+  ]))));
+  assert.equal(peak, 8);
+  const busy = answers.filter(a => !a.ok && a.error.code === 'busy');
+  assert.equal(busy.length, 192);
+  assert.ok(busy.every(a => a.error.retryAfterMs > 0 && a.error.uncertain === false));
+  assert.equal(answers.filter(a => a.ok && a.result === 'still running').length, 8);
+  assert.ok(!JSON.stringify(answers.map(a => a.error?.code)).includes(i18nText('U0034')));
+  assert.ok(!answers.some(a => !a.ok && a.error.message === i18nText('U0034')));
+  c.stop();
+});
+
+test('W2: identical concurrent reads share one bridge call; a queued-out mutation keeps its ID usable', async t => {
+  let historyCalls = 0, release;
+  const { mobile, device } = relayWith(t, {
+    history: () => { historyCalls++; return new Promise(resolve => { release = () => resolve({ messages: [{ role: 'assistant', text: 'x' }] }); }); },
+  });
+  const reads = Array.from({ length: 5 }, (_, i) => mobile.call(device, { id: `h-${i}`, op: 'history', args: { sid: 'session-a', profile: 'atlas' } }));
+  await new Promise(resolve => setImmediate(resolve));
+  release();
+  const results = await Promise.all(reads);
+  assert.equal(historyCalls, 1);
+  assert.equal(results.length, 5);
+  // the gate full of slow mutations: a queued one times out as busy and its ID is not burnt
+  const alive = setInterval(() => {}, 5); t.after(() => clearInterval(alive)); // gate wait timers are unref'd
+  const fresh = relayWith(t, { create: () => new Promise(() => {}) });
+  fresh.mobile.gateOptions = { limit: 1, queue: 1, waitMs: 20 };
+  fresh.mobile.call(fresh.device, { id: mutationID(), op: 'create', args: { profile: 'atlas' } }).catch(() => {});
+  const id = mutationID();
+  const queued = await outcome(fresh.mobile.call(fresh.device, { id, op: 'create', args: { profile: 'atlas' } }));
+  assert.deepEqual([queued.error.code, queued.error.uncertain], ['busy', false]);
+  assert.equal(fresh.device.ids.has(id), false);
+});
+
+test('W2: the relay\'s own background requests use a separate budget of 2; phone ops are not counted there', async () => {
+  const { withBackgroundBudget, foreground } = require('../src/mobile-gate');
+  const Gated = withBackgroundBudget(BridgeClient);
+  const c = new Gated({ mode: 'off' }, { timing: { request: 60000 } });
+  c.conn = { ready: true, closed: false, timers: {}, child: { stdin: { writableLength: 0, write: () => true } } };
+  c.epoch = 1; c.stopped = false;
+  const background = Array.from({ length: 10 }, () => c.request('session.list', { limit: 1 }).catch(e => e));
+  assert.equal(c.pending.size, 2);
+  const phone = Array.from({ length: 5 }, () => foreground(() => c.request('session.list', { limit: 1 })).catch(e => e));
+  assert.equal(c.pending.size, 7);
+  c.stop();
+  const errors = await Promise.all([...background, ...phone]);
+  assert.equal(errors.length, 15);
+});
