@@ -919,6 +919,14 @@ function projectBotMeta(raw) {
   return out;
 }
 
+// The seven agent hues of the phone design (DESIGN-TOKENS.md §1.4). A profile's ui_meta['hermes-deck'].hue names one
+// so every device draws the agent in the same colour; anything else is dropped (relay-extras X6).
+const AGENT_HUES = new Set(["indigo", "blue", "cyan", "teal", "purple", "magenta", "moss"]);
+function projectHue(raw) {
+  const hue = isPlainObject(raw) ? raw.hue : null;
+  return typeof hue === "string" && AGENT_HUES.has(hue) ? hue : null;
+}
+
 /** canonical_session / last_session of a profiles.list row. */
 function projectSessionRef(s) {
   if (!isPlainObject(s)) return null;
@@ -980,6 +988,7 @@ function projectProfiles(result) {
     if (!isPlainObject(p) || typeof p.name !== "string" || !PROFILE_RE.test(p.name) || seen.has(p.name)) continue;
     seen.add(p.name);
     const ui = isPlainObject(p.ui_meta) ? p.ui_meta["hermes-bots"] : null;
+    const hue = projectHue(isPlainObject(p.ui_meta) ? p.ui_meta["hermes-deck"] : null);
     out.push({
       name: p.name,
       isDefault: p.is_default === true || p.name === "default",
@@ -989,6 +998,7 @@ function projectProfiles(result) {
       hasAvatar: p.has_avatar === true,
       canonical: projectSessionRef(p.canonical_session),
       last: projectSessionRef(p.last_session),
+      ...(hue ? { hue } : {}),
     });
   }
   return out;
@@ -2906,6 +2916,7 @@ module.exports = {
   BOT_CHAT_TITLE,
   AVATAR_LIMIT,
   projectProfiles,
+  AGENT_HUES,
   projectAvatar,
   projectPlan,
   projectToolCall,

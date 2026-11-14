@@ -235,6 +235,7 @@ class MobileRelay {
       maskedPrompt: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // snapshot nodes `maskedPrompt: true` + event `maskedPrompts` [{sid, profile}] (X4)
       watch: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // ops watch/unwatch {sid, profile}: stream a session running elsewhere, read-only (X3)
       historyProfile: !!this.available.history,
+      profileHue: true, // profiles rows may carry `hue` (one of seven names) from ui_meta['hermes-deck'].hue; read-only (X6)
       searchMessages: this.history?.hermes ? { v: 1, scanRows: SCAN_TOTAL, maxLimit: SEARCH_LIMIT } : false, // X5: op searchMessages // GET /session/<sid>/messages|tools|call/<id>?profile=<name> reads only that profile (G8)
       limits: { ...(staged ? this.uploads.limits() : LIMITS), downloadBytes: direct ? this.staging.direct : LEGACY_DOWNLOAD }, uploads: { v: 1, staged }, downloads: { v: 1, direct }, ...this.notices.capabilities(this.push) };
   }

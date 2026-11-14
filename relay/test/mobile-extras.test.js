@@ -440,3 +440,25 @@ test('X5 searchMessages: pages with a cursor without repeats or gaps; a bounded 
   assert.equal(answer.partial, true);
   assert.deepEqual(answer.results.map(result => result.id), ['h:research:1'], 'the default profile\'s matches are older than its newest 10 rows');
 });
+
+// ------------------------------------------------------------------------------------------------------------ X6 hue
+test('X6 hue: profiles rows carry a valid hue from ui_meta[hermes-deck]; anything else dropped; old rows unchanged', async t => {
+  const { projectProfiles, AGENT_HUES } = require('../../app/main/bridge');
+  assert.deepEqual([...AGENT_HUES], ['indigo', 'blue', 'cyan', 'teal', 'purple', 'magenta', 'moss']);
+  const rows = projectProfiles({ profiles: [
+    { name: 'default', ui_meta: { 'hermes-deck': { hue: 'teal' }, 'hermes-bots': { color: '#6fb3a6' } } },
+    { name: 'research', ui_meta: { 'hermes-deck': { hue: 'red' } } },
+    { name: 'writer', ui_meta: { 'hermes-deck': { hue: 'url(javascript:x)' } } },
+    { name: 'ops', ui_meta: { 'hermes-deck': 'teal' } },
+    { name: 'plain' },
+  ] });
+  assert.deepEqual(rows.map(row => row.hue), ['teal', undefined, undefined, undefined, undefined]);
+  assert.ok(!('hue' in rows[4]), 'no hue key at all when none is set: an old app sees the old row');
+  assert.deepEqual(rows[0].meta, { color: '#6fb3a6' }, 'the desktop bot colour is untouched');
+  // Through the phone op: the flag, and the rows as the bridge projects them; no write op exists for it.
+  const { mobile, device } = fixture(t, { bridge: { profiles: async () => rows }, bridgeConfig: { mode: 'local' } });
+  assert.equal(mobile.capabilities().profileHue, true);
+  const answer = await mobile.call(device, { id: 'r.1', op: 'profiles', args: {} });
+  assert.equal(answer[0].hue, 'teal');
+  await assert.rejects(mobile.call(device, { id: 'm.1', op: 'setHue', args: { profile: 'default', hue: 'teal' } }), error => error.code === 'operation');
+});
