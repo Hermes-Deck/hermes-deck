@@ -294,3 +294,46 @@ test('D9 breaker: a failed gateway call is not counted twice; bypass kinds go th
   await flush(mobile);
   assert.deepEqual(sent.map(event => event.kind), ['done', 'done', 'question'], 'a bypass kind is not held');
 });
+
+// An HTTP relay around a fixture's MobileRelay.
+async function serve(t, mobile) {
+  const { createServer } = require('../src/server');
+  const relay = createServer({ token: 'x'.repeat(32), mobile, model: { snapshot: () => ({}), sessions: new Map(), tokens: () => ({}) }, fleet: { data: {} }, version: 'test' });
+  await new Promise(resolve => relay.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => relay.server.close(resolve)));
+  return `http://127.0.0.1:${relay.server.address().port}`;
+}
+// The gateway accepts exactly these registration keys and rejects anything else, as push/gateway.js does.
+const strictGateway = registrations => ({
+  setDevice: async (id, body) => {
+    if (Object.keys(body).sort().join() !== 'enabled,environment,kinds,token') throw Object.assign(new Error('Mobile push gateway returned HTTP 400'), { status: 400 });
+    registrations.push(body); return { ok: true };
+  },
+});
+
+test('G2 policy in the registration: validated, clamped, stored with the device, stripped before the gateway', async t => {
+  const registrations = [];
+  const { mobile, device, paired } = fixture(t, { push: strictGateway(registrations) });
+  device.observePush = false; mobile.persist(device);
+  const url = await serve(t, mobile);
+  const put = body => fetch(`${url}/mobile/push`, { method: 'PUT', headers: { authorization: `Bearer ${paired.token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const base = { enabled: true, environment: 'production', kinds: ['done', 'approval', 'question', 'error'], token: 'a'.repeat(64) };
+  const response = await put({ ...base, policy: { v: 1, burst: 50, quietMinutes: 0, bypass: ['approval', 'reply'], scope: 'all', agents: ['ada', '../x'], muted: ['atlas'], future: 1 } });
+  assert.equal(response.status, 200);
+  const answer = await response.json();
+  assert.deepEqual(answer, { ok: true, policy: { v: 1, burst: 20, quietMinutes: 1, maxQuietMinutes: 60, bypass: ['approval'], scope: 'all', agents: ['ada'], muted: ['atlas'] } });
+  assert.deepEqual(registrations, [base], 'the gateway never sees the policy');
+  assert.equal(device.observePush, true);
+  // Persisted with the device: a restarted relay applies it.
+  const again = new MobileRelay({ tokensFile: mobile.tokensFile, bridgeConfig: { mode: 'off' }, push: { configured: true, notify: async () => {}, removeDevice: async () => {} } });
+  t.after(() => again.stop());
+  assert.deepEqual(again.device(device.id).governor.policy, answer.policy);
+  // A registration without a policy (an old app) means the defaults again.
+  assert.deepEqual((await (await put(base)).json()).policy, { v: 1, burst: 5, quietMinutes: 10, maxQuietMinutes: 60, bypass: [], scope: 'mine', agents: [], muted: [] });
+  assert.equal(device.pushPolicy, null);
+  // A policy that is not an object is refused before the gateway is called.
+  const bad = await put({ ...base, policy: 'all' });
+  assert.equal(bad.status, 400);
+  assert.equal((await bad.json()).error.code, 'bad_request');
+  assert.equal(registrations.length, 2);
+});

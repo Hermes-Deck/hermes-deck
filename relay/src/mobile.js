@@ -971,6 +971,9 @@ class MobileRelay {
         if (typeof registration.enabled !== 'boolean') throw fail('bad_request', 'Expected registration enabled boolean');
         if (registration.enabled === false) return json(res, 200, await this.disablePush(device));
         if (!this.push?.configured) throw fail('unavailable', 'Push gateway not configured', 503);
+        // G2: the device's notification policy stays on the relay; the gateway accepts exactly its four keys.
+        const { policy: rawPolicy, ...forward } = registration;
+        this.notices.checkPolicy(rawPolicy);
         if (this.devices.get(device.id) !== device || !tokens.stillValid(this.tokensFile, device.id, device.hash)) throw fail('unauthorized', 'Device revoked', 401);
         if (device.registrationBusy) throw fail('busy', 'Push registration already in flight', 409);
         device.registrationBusy = true;
@@ -987,8 +990,10 @@ class MobileRelay {
           if (device.pushAttempt !== attempt) throw fail('superseded', 'Push registration superseded by newer intent', 409);
           let definitive = false;
           try {
-            await this.push.setDevice(device.id, registration);
+            this.push.refreshFeatures?.(true)?.catch?.(() => {}); // the gateway's features (collapse, digest), read at each registration
+            await this.push.setDevice(device.id, forward);
             if (Array.isArray(registration.kinds)) device.pushKinds = registration.kinds.filter(kind => typeof kind === 'string');
+            this.setPushPolicy(device, rawPolicy); // absent: the D9 defaults
             if (device.pushAttempt === attempt && device.pushRemoval === priorRemoval && !this.meta.revocations[device.id]) {
               device.pushRemoval = null;
               device.observePush = true;
@@ -1026,7 +1031,7 @@ class MobileRelay {
             this.persist(device);
           }
           if (device.observePush && this.capabilities().bridge) this.bridge(device);
-          return json(res, 200, { ok: true });
+          return json(res, 200, { ok: true, policy: this.notices.policy(device) });
         } finally {
           device.registrationBusy = false;
           if (!tokens.stillValid(this.tokensFile, device.id, device.hash)) this.devices.delete(device.id);

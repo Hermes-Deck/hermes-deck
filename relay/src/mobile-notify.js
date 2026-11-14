@@ -103,6 +103,11 @@ class NotifyCenter {
     device.governor.configure(policy, device.pushKinds);
     return policy || normalizePolicy(undefined);
   }
+  /** Throws `bad_request` when a registration's `policy` cannot be read (checked before the gateway is called). */
+  checkPolicy(raw) {
+    try { normalizePolicy(raw); }
+    catch { throw Object.assign(new Error('Invalid push policy'), { code: 'bad_request', status: 400 }); }
+  }
   policy(device) { return device.governor.policy; }
   // --- stake: is this chat "mine" -----------------------------------------------------------------------------------
   /**
