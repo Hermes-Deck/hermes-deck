@@ -13,6 +13,7 @@ const { OpLog } = require('./oplog');
 const { httpOp, HTTP_OPS } = require('./mobile-op');
 const { kindsOf } = require('./mobile-notify-policy');
 const { NotifyCenter, gatewayEvent } = require('./mobile-notify');
+const { searchMessages, SCAN_TOTAL, MAX_LIMIT: SEARCH_LIMIT } = require('./message-search');
 // The old single-line limits (base64 through the plugin's stdio): what a host without staged uploads can take. With a
 // plugin that answers deck.attach_staged on this host, capabilities() reports the spool's limits instead (uploads.js).
 const LIMITS = LEGACY;
@@ -147,11 +148,15 @@ READ_OPS.add('seen');
 OPS.watch = ['sid', 'profile'];
 OPS.unwatch = ['sid', 'profile'];
 READ_OPS.add('watch'); READ_OPS.add('unwatch');
+// Message-text search over the relay's read-only history stores (relay-extras X5); a read, no bridge needed.
+OPS.searchMessages = ['q', 'profile', 'cursor', 'limit'];
+READ_OPS.add('searchMessages');
 /** The bridge's watch owner for a phone: one bridge per device, one watched session per owner. */
 const WATCH_OWNER = 'mobile';
 class MobileRelay {
-  constructor({ tokensFile, bridgeConfig, bridgeOptions = {}, capabilities = {}, push = null, settleMs = SETTLE_MS, uploads = null, downloads = null, atDesk = null, clock = null, pushLog = null }) {
+  constructor({ tokensFile, bridgeConfig, bridgeOptions = {}, capabilities = {}, push = null, settleMs = SETTLE_MS, uploads = null, downloads = null, atDesk = null, clock = null, pushLog = null, history = null }) {
     Object.assign(this, { tokensFile, bridgeConfig, bridgeOptions, push, settleMs });
+    this.history = history; // the relay's History (history.js): searchMessages reads its Hermes stores
     // Push decisions (mobile-notify.js): one banner per turn, scope, breaker, digest. `clock` is injectable for tests.
     this.now = typeof clock === 'function' ? clock : Date.now;
     this.notices = new NotifyCenter({ now: () => this.now(), log: pushLog });
@@ -229,7 +234,8 @@ class MobileRelay {
       start: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // op start {profile, text, uploads?}: create + send in one
       maskedPrompt: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // snapshot nodes `maskedPrompt: true` + event `maskedPrompts` [{sid, profile}] (X4)
       watch: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // ops watch/unwatch {sid, profile}: stream a session running elsewhere, read-only (X3)
-      historyProfile: !!this.available.history, // GET /session/<sid>/messages|tools|call/<id>?profile=<name> reads only that profile (G8)
+      historyProfile: !!this.available.history,
+      searchMessages: this.history?.hermes ? { v: 1, scanRows: SCAN_TOTAL, maxLimit: SEARCH_LIMIT } : false, // X5: op searchMessages // GET /session/<sid>/messages|tools|call/<id>?profile=<name> reads only that profile (G8)
       limits: { ...(staged ? this.uploads.limits() : LIMITS), downloadBytes: direct ? this.staging.direct : LEGACY_DOWNLOAD }, uploads: { v: 1, staged }, downloads: { v: 1, direct }, ...this.notices.capabilities(this.push) };
   }
   stagedReady() { return !!this.bridgeConfig && this.bridgeConfig.mode !== 'off' && this.staging.ok === true; }
@@ -713,6 +719,11 @@ class MobileRelay {
     }
   }
   async dispatch(device, op, args) {
+    if (op === 'searchMessages') {
+      // Same reach as the history reads a phone already has (every session of every profile on this host), read-only.
+      if (!this.history?.hermes) throw fail('unavailable', 'Message history is not available on this relay', 503);
+      return searchMessages(this.history.hermes, args, { claudeProfile: this.history.claudeProfile });
+    }
     const bridge = this.bridge(device);
     switch (op) {
       case 'plan': case 'toolCalls': case 'subagents': case 'subagentTail': case 'steerSubagent': case 'interruptSubagent': case 'commands': {

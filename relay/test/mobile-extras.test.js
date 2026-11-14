@@ -348,3 +348,95 @@ test('X4 masked prompt: the handshake of a new socket carries the flag; an old c
   assert.deepEqual(frames[4].data, [{ sid: 's1', profile: 'research' }]);
   assert.ok(!JSON.stringify(frames).includes('6-digit') && !JSON.stringify(frames).includes('vault'));
 });
+
+// ---------------------------------------------------------------------------------------------- X5 searchMessages
+function searchRoot(t, { many = 0 } = {}) {
+  const sqlite = require('node:sqlite');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deck-search-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const mk = file => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const db = new sqlite.DatabaseSync(file);
+    db.exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT NOT NULL, started_at REAL NOT NULL, title TEXT);
+      CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT,
+        tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, timestamp REAL NOT NULL, reasoning TEXT, active INTEGER NOT NULL DEFAULT 1);`);
+    return db;
+  };
+  const a = mk(path.join(root, 'state.db'));
+  a.prepare('INSERT INTO sessions VALUES (?,?,?,?)').run('s-a', 'cli', 100, 'Deploy notes');
+  const add = (db, sid, role, content, ts, active = 1) => db.prepare('INSERT INTO messages (session_id, role, content, timestamp, active) VALUES (?,?,?,?,?)').run(sid, role, content, ts, active);
+  add(a, 's-a', 'user', 'Please check the Nginx config before the deploy', 101);
+  add(a, 's-a', 'assistant', 'The nginx config is fine; the token is sk-abcdefghijklmnopqrstuvwxyz0123456789 and NGINX reloads cleanly.', 102);
+  add(a, 's-a', 'tool', 'nginx -t output', 103);
+  add(a, 's-a', 'user', 'old rewound nginx question', 104, 0);
+  add(a, 's-a', 'user', 'İstanbul sunucusu için ŞİFRE değil, nginx ayarı', 105);
+  for (let i = 0; i < many; i++) add(a, 's-a', 'assistant', `filler ${i}`, 106 + i / 1e6);
+  a.close();
+  const r = mk(path.join(root, 'profiles', 'research', 'state.db'));
+  r.prepare('INSERT INTO sessions VALUES (?,?,?,?)').run('s-r', 'cli', 200, 'Paper');
+  add(r, 's-r', 'user', 'nginx 100% done_now_ok', 150);
+  r.close();
+  return root;
+}
+
+test('X5 searchMessages: case-insensitive text search of user and assistant messages, redacted snippets with ranges, newest first', async t => {
+  const { History } = require('../src/history');
+  const history = new History({ hermesRoot: searchRoot(t) });
+  t.after(() => history.close?.());
+  const { mobile, device } = fixture(t, { history });
+  const caps = mobile.capabilities().searchMessages;
+  assert.deepEqual(caps, { v: 1, scanRows: 60000, maxLimit: 50 });
+  const call = args => mobile.call(device, { id: `r.${crypto.randomUUID()}`, op: 'searchMessages', args });
+  const all = await call({ q: 'nginx' });
+  assert.deepEqual(all.results.map(result => result.id), ['h:research:1', 'h:default:5', 'h:default:2', 'h:default:1']);
+  assert.equal(all.next, null);
+  assert.equal(all.partial, false);
+  const hit = all.results.find(result => result.id === 'h:default:2');
+  assert.deepEqual([hit.profile, hit.sid, hit.title, hit.role, hit.ts], ['default', 's-a', 'Deploy notes', 'assistant', 102]);
+  assert.ok(!hit.snippet.includes('sk-abcdefghij'), 'a secret in the message is redacted in the snippet');
+  assert.deepEqual(hit.ranges.map(([from, to]) => hit.snippet.slice(from, to).toLowerCase()), ['nginx', 'nginx']);
+  for (const result of all.results) for (const [from, to] of result.ranges) assert.equal(result.snippet.slice(from, to).toLowerCase(), 'nginx');
+  assert.ok(!all.results.some(result => result.snippet.includes('rewound') || result.snippet.includes('-t output')), 'no rewound or tool rows');
+  // Turkish capitals: İSTANBUL -> İstanbul; LIKE wildcards in the query are literal.
+  for (const q of ['istanbul', 'İSTANBUL', 'İstanbul', 'şifre']) assert.deepEqual((await call({ q })).results.map(result => result.id), ['h:default:5'], q);
+  const turkish = (await call({ q: 'şifre' })).results[0];
+  assert.deepEqual(turkish.ranges.map(([from, to]) => turkish.snippet.slice(from, to)), ['ŞİFRE']);
+  assert.deepEqual((await call({ q: '100%' })).results.map(result => result.id), ['h:research:1']);
+  assert.deepEqual((await call({ q: '_now_' })).results.map(result => result.id), ['h:research:1']);
+  assert.deepEqual((await call({ q: '%%' })).results, []);
+  assert.deepEqual((await call({ q: 'nginx', profile: 'research' })).results.map(result => result.id), ['h:research:1']);
+  assert.deepEqual((await call({ q: 'nginx', profile: 'nobody' })).results, []);
+  for (const args of [{ q: 'x' }, { q: '' }, { q: 'a'.repeat(201) }, { q: 'nginx', limit: 0 }, { q: 'nginx', limit: 51 }, { q: 'nginx', profile: '../x' }, { q: 'nginx', cursor: '!!' }, { q: 'nginx', cursor: Buffer.from('{"../x":1}').toString('base64url') }, { q: 'nginx', extra: 1 }])
+    await assert.rejects(call(args), error => error.code === 'bad_request', JSON.stringify(args));
+  assert.equal(device.ids.size, 0, 'a read: no mutation id used');
+});
+
+test('X5 searchMessages: pages with a cursor without repeats or gaps; a bounded scan says partial; off without history', async t => {
+  const { History } = require('../src/history');
+  const history = new History({ hermesRoot: searchRoot(t) });
+  t.after(() => history.close?.());
+  const { mobile, device } = fixture(t, { history });
+  const call = args => mobile.call(device, { id: `r.${crypto.randomUUID()}`, op: 'searchMessages', args });
+  const seen = [];
+  let cursor;
+  for (let page = 0; page < 10; page++) {
+    const answer = await call({ q: 'nginx', limit: 1, ...(cursor ? { cursor } : {}) });
+    seen.push(...answer.results.map(result => result.id));
+    cursor = answer.next;
+    if (!cursor) break;
+  }
+  assert.deepEqual(seen, ['h:research:1', 'h:default:5', 'h:default:2', 'h:default:1']);
+  // A relay without history: the flag is off and the op says so.
+  const none = fixture(t, {});
+  assert.equal(none.mobile.capabilities().searchMessages, false);
+  await assert.rejects(none.mobile.call(none.device, { id: 'r.1', op: 'searchMessages', args: { q: 'nginx' } }), error => error.code === 'unavailable');
+  // The scan window: a store larger than the window answers partial and never sees the oldest rows.
+  const search = require('../src/message-search');
+  const big = new History({ hermesRoot: searchRoot(t, { many: 40 }) });
+  t.after(() => big.close?.());
+  const original = search.SCAN_PER_PROFILE;
+  const answer = search.searchMessages(big.hermes, { q: 'nginx' }, { claudeProfile: 'claude-code', scanRows: 10 });
+  assert.equal(original, 30000);
+  assert.equal(answer.partial, true);
+  assert.deepEqual(answer.results.map(result => result.id), ['h:research:1'], 'the default profile\'s matches are older than its newest 10 rows');
+});
