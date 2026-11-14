@@ -8,7 +8,7 @@ const { atomicWriteJson, readJson } = require('./util');
 const compat = require('./compat');
 const { UploadSpool, LEGACY, settleBody } = require('./uploads');
 const { DownloadTickets, LEGACY_MAX: LEGACY_DOWNLOAD } = require('./downloads');
-const { wireError, wireSessionIndex, Gate, shareKey, foreground, withBackgroundBudget } = require('./mobile-gate');
+const { wireError, wireSessionIndex, Gate, shareKey, foreground, withBackgroundBudget, ReplayMemory } = require('./mobile-gate');
 const { OpLog } = require('./oplog');
 // The old single-line limits (base64 through the plugin's stdio): what a host without staged uploads can take. With a
 // plugin that answers deck.attach_staged on this host, capabilities() reports the spool's limits instead (uploads.js).
@@ -204,6 +204,7 @@ class MobileRelay {
       workspace: !!this.available.workspace, desktop: !!this.available.desktop, push: !!this.push?.configured, transcribeLanguage: true,
       errors: { v: 2 }, // typed error codes (mobile-gate.js wireError); v1 = bridge_error + English text
       readsNeverResume: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // subagents/subagentTail/modelOptions
+      replay: true, // a repeated mutation id answers its first outcome for 10 min (last 256 per device), `pending` while it runs
       limits: { ...(staged ? this.uploads.limits() : LIMITS), downloadBytes: direct ? this.staging.direct : LEGACY_DOWNLOAD }, uploads: { v: 1, staged }, downloads: { v: 1, direct } };
   }
   stagedReady() { return !!this.bridgeConfig && this.bridgeConfig.mode !== 'off' && this.staging.ok === true; }
@@ -527,6 +528,12 @@ class MobileRelay {
       if (timestamp <= device.receiptFloor) throw Object.assign(fail('expired_request', 'Request expired; refresh state before a new action'), { uncertain: true });
       if (timestamp > now + MUTATION_FUTURE) throw fail('clock_skew', 'Mutation timestamp is ahead of server time');
     }
+    // Replay (R10): a repeated mutation id answers the first outcome while it is remembered (mobile-gate.js ReplayMemory).
+    const memory = device.replay ||= new ReplayMemory(this.replayOptions);
+    if (!READ_OPS.has(message.op) && !device.reads.has(message.id)) {
+      const seen = memory.get(message.id);
+      if (seen) return memory.answer(seen, meta);
+    }
     if (device.ids.has(message.id) || device.reads.has(message.id)) throw fail('duplicate', 'Request ID already used; refresh state before a new action');
     // Per-device gate (mobile-gate.js): 8 ops in flight, 32 waiting up to 10 s, then `busy`; identical reads share one
     // bridge call. A refusal here happens before an ID is burnt or a read slot is held: nothing was accepted.
@@ -543,10 +550,15 @@ class MobileRelay {
     if (device.ids.size >= 10000) throw fail('limit', 'Mutation limit for the seven-day window reached; reads remain available', 429);
     device.ids.add(message.id);
     this.persist(device);
-    try { return await run(); }
-    catch (error) {
+    memory.begin(message.id);
+    try {
+      const result = await run();
+      memory.settle(message.id, true, result);
+      return result;
+    } catch (error) {
       // Timed out in the gate's queue: it never ran, so the ID is not burnt and the same action may be retried with it.
-      if (error?.gate === 'queued') { device.ids.delete(message.id); this.persist(device); }
+      if (error?.gate === 'queued') { device.ids.delete(message.id); this.persist(device); memory.forget(message.id); }
+      else memory.settle(message.id, false, wireError(error));
       throw error;
     }
   }
@@ -792,12 +804,13 @@ class MobileRelay {
         if (binary) return ws.close(1003);
         let message;
         try { message = JSON.parse(data); } catch { return ws.close(1007); }
+        const meta = {}; // call() sets meta.replayed when it answers a repeated mutation id from memory
         try {
           if (!tokens.stillValid(this.tokensFile, device.id, device.hash)) throw fail('unauthorized', 'Device revoked', 401);
-          const result = await this.call(device, message);
-          if (ws.readyState === 1) ws.send(JSON.stringify({ t: 'response', id: message.id, ok: true, result }));
+          const result = await this.call(device, message, meta);
+          if (ws.readyState === 1) ws.send(JSON.stringify({ t: 'response', id: message.id, ok: true, result, ...(meta.replayed ? { replayed: true } : {}) }));
         } catch (error) {
-          if (ws.readyState === 1) ws.send(JSON.stringify({ t: 'response', id: message?.id, ok: false, error: wireError(error) }));
+          if (ws.readyState === 1) ws.send(JSON.stringify({ t: 'response', id: message?.id, ok: false, error: wireError(error), ...(meta.replayed ? { replayed: true } : {}) }));
         }
       });
       try {

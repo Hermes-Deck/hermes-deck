@@ -210,3 +210,48 @@ test('W5: the op log has one line per refused or failed op, bridge status lines 
   assert.deepEqual({ ...summary, windowMs: 0 }, { t: 'mobile.summary', windowMs: 0, ops: 4, failed: 0, busy: 0, p95Ms: 400, maxPending: 4, maxInFlight: 2 });
   assert.equal(log.flush(), null, 'no summary for an empty window');
 });
+
+test('W6: a repeated mutation id answers the first outcome: result, pending, certain failure; uncertain stays duplicate', async t => {
+  let creates = 0, release;
+  const { mobile, device } = relayWith(t, {
+    create: () => { creates++; return new Promise(resolve => { release = () => resolve({ sid: 'session-new', profile: 'atlas' }); }); },
+    send: async () => { throw Object.assign(new Error('The Hermes request timed out; it may have completed.'), { kind: 'timeout' }); },
+    deleteSession: async () => { throw Object.assign(new Error('This session is running; stop it first.'), { kind: 'stale' }); },
+  });
+  assert.equal(mobile.capabilities().replay, true);
+  const id = mutationID();
+  const first = mobile.call(device, { id, op: 'create', args: { profile: 'atlas' } });
+  const meanwhile = await outcome(mobile.call(device, { id, op: 'create', args: { profile: 'atlas' } }));
+  assert.deepEqual([meanwhile.error.code, meanwhile.error.uncertain], ['pending', true]);
+  release();
+  const one = await first;
+  const meta = {};
+  const two = await mobile.call(device, { id, op: 'create', args: { profile: 'atlas' } }, meta);
+  assert.deepEqual(two, one);
+  assert.notEqual(two, one, 'a copy, never the stored object');
+  assert.equal(meta.replayed, true);
+  assert.equal(creates, 1);
+  // a certain failure is answered again, marked replayed
+  const del = mutationID();
+  const firstDelete = await outcome(mobile.call(device, { id: del, op: 'delete', args: { sid: 'session-a', profile: 'atlas' } }));
+  const againDelete = await outcome(mobile.call(device, { id: del, op: 'delete', args: { sid: 'session-a', profile: 'atlas' } }));
+  assert.deepEqual([firstDelete.error.code, againDelete.error.code, againDelete.error.replayed], ['stale', 'stale', true]);
+  // an uncertain failure is not replayed: outcome unknown -> duplicate (refresh, never resend)
+  const sent = mutationID();
+  assert.equal((await outcome(mobile.call(device, { id: sent, op: 'send', args: { sid: 'session-a', profile: 'atlas', text: 'x' } }))).error.code, 'timeout');
+  assert.equal((await outcome(mobile.call(device, { id: sent, op: 'send', args: { sid: 'session-a', profile: 'atlas', text: 'x' } }))).error.code, 'duplicate');
+});
+
+test('W6: replay memory keeps the last 256 outcomes for 10 minutes', () => {
+  const { ReplayMemory } = require('../src/mobile-gate');
+  let now = 0;
+  const memory = new ReplayMemory({ now: () => now });
+  for (let i = 0; i < 300; i++) { memory.begin(`m${i}`); memory.settle(`m${i}`, true, { i }); }
+  assert.equal(memory.get('m0'), undefined);
+  assert.deepEqual(memory.get('m299').result, { i: 299 });
+  assert.equal(memory.entries.size, 256);
+  now = 600001;
+  assert.equal(memory.get('m299'), undefined);
+  memory.begin('big'); memory.settle('big', true, { text: 'x'.repeat(70000) });
+  assert.equal(memory.get('big'), undefined, 'an oversized result is not kept: the receipt answers duplicate');
+});

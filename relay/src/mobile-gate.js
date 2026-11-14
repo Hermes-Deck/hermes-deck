@@ -19,6 +19,7 @@ const BUSY_RETRY_MS = 1000;
  * - Anything else (no kind, no code) is `host` + uncertain: unknown, never `bridge_error`.
  */
 function wireError(error) {
+  if (error?.wire && typeof error.wire.code === 'string') return { ...error.wire }; // a replayed outcome (ReplayMemory)
   const message = typeof error?.message === 'string' ? error.message : String(error);
   const kind = typeof error?.kind === 'string' ? error.kind : '';
   const rpc = Number.isInteger(error?.rpcCode) ? { rpcCode: error.rpcCode } : {};
@@ -137,4 +138,51 @@ function withBackgroundBudget(BridgeClient, options = BACKGROUND) {
   };
 }
 
-module.exports = { wireError, wireSessionIndex, BUSY_RETRY_MS, Gate, GATE, BACKGROUND, shareKey, foreground, withBackgroundBudget };
+const REPLAY = Object.freeze({ size: 256, ttlMs: 600000, maxBytes: 65536 });
+const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+
+/**
+ * The outcome of a device's recent mutations, by mutation id (R10 / G12): the last `size` for `ttlMs`. A repeated id
+ * answers the first outcome instead of `duplicate`: the result (`replayed: true`), a certain failure again, `pending`
+ * while the first still runs. An uncertain failure is not replayed: its true outcome is still unknown, so a repeat
+ * answers `duplicate` ("refresh, never resend"), as before. In memory only: after a relay restart a repeat answers
+ * `duplicate` from the persisted receipt.
+ */
+class ReplayMemory {
+  constructor({ size = REPLAY.size, ttlMs = REPLAY.ttlMs, maxBytes = REPLAY.maxBytes, now = Date.now } = {}) {
+    Object.assign(this, { size, ttlMs, maxBytes, now });
+    this.entries = new Map();
+  }
+  prune() {
+    const floor = this.now() - this.ttlMs;
+    for (const [id, entry] of this.entries) if (entry.state !== 'pending' && entry.at <= floor) this.entries.delete(id);
+    while (this.entries.size > this.size) this.entries.delete(this.entries.keys().next().value);
+  }
+  get(id) { this.prune(); return this.entries.get(id); }
+  begin(id) { this.entries.delete(id); this.entries.set(id, { state: 'pending', at: this.now() }); this.prune(); }
+  settle(id, ok, value) {
+    const entry = this.entries.get(id);
+    if (!entry) return;
+    entry.at = this.now();
+    if (ok) {
+      let text;
+      try { text = JSON.stringify(value); } catch { text = null; }
+      if (text === null || (text !== undefined && text.length > this.maxBytes)) { this.entries.delete(id); return; } // too big to keep: duplicate
+      Object.assign(entry, { state: 'ok', result: text === undefined ? undefined : JSON.parse(text) });
+    } else if (value && value.uncertain !== true) Object.assign(entry, { state: 'error', wire: { ...value } });
+    else this.entries.delete(id); // uncertain: the receipt answers duplicate
+    this.prune();
+  }
+  forget(id) { this.entries.delete(id); }
+  /** The answer for a repeated id: a result to return, or an error to throw. `meta.replayed` is set on a replay. */
+  answer(entry, meta = {}) {
+    if (entry.state === 'pending') {
+      throw Object.assign(new Error('The first request with this ID is still running; wait for its response or refresh'), { wire: { code: 'pending', message: 'The first request with this ID is still running; wait for its response or refresh', uncertain: true } });
+    }
+    meta.replayed = true;
+    if (entry.state === 'ok') return clone(entry.result);
+    throw Object.assign(new Error(entry.wire.message), { wire: { ...entry.wire, replayed: true } });
+  }
+}
+
+module.exports = { ReplayMemory, REPLAY, wireError, wireSessionIndex, BUSY_RETRY_MS, Gate, GATE, BACKGROUND, shareKey, foreground, withBackgroundBudget };
