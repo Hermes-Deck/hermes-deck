@@ -143,7 +143,9 @@ class NotifyCenter {
   /**
    * An assistant message of a chat. While the chat has an open banner, the message updates it ('merged'). A banner
    * whose turn already ended but that has not gone out yet takes the text ('filled'). Otherwise the caller opens a new
-   * banner ('open'), which waits for the turn's end (or REPLY_SETTLE_MS of silence, when `reply` is on).
+   * banner ('open'), which waits for the turn's end (or REPLY_SETTLE_MS of silence, when `reply` is on and the device
+   * sent a policy: an old client's `reply` only names the kind a turn's end is carried as, never a banner per message).
+   * So a turn pushes once; with the settle rule at most twice (the still-running reply, then its end replacing it).
    */
   message(device, item, body) {
     const entry = device.turns.get(JSON.stringify([item.profile, item.sid]));
@@ -152,6 +154,13 @@ class NotifyCenter {
       if (body) record.body = body;
       entry.at = this.now();
       if (item.turn) entry.turn = item.turn;
+      return 'merged';
+    }
+    // The settle rule already pushed this turn's reply: later messages only update it; the turn's end then pushes once more.
+    if (record && entry.phase === 'pushed' && (!item.turn || !entry.turn || item.turn === entry.turn)) {
+      if (body) record.body = body;
+      entry.at = this.now();
+      entry.after = true;
       return 'merged';
     }
     if (record && entry.phase === 'closed' && record.delivery === 'pending' && (!item.turn || !entry.turn || item.turn === entry.turn)) {
@@ -172,19 +181,25 @@ class NotifyCenter {
    * same end seen twice (native event and snapshot) is a 'duplicate'; a reply banner already pushed by the settle rule
    * with no message since ends the turn silently ('merged'). Otherwise null: the caller creates the end's own banner.
    */
-  terminal(device, item, finalKind) {
+  terminal(device, item, finalKind, body = '') {
     const key = JSON.stringify([item.profile, item.sid]);
     const entry = device.turns.get(key);
     const record = entry && device.notifications.get(entry.id);
     if (!record) return null;
     if (entry.phase === 'closed' && item.turn && entry.turn === item.turn) return 'duplicate';
-    if (entry.phase === 'pushed' && (!item.turn || !entry.turn || entry.turn === item.turn)) { entry.phase = 'closed'; return 'merged'; }
+    if (entry.phase === 'pushed' && (!item.turn || !entry.turn || entry.turn === item.turn)) {
+      if (entry.after) return null; // messages came after the settle push: the end gets its own (replacing) banner
+      entry.phase = 'closed';
+      return 'merged';
+    }
     if (entry.phase !== 'open' || record.delivery !== 'pending') return null;
     entry.phase = 'closed';
     if (item.turn) entry.turn = item.turn;
     delete record.open;
-    if (!finalKind) { record.delivery = 'dropped'; this.log(device, 'kind-off', { ...item, kind: item.kind }); return 'merged'; }
+    if (!finalKind) { record.delivery = 'dropped'; this.log(device, 'kind-off', item); return 'merged'; }
     record.kind = finalKind;
+    // An error shows what went wrong; a done keeps the turn's last message (or the end's own text when it had none).
+    if (body && (item.kind === 'error' || !record.body)) record.body = body;
     return 'merged';
   }
   /** Sweep: open banners whose turn went quiet push as `reply` when that kind is on; abandoned ones are dropped. */
