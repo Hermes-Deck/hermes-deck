@@ -1045,6 +1045,21 @@ class MobileRelay {
         }
       }
     }
+    if (route === '/mobile/push/test' && req.method === 'POST') {
+      // One test banner to this device, past scope and breaker; at most one per 30 s. Kind `done` (every gateway knows it).
+      await body(req, 4096);
+      if (!this.push?.configured) throw fail('unavailable', 'Push gateway not configured', 503);
+      if (!device.observePush) throw fail('not_registered', 'Push is not enabled for this device', 409);
+      if (device.notifications.size >= NOTIFICATION_CAPACITY) throw fail('limit', 'Notification capacity reached', 429);
+      if (this.notices.testWait(device) > 0) throw fail('limit', 'One test notification per 30 seconds', 429);
+      const now = this.now(), id = `e_${now}_${opaque()}`;
+      device.notifications.set(id, this.notices.testRecord(device, now));
+      this.notices.log(device, 'test', { kind: 'done' });
+      this.seen(device, 'op'); // a tap in the app: the person is looking
+      this.persist(device);
+      this.flushPush().catch(() => {});
+      return json(res, 200, { ok: true, id });
+    }
     if (route === '/mobile/seen' && req.method === 'POST') {
       // G1: the app is in the foreground or a notification was opened. Body `{reason}` (optional).
       const raw = (await body(req, 4096)).toString().trim();

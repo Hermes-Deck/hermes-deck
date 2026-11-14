@@ -374,3 +374,29 @@ test('notification record: thread, badge, request {id, kind, choices | questions
   const digest = await get(sent.at(-1).id);
   assert.deepEqual(digest, { kind: 'digest', counts: { updates: 9, chats: 3, needsYou: 1 }, title: '', body: '', agent: '', thread: crypto.createHash('sha256').update(`${device.id}:digest`).digest('hex').slice(0, 32), badge: 0 });
 });
+
+test('test push: one banner to the calling device, past a quiet window, at most one per 30 s', async t => {
+  const clock = fakeClock(), nodes = {};
+  const { mobile, device, sent, paired } = fixture(t, { now: clock, policy: { scope: 'all', burst: 1 }, bridge: { nodeFor: sid => nodes[sid] || null } });
+  const other = mobile.pair({ code: createPair(mobile.tokensFile), name: 'tablet' });
+  const url = await serve(t, mobile);
+  const post = token => fetch(`${url}/mobile/push/test`, { method: 'POST', headers: { authorization: `Bearer ${token}` } });
+  await finishTurns(clock, mobile, device, nodes, 2);
+  assert.equal(sent.length, 1, 'the window is on');
+  const first = await post(paired.token);
+  assert.equal(first.status, 200);
+  const { ok, id } = await first.json();
+  assert.equal(ok, true);
+  await flush(mobile);
+  assert.deepEqual(sent.at(-1), { target: device.id, id, kind: 'done' });
+  const record = await (await fetch(`${url}/mobile/notifications/${id}`, { headers: { authorization: `Bearer ${paired.token}` } })).json();
+  assert.equal(record.test, true); assert.equal(record.kind, 'done'); assert.equal(record.sid, undefined);
+  assert.equal(device.governor.state.sent, 0, 'the test tap counts as seen');
+  const again = await post(paired.token);
+  assert.equal(again.status, 429);
+  assert.equal((await again.json()).error.code, 'limit');
+  clock.advance(30000);
+  assert.equal((await post(paired.token)).status, 200);
+  assert.equal((await post(other.token)).status, 409, 'a device without push gets no test banner');
+  assert.equal((await post('wrong')).status, 401);
+});

@@ -273,6 +273,9 @@ class NotifyCenter {
   digestRecord(device, digest, timestamp) {
     return { kind: 'digest', counts: digest.counts, title: '', body: '', agent: '', thread: digestCollapse(device.id), expires: timestamp + 7 * 86400000, delivery: 'pending' };
   }
+  testRecord(device, timestamp) {
+    return { kind: 'done', test: true, title: 'Hermes Deck', body: 'Test notification', agent: '', thread: testCollapse(device.id), expires: timestamp + 7 * 86400000, delivery: 'pending' };
+  }
   /** One test banner, at most one per TEST_INTERVAL_MS per device. Returns the wait in ms when refused, else 0. */
   testWait(device) {
     const wait = device.lastTestPush + TEST_INTERVAL_MS - this.now();
