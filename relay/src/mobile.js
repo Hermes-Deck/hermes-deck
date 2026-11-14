@@ -188,6 +188,7 @@ class MobileRelay {
     this.timer = setInterval(() => this.sweep(), 1000);
     this.timer.unref();
     this.flushPush().catch(() => {});
+    if (this.push?.configured) this.push.refreshFeatures?.()?.catch?.(() => {}); // gateway features: at start, hourly (sweep), per registration
     if (this.push?.configured && this.capabilities().bridge) {
       const authorized = tokens.load(this.tokensFile).devices;
       for (const [id, state] of Object.entries(this.meta.devices)) {
@@ -821,6 +822,7 @@ class MobileRelay {
   }
   sweep() {
     this.ticks++;
+    if (this.ticks % 60 === 0 && this.push?.configured) this.push.refreshFeatures?.()?.catch?.(() => {}); // cached for an hour
     // A quiet window that outlived a restart still ends with its digest: load such devices (bounded by the pairing limit).
     if (this.ticks % 60 === 1) for (const [id, state] of Object.entries(this.meta.devices)) {
       if (!this.devices.has(id) && state?.observePush === true && state.pushGovernor?.quietUntil) { try { this.device(id); } catch {} }
