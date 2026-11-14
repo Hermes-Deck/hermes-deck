@@ -134,6 +134,9 @@ const OPS = {
   takeover: ['sid', 'profile'], interrupt: ['sid', 'profile', 'turnId'], modelOptions: ['sid', 'profile', 'profileOnly'], setModel: ['sid', 'profile', 'model', 'provider', 'confirm'],
   answerApproval: ['id', 'profile', 'choice'], answerQuestion: ['id', 'profile', 'answers'], transcribe: ['upload', 'mime', 'language'],
 };
+// Push bookkeeping op (mobile-notify.js): the app says it is in the foreground (G1); answered without the bridge.
+OPS.seen = ['reason'];
+READ_OPS.add('seen');
 class MobileRelay {
   constructor({ tokensFile, bridgeConfig, bridgeOptions = {}, capabilities = {}, push = null, settleMs = SETTLE_MS, uploads = null, downloads = null, atDesk = null, clock = null, pushLog = null }) {
     Object.assign(this, { tokensFile, bridgeConfig, bridgeOptions, push, settleMs });
@@ -365,6 +368,10 @@ class MobileRelay {
       const nonce = crypto.createHash('sha256').update(`${device.id}:${item.key}`).digest('hex').slice(0, 48);
       // Reuse the initial timestamp across reconnects/restarts while the local mapping is retained.
       if (device.merged.has(nonce) || [...device.notifications.keys()].some(id => id === nonce || PUSH_EVENT_ID.exec(id)?.[2] === nonce)) { admission.duplicate++; continue; }
+      // Scope (R12, D13): replies/ends only for chats a person on this device takes part in (or followed agents), never
+      // for sub-agent sessions or muted agents; approvals and questions from everyone.
+      const reason = this.notices.scope(device, item);
+      if (reason) { admission.skipped++; this.notices.log(device, reason, item); continue; }
       const timestamp = Number.isSafeInteger(item.timestamp) && item.timestamp >= 1e12 && item.timestamp < 1e13 ? item.timestamp : now;
       const id = `e_${timestamp}_${nonce}`;
       let body = '';
@@ -444,6 +451,12 @@ class MobileRelay {
     this.wasAtDesk = at;
   }
   setPushPolicy(device, raw) { return this.notices.setPolicy(device, raw); }
+  /** Every op of the device: stake in its chat (12 h "mine"); a mutation or `seen` resets the breaker. Returns `seen`'s result. */
+  noteOp(device, op, args) {
+    const { reply, dirty } = this.notices.noteOp(device, op, args, !READ_OPS.has(op));
+    if (dirty) { try { this.persist(device); } catch {} }
+    return reply;
+  }
   // A device that never sent a kinds list gets done/approval/question/error (R14): no banner per assistant message.
   kindEnabled(device, kind) { return kindsOf(device.pushKinds).includes(kind); }
   /** Keeps a turn's reply text under every id the session is known by (stored sid and runtime id), so a done event can find it. */
@@ -548,6 +561,7 @@ class MobileRelay {
       if (timestamp > now + MUTATION_FUTURE) throw fail('clock_skew', 'Mutation timestamp is ahead of server time');
     }
     if (device.ids.has(message.id) || device.reads.has(message.id)) throw fail('duplicate', 'Request ID already used; refresh state before a new action');
+    const noted = this.noteOp(device, message.op, args); if (noted) return noted; // push bookkeeping (mobile-notify.js); answers `seen`
     if (READ_OPS.has(message.op)) {
       if (device.reads.size >= 64) throw fail('limit', 'Too many active reads', 429);
       device.reads.add(message.id);

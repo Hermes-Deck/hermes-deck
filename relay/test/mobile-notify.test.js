@@ -6,7 +6,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { MobileRelay, createPair } = require('../src/mobile');
+const mutation = clock => `m.${clock ? clock() : Date.now()}.${crypto.randomUUID()}`;
 
 function fixture(t, { bridge = {}, kinds, policy, settleMs = 0, now, push = {} } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'deck-mobile-notify-')), file = path.join(dir, 'devices.json'), sent = [], logs = [];
@@ -50,7 +52,7 @@ async function turn(clock, mobile, device, sid, turnId, { count = 5, gap = 30000
   if (end) mobile.notify(device, 'native', { type: end, sid, profile: 'default', payload: { turn_id: turnId, ...(end === 'turn.error' ? { error: 'Provider refused the request' } : {}) } });
   await flush(mobile);
 }
-function fakeClock(start = 1_800_000_000_000) {
+function fakeClock(start = Date.now()) {
   let now = start;
   const clock = () => now;
   clock.advance = ms => { now += ms; };
@@ -128,4 +130,74 @@ test('R11: an error ends the turn with its own text; a turn that never ends is d
   clock.advance(3600000); mobile.govern(device); await flush(mobile);
   assert.equal(open.delivery, 'dropped');
   assert.equal(sent.length, 1);
+});
+
+test('D13 scope mine: untouched chats stay quiet, a send or an opened history makes them mine for 12 h, approvals always', async t => {
+  const clock = fakeClock(), nodes = {};
+  const node = (sid, extra = {}) => (nodes[sid] = { sid, profile: 'default', title: 'Chat', turnId: 't0', ...extra });
+  const bridge = { nodeFor: sid => nodes[sid] || null, send: async () => ({ ok: true }), history: async () => ({ messages: [] }), rpcToStored: new Map() };
+  const { mobile, device, sent, logs } = fixture(t, { now: clock, settleMs: 0, bridge });
+  mobile.bridge = () => device.bridge;
+  node('auto');
+  for (let i = 1; i <= 10; i++) { nodes.auto.turnId = `t${i}`; await turn(clock, mobile, device, 'auto', `t${i}`, { count: 1, gap: 1000 }); }
+  assert.equal(sent.length, 0, 'ten turns of an autonomous chat: nothing');
+  assert.ok(logs.some(line => line.decision === 'scoped-out' && line.sid === 'auto' && line.kind === 'done'));
+  mobile.notify(device, 'requests', [{ id: 'r1', sid: 'auto', profile: 'default', kind: 'approval', at: clock(), command: 'ls', description: 'List' }]);
+  await flush(mobile);
+  assert.deepEqual(sent.map(event => event.kind), ['approval'], 'an approval comes from any chat');
+  await mobile.call(device, { id: mutation(), op: 'send', args: { sid: 'auto', profile: 'default', text: 'take a look' } });
+  nodes.auto.turnId = 't11';
+  await turn(clock, mobile, device, 'auto', 't11', { count: 2, gap: 1000 });
+  assert.deepEqual(sent.map(event => event.kind), ['approval', 'done'], 'after one send the chat is mine');
+  // Opening the history of a chat also makes it mine; 12 hours later it is not any more.
+  node('read');
+  await mobile.call(device, { id: 'read-1', op: 'history', args: { sid: 'read', profile: 'default' } });
+  await turn(clock, mobile, device, 'read', 't0', { count: 1, gap: 1000 });
+  assert.equal(sent.length, 3);
+  clock.advance(12 * 3600000);
+  nodes.read.turnId = 't1';
+  await turn(clock, mobile, device, 'read', 't1', { count: 1, gap: 1000 });
+  assert.equal(sent.length, 3, 'stake expires after 12 h');
+  // A chat the phone created and sent to under its runtime id is found again under its stored id.
+  bridge.rpcToStored.set('rpc-new', { sid: 'stored-new', profile: 'default' });
+  await mobile.call(device, { id: mutation(), op: 'send', args: { sid: 'rpc-new', profile: 'default', text: 'hello' } });
+  node('stored-new', { rpcId: 'rpc-new', turnId: 'k1' });
+  await turn(clock, mobile, device, 'stored-new', 'k1', { count: 1, gap: 1000 });
+  assert.equal(sent.length, 4);
+  // The stake survives a restart (persisted next to the ledger).
+  const restarted = new MobileRelay({ tokensFile: mobile.tokensFile, bridgeConfig: { mode: 'off' }, clock, push: { configured: true, notify: async () => {}, removeDevice: async () => {} } });
+  t.after(() => restarted.stop());
+  const again = restarted.device(device.id);
+  assert.equal(restarted.notices.mine(again, 'default', ['rpc-new']), true);
+  assert.equal(restarted.notices.mine(again, 'default', ['read']), false);
+});
+
+test('D13: scope all, followed and muted agents; sub-agent sessions never push their own replies or ends', async t => {
+  const clock = fakeClock();
+  const nodes = { root: { sid: 'root', profile: 'default', title: 'Main', turnId: 'a' }, child: { sid: 'child', profile: 'default', title: 'Helper', parent: 'root', subagentId: 'sa-1', turnId: 'b' },
+    cont: { sid: 'cont', profile: 'default', title: 'Continued', lineageParent: 'root', turnId: 'c' } };
+  const { mobile, device, sent, logs } = fixture(t, { now: clock, policy: { scope: 'all' }, bridge: { nodeFor: sid => nodes[sid] || null } });
+  await turn(clock, mobile, device, 'root', 'a', { count: 1, gap: 1000 });
+  await turn(clock, mobile, device, 'child', 'b', { count: 1, gap: 1000 });
+  await turn(clock, mobile, device, 'cont', 'c', { count: 1, gap: 1000 });
+  assert.deepEqual(sent.map(event => device.notifications.get(event.id).sid), ['root', 'cont'], 'a compression continuation is the same chat, not a sub-agent');
+  assert.ok(logs.some(line => line.decision === 'subagent' && line.sid === 'child'));
+  mobile.notify(device, 'requests', [{ id: 'q', sid: 'child', profile: 'default', kind: 'question', at: clock(), questions: [{ qid: 'a', question: 'Which file?' }] }]);
+  await flush(mobile);
+  assert.equal(sent.at(-1).kind, 'question', 'a sub-agent still asks the person');
+  // Muted: no replies or ends from that agent, whatever the scope; its approvals still come.
+  const muted = fixture(t, { now: clock, policy: { scope: 'all', muted: ['default'] }, bridge: { nodeFor: sid => nodes[sid] || null } });
+  await turn(clock, muted.mobile, muted.device, 'root', 'a', { count: 1, gap: 1000 });
+  muted.mobile.notify(muted.device, 'requests', [{ id: 'r', sid: 'root', profile: 'default', kind: 'approval', at: clock(), command: 'ls', description: 'List' }]);
+  await flush(muted.mobile);
+  assert.deepEqual(muted.sent.map(event => event.kind), ['approval']);
+  assert.ok(muted.logs.some(line => line.decision === 'muted'));
+  // Followed: scope mine, never touched, but the agent is followed.
+  const followed = fixture(t, { now: clock, policy: { agents: ['default'] }, bridge: { nodeFor: sid => nodes[sid] || null } });
+  await turn(clock, followed.mobile, followed.device, 'root', 'a', { count: 1, gap: 1000 });
+  assert.deepEqual(followed.sent.map(event => event.kind), ['done']);
+  // The log never carries text or titles, and only 8 characters of a session id.
+  const text = JSON.stringify([...logs, ...muted.logs, ...followed.logs]);
+  for (const secret of ['Step 1', 'Main', 'Helper', 'Which file', 'List']) assert.ok(!text.includes(secret), secret);
+  assert.ok([...logs, ...muted.logs].every(line => line.t === 'push' && (line.sid === null || line.sid.length <= 8)));
 });

@@ -95,12 +95,16 @@ class NotifyCenter {
   }
   policy(device) { return device.governor.policy; }
   // --- stake: is this chat "mine" -----------------------------------------------------------------------------------
-  /** Called for every op the device sends: stake in the chat, and a mutation counts as "seen". Returns a result for `seen`. */
+  /**
+   * Called for every op the device sends: stake in the chat, and a mutation counts as "seen" (G1). `reply` is the
+   * result of the `seen` op itself; `dirty` says the persisted state changed.
+   */
   noteOp(device, op, args, mutation) {
-    if (op === 'seen') return this.seen(device, typeof args?.reason === 'string' ? args.reason : 'foreground');
-    if (STAKE_OPS.has(op) && typeof args?.profile === 'string' && PROFILE_NAME.test(args.profile) && typeof args.sid === 'string' && SID.test(args.sid)) this.stake(device, args.profile, args.sid);
-    if (mutation) this.seen(device, 'op');
-    return undefined;
+    if (op === 'seen') { const { changed, ...reply } = this.seen(device, typeof args?.reason === 'string' ? args.reason : 'foreground'); return { reply, dirty: changed }; }
+    let dirty = false;
+    if (STAKE_OPS.has(op) && typeof args?.profile === 'string' && PROFILE_NAME.test(args.profile) && typeof args.sid === 'string' && SID.test(args.sid)) { this.stake(device, args.profile, args.sid); dirty = true; }
+    if (mutation && this.seen(device, 'op').changed) dirty = true;
+    return { reply: undefined, dirty };
   }
   stake(device, profile, sid) {
     const key = JSON.stringify([profile, sid]);

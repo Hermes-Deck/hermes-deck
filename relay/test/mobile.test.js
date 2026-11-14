@@ -595,6 +595,7 @@ test('round9 authorized background observation restores without phone; overflow 
   await restarted.flushPush(); await restarted.flushPush();
   assert.deepEqual([...device.notifications.values()].map(item => item.sid).sort(), ['route-one', 'route-two', 'same']);
   const turn = { sid: 'same', profile: 'alpha', turnId: 'authoritative-turn', state: 'working', terminalAt: null };
+  restarted.setPushPolicy(device, { scope: 'all' }); // finished turns of a chat this phone never touched: scope `all` (D13)
   bridge.nodes.set(JSON.stringify(['alpha', 'same']), turn);
   bridge.emit('snapshot', { nodes: [turn] });
   bridge._onServerFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'turn.complete', session_id: 'same', profile_name: 'alpha', payload: { turn_id: 'authoritative-turn', counter: 99 } } });
@@ -710,7 +711,7 @@ test('review20 short terminal turn and precise request arrival identities surviv
   const push = { configured: true, removeDevice: async () => {}, notify: async (target, event) => delivered.push({ target, ...event }) };
   const mobile = new MobileRelay({ tokensFile: file, bridgeConfig: { mode: 'off' }, push });
   const paired = mobile.pair({ code: createPair(file), name: 'phone' }), device = mobile.device(paired.deviceId);
-  device.observePush = true; mobile.persist(device);
+  device.observePush = true; mobile.setPushPolicy(device, { scope: 'all' }); mobile.persist(device);
   let node = { sid: 'session', profile: 'default', state: 'finished', turnId: 'first-turn', terminalAt: Date.now() / 1000 };
   device.bridge = { nodeFor: () => node, stop: async () => {} };
   mobile.notify(device, 'snapshot', { nodes: [node] });
@@ -785,6 +786,7 @@ test('notification previews: plain-text title/body stored on the relay, served t
   const device = mobile.device(first.deviceId);
   device.observePush = true; mobile.persist(device);
   device.bridge = { nodeFor: () => ({ title: 'Trip planning', turnId: 'turn-1' }), stop: async () => {} };
+  mobile.noteOp(device, 'history', { sid: 'sid-a', profile: 'research' }); // the phone opened this chat: it is "mine" (D13)
   mobile.notify(device, 'native', { type: 'message.complete', sid: 'sid-a', profile: 'research', payload: { text: 'Your flights are booked.\nHotel next.\nThird line.' } });
   mobile.notify(device, 'native', { type: 'turn.complete', sid: 'sid-a', profile: 'research', payload: { turn_id: 'turn-1' } });
   mobile.notify(device, 'requests', [{ id: 'req-1', sid: 'sid-a', profile: 'research', kind: 'approval', at: Date.now(), command: 'git push origin main', description: 'Push the release branch' }]);
@@ -815,7 +817,7 @@ function notifyFixture(t, { bridge, settleMs = 0, kinds } = {}) {
   const mobile = new MobileRelay({ tokensFile: file, settleMs, bridgeConfig: { mode: 'off' }, push: { configured: true, notify: async (target, event) => sent.push({ target, ...event }), removeDevice: async () => {} } });
   t.after(() => mobile.stop());
   const paired = mobile.pair({ code: createPair(file), name: 'phone' }), device = mobile.device(paired.deviceId);
-  device.observePush = true; if (kinds) device.pushKinds = kinds; mobile.persist(device);
+  device.observePush = true; if (kinds) device.pushKinds = kinds; mobile.setPushPolicy(device, { scope: 'all' }); mobile.persist(device);
   device.bridge = { stop: async () => {}, ...bridge };
   return { mobile, device, sent, paired };
 }
