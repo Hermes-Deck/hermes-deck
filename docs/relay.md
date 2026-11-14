@@ -266,3 +266,39 @@ valid for 5 minutes); `list` and `revoke <deviceId>` manage paired phones. The p
 publish the relay to it through a private HTTPS reverse proxy (for example on your tailnet), never on the public
 internet. Set `DECK_MOBILE_BRIDGE_STREAM` (and `DECK_MOBILE_BRIDGE_PYTHON`) for live Hermes sessions on the phone, and
 the `HERMES_PUSH_*` variables for push. Building the app: the [iOS app repository](https://github.com/Hermes-Deck/ios-app).
+
+### Phone requests: errors, limits, replay and the HTTP route
+
+A failed phone request answers `{code, message, uncertain}`. `code` is the field to act on; `message` is English text
+for logs only. `uncertain: false` means nothing ran and the request may be sent again; `uncertain: true` means it may
+have run, so refresh before acting again. `GET /mobile/capabilities` reports `errors: {v: 2}` for this vocabulary.
+
+| `code` | Meaning | `uncertain` |
+|---|---|---|
+| `busy` | too many requests from this phone; retry after `retryAfterMs` | false |
+| `offline` | the host connection is down; nothing was sent | false |
+| `timeout` | sent, no answer (`reason`: `timeout`, `lost`, `closed`, `changed`) | true |
+| `host` | Hermes answered an error (`rpcCode` when it gave one; `reason: unsupported` for an older host) | false only for a request refused before it ran |
+| `stale` | the request, turn or session already moved on (an answered approval, a running chat); refresh | false |
+| `pending` | the first request with this ID is still running; wait for its answer | true |
+| `duplicate`, `bad_request`, `limit`, `unauthorized`, `operation`, `not_found`, `expired_request`, ... | the relay's own checks, as before | false (`expired_request`: true) |
+
+Each phone has at most 8 requests running on the host; up to 32 more wait for 10 seconds before answering `busy`.
+Identical reads running at the same time share one host call, and the relay's own background reads (notification
+text, agent names) have a separate budget of 2. Reads of sub-agents, a sub-agent's output and the model list never
+resume a session on the host (`readsNeverResume`).
+
+An action repeated with the same request ID within 10 minutes (the last 256 per phone) answers the first outcome with
+`replayed: true` (`replay`); an outcome that was itself uncertain answers `duplicate`. `start {profile, text, uploads?}`
+creates a chat and sends its first message in one request and answers `{sid, profile, status}` (`start`).
+
+`POST /mobile/op` (bearer: the phone's token) runs one request without the WebSocket, for a notification action:
+the body is the WebSocket request `{id, op, args}` plus an optional `waitMs` (at most 20000) to wait for the host
+connection, the answer is the WebSocket response with status 200, also when the operation fails. Only the operations
+in `capabilities.httpOps.ops` are accepted. The history routes take `?profile=<name>` (`historyProfile`).
+
+The relay writes a JSON line to its journal for every refused or failed phone request (`"t":"mobile.op"`: operation,
+code, running and waiting counts, the host's pending requests, duration), for each host connection change
+(`mobile.bridge`) and once a minute while the phone is used (`mobile.summary`: requests, failures, 95th-percentile
+duration, peak pending). It never logs message text, titles, tokens or more than 8 characters of a session id:
+`journalctl --user -u <relay unit> | grep mobile.` shows them.
