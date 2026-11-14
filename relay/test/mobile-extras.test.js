@@ -409,6 +409,13 @@ test('X5 searchMessages: case-insensitive text search of user and assistant mess
   for (const args of [{ q: 'x' }, { q: '' }, { q: 'a'.repeat(201) }, { q: 'nginx', limit: 0 }, { q: 'nginx', limit: 51 }, { q: 'nginx', profile: '../x' }, { q: 'nginx', cursor: '!!' }, { q: 'nginx', cursor: Buffer.from('{"../x":1}').toString('base64url') }, { q: 'nginx', extra: 1 }])
     await assert.rejects(call(args), error => error.code === 'bad_request', JSON.stringify(args));
   assert.equal(device.ids.size, 0, 'a read: no mutation id used');
+  // Over HTTP too (announced in httpOps.ops): a search screen needs no socket.
+  assert.ok(mobile.capabilities().httpOps.ops.includes('searchMessages'));
+  const url = await serve(t, mobile);
+  const token = mobile.pair({ code: createPair(mobile.tokensFile), name: 'http' }).token;
+  const over = await (await fetch(`${url}/mobile/op`, { method: 'POST', headers: { ...bearer(token), 'content-type': 'application/json' }, body: JSON.stringify({ id: 'r.http', op: 'searchMessages', args: { q: 'nginx', limit: 2 } }) })).json();
+  assert.deepEqual([over.ok, over.result.results.map(result => result.id), typeof over.result.next], [true, ['h:research:1', 'h:default:5'], 'string']);
+  assert.equal((await fetch(`${url}/mobile/op`, { method: 'POST', headers: { ...bearer('x'.repeat(32)), 'content-type': 'application/json' }, body: JSON.stringify({ id: 'r.d', op: 'searchMessages', args: { q: 'nginx' } }) })).status, 401, 'the desktop token is not a phone');
 });
 
 test('X5 searchMessages: pages with a cursor without repeats or gaps; a bounded scan says partial; off without history', async t => {

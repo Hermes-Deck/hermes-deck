@@ -281,7 +281,7 @@ test('W7: POST /mobile/op runs the same handler as the socket: receipts, replay,
   });
   const seen = [];
   mobile.deviceSeen = (d, reason) => seen.push([d.id, reason]);
-  assert.deepEqual(mobile.capabilities().httpOps, { v: 1, ops: ['answerApproval', 'answerQuestion', 'send', 'create', 'createBotChat', 'interrupt', 'sessions', 'botChat', 'profiles', 'start', 'avatar'] });
+  assert.deepEqual(mobile.capabilities().httpOps, { v: 1, ops: ['answerApproval', 'answerQuestion', 'send', 'create', 'createBotChat', 'interrupt', 'sessions', 'botChat', 'profiles', 'start', 'avatar', 'searchMessages'] });
   const id = mutationID();
   const body = { id, op: 'answerApproval', args: { id: 'request-1', profile: 'atlas', choice: 'once' }, waitMs: 0 };
   const first = await post(body);
