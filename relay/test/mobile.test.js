@@ -797,7 +797,8 @@ test('notification previews: plain-text title/body stored on the relay, served t
   const get = async (id, token) => fetch(`${url}/mobile/notifications/${id}`, { headers: { authorization: `Bearer ${token}` } });
   const byKind = Object.fromEntries(sent.map(event => [event.kind, event.id]));
   // Default kinds (no reply): the turn's one banner is its done, carrying the last reply's text.
-  const reply = await (await get(byKind.done, first.token)).json();
+  const { thread, badge, ...reply } = await (await get(byKind.done, first.token)).json();
+  assert.match(thread, /^[a-f0-9]{32}$/); assert.equal(badge, 0); // wire additions (G3, G5); older apps ignore them
   assert.deepEqual(reply, { sid: 'sid-a', profile: 'research', kind: 'done', title: 'Trip planning', body: 'Your flights are booked.\nHotel next.\nThird line.', agent: 'Research' });
   const approval = await (await get(byKind.approval, first.token)).json();
   assert.equal(approval.body, 'Push the release branch'); assert.equal(approval.kind, 'approval');
@@ -809,7 +810,9 @@ test('notification previews: plain-text title/body stored on the relay, served t
   // Old persisted items (no title/body) still serve with a safe fallback.
   const legacy = [...device.notifications.entries()].find(([, item]) => item.kind === 'approval');
   delete legacy[1].title; delete legacy[1].body; delete legacy[1].agent;
-  assert.deepEqual(await (await get(legacy[0], first.token)).json(), { sid: 'sid-a', profile: 'research', kind: 'approval', title: 'Research', body: '', agent: 'Research' });
+  const { thread: legacyThread, badge: legacyBadge, request: legacyRequest, ...legacyRecord } = await (await get(legacy[0], first.token)).json();
+  assert.deepEqual(legacyRecord, { sid: 'sid-a', profile: 'research', kind: 'approval', title: 'Research', body: '', agent: 'Research' });
+  assert.equal(legacyThread, thread); assert.equal(legacyBadge, 0); assert.equal(legacyRequest.id, 'req-1');
 });
 
 function notifyFixture(t, { bridge, settleMs = 0, kinds } = {}) {

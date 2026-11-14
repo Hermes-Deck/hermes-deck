@@ -454,6 +454,10 @@ class MobileRelay {
     }
     this.wasAtDesk = at;
   }
+  /** Open approvals/questions of the device's bridge for the badge (G5); none when the bridge is not open. */
+  openRequests(device) {
+    try { return typeof device.bridge?.listRequests === 'function' ? device.bridge.listRequests() : []; } catch { return []; }
+  }
   setPushPolicy(device, raw) { return this.notices.setPolicy(device, raw); }
   /** Every op of the device: stake in its chat (12 h "mine"); a mutation or `seen` resets the breaker. Returns `seen`'s result. */
   noteOp(device, op, args) {
@@ -1053,12 +1057,15 @@ class MobileRelay {
     if (match && req.method === 'GET') {
       const item = device.notifications.get(match[1]);
       if (!item || item.expires < Date.now()) throw fail('not_found', 'Notification expired', 404);
+      // Wire additions (mobile-notify.js wire()): thread, badge, request, digest counts, test. Older builds ignore them.
+      const extra = this.notices.wire(device, item, phoneRequests(this.openRequests(device)).length);
+      if (item.kind === 'digest' || item.test) return json(res, 200, extra);
       // Extra fields only: older app builds read sid/profile/kind and ignore the rest.
       await this.refreshNames(device.bridge).catch(() => {});
       // Stored labels from before the roster was known (or older relay builds: the raw profile id) are resolved now.
       const plain = !item.agent || item.agent === item.profile || item.agent === fallbackAgent(item.profile);
       const agent = plain ? this.agentLabel(item.profile, '') : item.agent;
-      return json(res, 200, { sid: item.sid, profile: item.profile, kind: item.kind, title: item.title || agent || fallbackAgent(item.profile), body: item.body || '', agent });
+      return json(res, 200, { sid: item.sid, profile: item.profile, kind: item.kind, title: item.title || agent || fallbackAgent(item.profile), body: item.body || '', agent, ...extra });
     }
     throw fail('not_found', 'Not found', 404);
   }

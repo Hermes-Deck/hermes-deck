@@ -337,3 +337,40 @@ test('G2 policy in the registration: validated, clamped, stored with the device,
   assert.equal((await bad.json()).error.code, 'bad_request');
   assert.equal(registrations.length, 2);
 });
+
+test('notification record: thread, badge, request {id, kind, choices | questions, quick}; a digest carries counts only', async t => {
+  const clock = fakeClock(), nodes = { s1: { title: 'Release work', turnId: 't1' } };
+  const open = [
+    { id: 'ap-1', sid: 's1', profile: 'default', kind: 'approval', at: clock(), command: 'git push origin main', description: 'Push the release branch', choices: ['once', 'session', 'always', 'deny'] },
+    { id: 'ap-2', sid: 's1', profile: 'default', kind: 'approval', at: clock(), command: 'rm -rf build\nmake all', description: 'Rebuild', choices: ['once', 'deny'] },
+    { id: 'q-1', sid: 's1', profile: 'default', kind: 'question', at: clock(), questions: [{ qid: 'a', question: 'Which branch?', choices: ['main', 'next'], multi: false }] },
+    { id: 'q-2', sid: 's1', profile: 'default', kind: 'question', at: clock(), questions: [{ qid: 'a', question: 'Pick', choices: ['1', '2'], multi: true }, { qid: 'b', question: 'Why?', choices: [] }] },
+    { id: 'secret-1', sid: 's1', profile: 'default', kind: 'secret', method: 'sudo' },
+  ];
+  const { mobile, device, sent, paired } = fixture(t, { now: clock, policy: { scope: 'all', burst: 20 }, bridge: { nodeFor: sid => nodes[sid] || null, listRequests: () => open } });
+  const url = await serve(t, mobile);
+  const get = async id => (await fetch(`${url}/mobile/notifications/${id}`, { headers: { authorization: `Bearer ${paired.token}` } })).json();
+  mobile.notify(device, 'requests', open.filter(request => request.kind !== 'secret'));
+  await turn(clock, mobile, device, 's1', 't1', { count: 1, gap: 1000 });
+  const byRequest = id => sent.find(event => device.notifications.get(event.id).request?.id === id).id;
+  const thread = crypto.createHash('sha256').update(`${device.id}:default:s1`).digest('hex').slice(0, 32);
+  const first = await get(byRequest('ap-1'));
+  assert.deepEqual(first.request, { id: 'ap-1', kind: 'approval', choices: ['once', 'session', 'always', 'deny'], quick: true });
+  assert.equal(first.thread, thread);
+  assert.equal(first.badge, 4, 'open approvals + questions, never the masked prompt');
+  assert.equal(first.body, 'Push the release branch');
+  assert.equal((await get(byRequest('ap-2'))).request.quick, false, 'a multi-line command is not answered from a banner');
+  assert.deepEqual((await get(byRequest('q-1'))).request, { id: 'q-1', kind: 'question', questions: [{ qid: 'a', choices: ['main', 'next'], multi: false }], quick: true });
+  const many = await get(byRequest('q-2'));
+  assert.equal(many.request.quick, false);
+  assert.ok(!JSON.stringify(many.request).includes('Why?'), 'no question text beyond the body');
+  const done = await get(sent.find(event => event.kind === 'done').id);
+  assert.deepEqual([done.kind, done.thread, done.badge, done.request], ['done', thread, 4, undefined]);
+  open.length = 0;
+  assert.equal((await get(sent[0].id)).badge, 0, 'the badge is read at fetch time');
+  // A digest: counts and ids only.
+  mobile.storeDigest(device, { counts: { updates: 9, chats: 3, needsYou: 1 } });
+  await flush(mobile);
+  const digest = await get(sent.at(-1).id);
+  assert.deepEqual(digest, { kind: 'digest', counts: { updates: 9, chats: 3, needsYou: 1 }, title: '', body: '', agent: '', thread: crypto.createHash('sha256').update(`${device.id}:digest`).digest('hex').slice(0, 32), badge: 0 });
+});

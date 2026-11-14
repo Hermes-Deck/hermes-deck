@@ -28,6 +28,8 @@ const hash = text => crypto.createHash('sha256').update(text).digest('hex').slic
 const collapseId = (deviceId, profile, sid) => hash(`${deviceId}:${profile}:${sid}`);
 /** The digest of a device replaces the previous digest, never a chat banner. */
 const digestCollapse = deviceId => hash(`${deviceId}:digest`);
+/** The test banner has its own thread so it never replaces a chat's banner. */
+const testCollapse = deviceId => hash(`${deviceId}:test`);
 const short = value => typeof value === 'string' ? value.slice(0, 8) : null;
 const singleLine = (text, max) => typeof text === 'string' && !!text.trim() && !/[\r\n]/.test(text.trim()) && [...text.trim()].length <= max;
 
@@ -255,6 +257,18 @@ class NotifyCenter {
     const request = item.kind === 'approval' || item.kind === 'question' ? requestRecord(item.source) : null;
     if (request) fields.request = request;
     return fields;
+  }
+  /**
+   * The wire additions of `GET /mobile/notifications/<id>`: `thread` (G3), `badge` (G5), `request` (G17). A digest is
+   * `{kind: "digest", counts, thread, badge}` and a test banner `{kind: "done", test: true, thread, badge}`: no chat,
+   * no text. Records stored by older relays get their thread computed now.
+   */
+  wire(device, item, badge) {
+    if (item.kind === 'digest') return { kind: 'digest', counts: item.counts || { updates: 0, chats: 0, needsYou: 0 }, title: '', body: '', agent: '', thread: item.thread || digestCollapse(device.id), badge };
+    if (item.test) return { kind: item.kind, test: true, title: item.title || '', body: item.body || '', agent: '', thread: item.thread || testCollapse(device.id), badge };
+    const out = { thread: item.thread || collapseId(device.id, item.profile, item.sid), badge };
+    if (item.request && (item.kind === 'approval' || item.kind === 'question')) out.request = item.request;
+    return out;
   }
   digestRecord(device, digest, timestamp) {
     return { kind: 'digest', counts: digest.counts, title: '', body: '', agent: '', thread: digestCollapse(device.id), expires: timestamp + 7 * 86400000, delivery: 'pending' };
