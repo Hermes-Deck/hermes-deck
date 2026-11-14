@@ -27,6 +27,7 @@ The desktop app, relay and Hermes plugin share one version number.
 - Phone notifications: a chat the phone has just created (a new chat, a new bot chat, a branch, or a chat re-created by a send) counts as one of its own at once, so the answer to its first message is announced.
 - Hermes plugin: provider quotas are always published in the default agent's state file when the gateway serves it, whichever agent profile registered first.
 - Phone API: the agent picture (`avatar`) can be read over `POST /mobile/op`, so a notification can show which agent it is from.
+- Phone notifications: the test notification now arrives also when "Finished" notifications are turned off (it uses a kind the phone has on, or the push gateway's own `test` kind), and its answer says it is exempt from the burst breaker.
 
 ## [1.2.0] - 2026-11-10
 

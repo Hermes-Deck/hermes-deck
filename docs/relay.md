@@ -338,3 +338,12 @@ Wire additions (announced as `capabilities.pushPolicy` and `capabilities.notific
 The relay reads the gateway's `GET /health` `features` at start, hourly and at each registration, and sends the
 per-chat `collapse` id and the `digest` kind only to a gateway that lists them; an older gateway gets the digest as a
 `done` banner and no collapse id, so a newer banner of a chat does not replace the older one there.
+
+### More phone features
+
+Each addition is announced in `GET /mobile/capabilities`; an app that does not know the flag never uses it, and an older
+relay simply lacks the flag.
+
+| What | Wire | Flag |
+|---|---|---|
+| Test notification | `POST /mobile/push/test` -> `{ok, id, kind, breaker: "exempt"}`: never counted or held by the burst breaker, not subject to scope or at-desk; at most one per 30 seconds. Sent as kind `test` when the gateway lists the `test` feature (delivered whatever kinds the phone picked), otherwise as a kind the phone's registration has on (`done` first); `409 no_kinds` when every kind is off and the gateway has no `test` | `pushPolicy.test`, `pushPolicy.testKind` |

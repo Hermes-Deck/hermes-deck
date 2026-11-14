@@ -1113,19 +1113,25 @@ class MobileRelay {
       }
     }
     if (route === '/mobile/push/test' && req.method === 'POST') {
-      // One test banner to this device, past scope and breaker; at most one per 30 s. Kind `done` (every gateway knows it).
+      // One test banner to this device, past scope, at-desk and the burst breaker (never counted, never held); at most one
+      // per 30 s. Gateway kind `test` when the gateway offers it (delivered whatever kinds the phone picked); otherwise a
+      // kind the phone's registration has on (`done` first), so the test cannot vanish at the gateway (relay-extras X1).
       await body(req, 4096);
       if (!this.push?.configured) throw fail('unavailable', 'Push gateway not configured', 503);
       if (!device.observePush) throw fail('not_registered', 'Push is not enabled for this device', 409);
       if (device.notifications.size >= NOTIFICATION_CAPACITY) throw fail('limit', 'Notification capacity reached', 429);
+      const testKind = this.push.offers?.('test') === true;
+      const enabled = kindsOf(device.pushKinds);
+      const kind = testKind ? 'done' : ['done', 'reply', 'approval', 'question', 'error'].find(value => enabled.includes(value));
+      if (!kind) throw fail('no_kinds', 'Every notification kind is off for this device; turn one on or update the push gateway', 409);
       if (this.notices.testWait(device) > 0) throw fail('limit', 'One test notification per 30 seconds', 429);
       const now = this.now(), id = `e_${now}_${opaque()}`;
-      device.notifications.set(id, this.notices.testRecord(device, now));
-      this.notices.log(device, 'test', { kind: 'done' });
+      device.notifications.set(id, this.notices.testRecord(device, now, kind));
+      this.notices.log(device, 'test', { kind: testKind ? 'test' : kind });
       this.seen(device, 'op'); // a tap in the app: the person is looking
       this.persist(device);
       this.flushPush().catch(() => {});
-      return json(res, 200, { ok: true, id });
+      return json(res, 200, { ok: true, id, kind: testKind ? 'test' : kind, breaker: 'exempt' });
     }
     if (route === '/mobile/seen' && req.method === 'POST') {
       // G1: the app is in the foreground or a notification was opened. Body `{reason}` (optional).

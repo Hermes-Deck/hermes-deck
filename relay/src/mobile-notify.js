@@ -70,7 +70,9 @@ function requestRecord(source) {
  */
 function gatewayEvent(push, id, item) {
   const offers = feature => typeof push?.offers === 'function' && push.offers(feature) === true;
-  const kind = item.kind === 'digest' ? (offers('digest') ? 'digest' : 'done') : item.kind;
+  // The test banner travels as kind `test` (delivered whatever kinds the phone picked) when the gateway offers it, else
+  // as the registration kind stored on the record when it was made (relay-extras X1).
+  const kind = item.kind === 'digest' ? (offers('digest') ? 'digest' : 'done') : item.test && offers('test') ? 'test' : item.kind;
   return { id, kind, ...(offers('collapse') && /^[a-f0-9]{32}$/.test(item.thread || '') ? { collapse: item.thread } : {}) };
 }
 
@@ -261,7 +263,7 @@ class NotifyCenter {
    */
   capabilities(push) {
     const offers = feature => typeof push?.offers === 'function' && push.offers(feature) === true;
-    return { pushPolicy: { v: 1, collapse: offers('collapse'), digest: offers('digest'), scope: true, seen: true, test: true }, notificationRequests: true };
+    return { pushPolicy: { v: 1, collapse: offers('collapse'), digest: offers('digest'), scope: true, seen: true, test: true, testKind: offers('test') }, notificationRequests: true };
   }
   /** Fields stored on a new record: the thread id and, for approvals and questions, the request (G3, G17). */
   recordFields(device, item) {
@@ -285,8 +287,8 @@ class NotifyCenter {
   digestRecord(device, digest, timestamp) {
     return { kind: 'digest', counts: digest.counts, title: '', body: '', agent: '', thread: digestCollapse(device.id), expires: timestamp + 7 * 86400000, delivery: 'pending' };
   }
-  testRecord(device, timestamp) {
-    return { kind: 'done', test: true, title: 'Hermes Deck', body: 'Test notification', agent: '', thread: testCollapse(device.id), expires: timestamp + 7 * 86400000, delivery: 'pending' };
+  testRecord(device, timestamp, kind = 'done') {
+    return { kind, test: true, title: 'Hermes Deck', body: 'Test notification', agent: '', thread: testCollapse(device.id), expires: timestamp + 7 * 86400000, delivery: 'pending' };
   }
   /** One test banner, at most one per TEST_INTERVAL_MS per device. Returns the wait in ms when refused, else 0. */
   testWait(device) {

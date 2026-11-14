@@ -5,7 +5,8 @@
  * `features` (PROGRAMME "Push gateway contract for D9"): older gateways reject unknown keys.
  */
 const FEATURES_TTL = 3600000;
-const KNOWN_FEATURES = ['collapse', 'digest'];
+// collapse, digest (relay-notify); test, badge, liveActivity (relay-extras X1, X2, X7).
+const KNOWN_FEATURES = ['collapse', 'digest', 'test', 'badge', 'liveActivity'];
 const COLLAPSE = /^[a-f0-9]{32}$/;
 class MobilePushClient {
   constructor({ url = process.env.HERMES_PUSH_URL, credential = process.env.HERMES_PUSH_SENDER_TOKEN, fetch: fetchImpl = (...args) => fetch(...args), now = Date.now } = {}) {
@@ -47,12 +48,15 @@ class MobilePushClient {
   setDevice(deviceId,registration) { return this.request('/v1/devices/'+encodeURIComponent(deviceId),'PUT',registration); }
   removeDevice(deviceId) { return this.request('/v1/devices/'+encodeURIComponent(deviceId),'DELETE'); }
   async notify(deviceId,{id,kind,collapse}) {
-    const body={target:deviceId,id,kind:kind==='digest' && !this.offers('digest') ? 'done' : kind};
+    // Optional kinds fall back for a gateway that does not list them: a digest travels as `done`; a test as `done` (the
+    // relay only asks for `test` when offered; this is the guard for a gateway replaced in between).
+    const optional=kind==='digest' || kind==='test';
+    const body={target:deviceId,id,kind:optional && !this.offers(kind) ? 'done' : kind};
     if (typeof collapse==='string' && COLLAPSE.test(collapse) && this.offers('collapse')) body.collapse=collapse;
     try { return await this.request('/v1/events','POST',body); }
     catch (error) {
       // A gateway replaced by an older one refuses the optional key or kind: read its features again soon.
-      if (error.status===400 && (body.collapse || body.kind==='digest')) this.featuresAt=0;
+      if (error.status===400 && (body.collapse || body.kind==='digest' || body.kind==='test')) this.featuresAt=0;
       throw error;
     }
   }
