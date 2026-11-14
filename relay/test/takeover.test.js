@@ -12,7 +12,8 @@ test('takeover is an explicit profile-scoped mutation with receipt replay protec
   const d=m.device('fixture');
   const msg={id:`m.${Date.now()}.${crypto.randomUUID()}`,op:'takeover',args:{sid:'stored',profile:'alpha'}};
   assert.deepEqual(await m.call(d,msg),{ok:true,mode:'transferred'});
-  await assert.rejects(m.call(d,msg),/already used/);
+  assert.deepEqual(await m.call(d,msg),{ok:true,mode:'transferred'});assert.equal(calls,1); // relay-wire W6: a repeated id replays the first result, never runs twice
+  d.replay.forget(msg.id);await assert.rejects(m.call(d,msg),/already used/); // past the replay window: the receipt
   await assert.rejects(m.call(d,{...msg,id:`m.${Date.now()}.${crypto.randomUUID()}`,args:{sid:'stored'}}),/profile/);
   assert.equal(calls,1);
   m.bridgeConfig={mode:'local'};assert.equal(m.capabilities().takeover,true);

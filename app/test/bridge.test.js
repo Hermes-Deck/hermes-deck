@@ -488,7 +488,7 @@ test("session.list is sent on its own once the connection is ready (opens the ev
   const list = await rows;
   assert.equal(list[0].profile, "default");
   assert.deepEqual(calls(log, "session.list")[0].params, { limit: 50 });
-  assert.deepEqual(calls(log, "deck.session_index")[0].params, { limit: 100, archived: "exclude" });
+  assert.deepEqual(calls(log, "deck.session_index")[0].params, { limit: 100, archived: "exclude", profile: "default" }); // relay-wire W4 (R5): "default" is sent explicitly
   const first = (m) => calls(log, m)[0];
   assert.ok(first("session.list") && first("deck.session_index"), "both were sent");
 });
@@ -519,7 +519,7 @@ test("send resumes once per connection, then prompt.submit; stream events map to
   assert.equal(complete.payload.text, "Merhaba");
   assert.ok(!events.some((e) => e.payload.replay), "replayed frames are dropped");
   assert.deepEqual(await c.send("s-main", "Tekrar"), { status: "streaming" });
-  assert.deepEqual(calls(log, "session.resume").map((e) => e.params), [{ session_id: "s-main", omit_messages: true, inline_images: false }]);
+  assert.deepEqual(calls(log, "session.resume").map((e) => e.params), [{ session_id: "s-main", omit_messages: true, inline_images: false, profile: "default" }]); // relay-wire W4 (R5): "default" is sent explicitly
   assert.deepEqual(calls(log, "prompt.submit").map((e) => e.params), [
     { session_id: "rpc-s-main", text: "Merhaba" },
     { session_id: "rpc-s-main", text: "Tekrar" },
@@ -956,7 +956,7 @@ test("Bot Chat lookup: exact-title, hidden included, tip id; fails closed on err
   assert.deepEqual([chat.sid, chat.id, chat.profile, chat.title], ["s-bot-research-2", "s-bot-research", "research", "Bot Chat"]);
   assert.deepEqual(calls(log, "session.list").find((e) => e.params.title).params, { title: "Bot Chat", include_hidden: true, limit: 200, profile: "research" });
   assert.equal((await c.botChat("default")).sid, "s-bot-default");
-  assert.ok(!("profile" in calls(log, "session.list").filter((e) => e.params.title)[1].params), "default is the gateway's own profile");
+  assert.equal(calls(log, "session.list").filter((e) => e.params.title)[1].params.profile, "default", "default is named explicitly"); // relay-wire W4 (R5): "default" is sent explicitly
   assert.equal(await c.botChat("writer"), null, "no Bot Chat yet");
   await assert.rejects(c.botChat("writer", { expect: true }), /doğrulanamadı/, "the roster said it exists: empty is not 'none'");
   assert.equal(calls(log, "session.create").length, 0, "a lookup never creates");
@@ -1304,7 +1304,7 @@ test("sessionIndex merges every profile's pages once, reports a profile that fai
   assert.equal(r.legacy, false);
   const sent = calls(log, "deck.session_index").slice(mark0).map((e) => e.params);
   assert.ok(sent.every((p) => p.limit === 100 && p.archived === "exclude"));
-  assert.deepEqual(sent.filter((p) => !p.profile).map((p) => p.offset || 0), [0, 100], "default: page 1, then page 2");
+  assert.deepEqual(sent.filter((p) => p.profile === "default").map((p) => p.offset || 0), [0, 100], "default: page 1, then page 2"); // relay-wire W4 (R5): "default" is sent explicitly
   // a second call inside the TTL is served from memory; force and mutations refresh
   const before = calls(log, "deck.session_index").length;
   assert.equal(await c.sessionIndex(), r);

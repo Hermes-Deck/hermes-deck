@@ -122,7 +122,9 @@ test('loopback persistent BridgeClient, nonreplay, transfers, legacy reads and o
   assert.equal((await rpc(ws, 'bad-page-021', 'sessionPage', { archived: 'yes' })).error.code, 'bad_request');
   const created = await rpc(ws, 'create', 'create', { profile: 'default' });
   assert.equal(created.ok, true);
-  assert.equal((await rpc(ws, 'create', 'create', { profile: 'default' })).error.code, 'duplicate');
+  // relay-wire W6 (R10): a repeated mutation id answers the first outcome (replayed), it never runs twice
+  const repeated = await rpc(ws, 'create', 'create', { profile: 'default' });
+  assert.deepEqual([repeated.ok, repeated.replayed, repeated.result], [true, true, created.result]);
   const ticket = (await request('/mobile/uploads', 'POST', { name: 'a.txt', mime: 'text/plain', size: 3 }, first.token)).body;
   assert.equal((await fetch(base + '/mobile/uploads/' + ticket.id, { method: 'PUT', headers: { authorization: `Bearer ${second.token}` }, body: 'abc' })).status, 404);
   assert.equal((await fetch(base + '/mobile/uploads/' + ticket.id, { method: 'PUT', headers: { authorization: `Bearer ${first.token}` }, body: 'abc' })).status, 200);
@@ -286,6 +288,10 @@ test('timestamp mutation receipts expire safely while stale, future and legacy I
   assert.equal(executed, 0);
   const fresh = mutationID();
   assert.equal((await restarted.call(restored, { id: fresh, op: 'create' })).sid, 'fresh-session');
+  // relay-wire W6 (R10): a repeat inside the replay window answers the first result without running again
+  assert.equal((await restarted.call(restored, { id: fresh, op: 'create' })).sid, 'fresh-session');
+  assert.equal(executed, 1);
+  restored.replay.forget(fresh); // past the replay window (or after a restart): the persisted receipt answers duplicate
   await assert.rejects(restarted.call(restored, { id: fresh, op: 'create' }), error => error.code === 'duplicate');
   assert.equal(executed, 1);
   // Age cleanup also runs on normal validated calls without restarting the relay.
@@ -322,7 +328,7 @@ test('persisted expiry floor prevents replay after server clock rollback and res
 test('standalone relay imports with mobile bridge off and configured missing library fails before sockets start', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'deck-mobile-standalone-')), src = path.join(dir, 'relay', 'src');
   fs.mkdirSync(src, { recursive: true });
-  for (const name of ['mobile.js', 'devtokens.js', 'util.js', 'compat.js', 'uploads.js', 'downloads.js']) fs.copyFileSync(path.join(__dirname, '..', 'src', name), path.join(src, name));
+  for (const name of ['mobile.js', 'devtokens.js', 'util.js', 'compat.js', 'uploads.js', 'downloads.js', 'mobile-gate.js', 'oplog.js', 'mobile-op.js']) fs.copyFileSync(path.join(__dirname, '..', 'src', name), path.join(src, name));
   fs.copyFileSync(path.join(__dirname, '..', 'package.json'), path.join(dir, 'relay', 'package.json')); // compat.js: the relay version
   fs.symlinkSync(path.resolve(__dirname, '../node_modules'), path.join(dir, 'relay', 'node_modules'), 'dir');
   const { MobileRelay: Standalone } = require(path.join(src, 'mobile.js'));

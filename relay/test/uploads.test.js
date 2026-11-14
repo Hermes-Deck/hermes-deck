@@ -297,7 +297,7 @@ test("mobile send: spool ids to the bridge when staged is available, base64 when
   const big = await staged.stage("big.rar", Buffer.alloc(26 * MIB, 1)); // over the old 25 MB limit
   const small = await staged.stage("note.txt", Buffer.from("hello"));
   await staged.mobile.call(staged.device, { id: mutationID(), op: "send", args: { sid: "s1", profile: "default", text: "look", uploads: [big, small] } });
-  assert.deepEqual(staged.sends[0].options, { profile: "default", staged: [{ upload: big, filename: "big.rar" }, { upload: small, filename: "note.txt" }] });
+  assert.deepEqual(staged.sends[0].options, { profile: "default", recreate: true, staged: [{ upload: big, filename: "big.rar" }, { upload: small, filename: "note.txt" }] });
   assert.ok(!JSON.stringify(staged.sends[0]).includes("content_base64"));
   assert.deepEqual(fs.readdirSync(staged.spool.dir), []);
   assert.equal(staged.device.inflightBytes, 0);
@@ -306,7 +306,7 @@ test("mobile send: spool ids to the bridge when staged is available, base64 when
   await legacy.mobile.probeStaging(legacy.device);
   const id = await legacy.stage("note.txt", Buffer.from("hello"));
   await legacy.mobile.call(legacy.device, { id: mutationID(), op: "send", args: { sid: "s1", profile: "default", text: "look", uploads: [id] } });
-  assert.deepEqual(legacy.sends[0].options, { profile: "default", files: [{ filename: "note.txt", content_base64: Buffer.from("hello").toString("base64") }] });
+  assert.deepEqual(legacy.sends[0].options, { profile: "default", recreate: true, files: [{ filename: "note.txt", content_base64: Buffer.from("hello").toString("base64") }] });
   assert.deepEqual(fs.readdirSync(legacy.spool.dir), []);
 
   // staged when the file was uploaded, but the plugin no longer takes staged files: refused within the old limits

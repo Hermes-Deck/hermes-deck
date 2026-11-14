@@ -8,6 +8,9 @@ const { atomicWriteJson, readJson } = require('./util');
 const compat = require('./compat');
 const { UploadSpool, LEGACY, settleBody } = require('./uploads');
 const { DownloadTickets, LEGACY_MAX: LEGACY_DOWNLOAD } = require('./downloads');
+const { wireError, wireSessionIndex, Gate, shareKey, foreground, withBackgroundBudget, ReplayMemory } = require('./mobile-gate');
+const { OpLog } = require('./oplog');
+const { httpOp, HTTP_OPS } = require('./mobile-op');
 // The old single-line limits (base64 through the plugin's stdio): what a host without staged uploads can take. With a
 // plugin that answers deck.attach_staged on this host, capabilities() reports the spool's limits instead (uploads.js).
 const LIMITS = LEGACY;
@@ -127,7 +130,7 @@ const OPS = {
   setEffort: ['sid', 'profile', 'effort'], reasoning: ['show'],
   sessions: ['profile', 'limit'], history: ['sid', 'profile', 'limit', 'offset'], profiles: [], avatar: ['name'],
   botChat: ['name', 'expect'], createBotChat: ['name', 'expect'], create: ['profile'], delete: ['sid', 'profile'],
-  send: ['sid', 'profile', 'text', 'uploads'], steer: ['sid', 'profile', 'text', 'turnId'], redirect: ['sid', 'profile', 'text', 'turnId'],
+  send: ['sid', 'profile', 'text', 'uploads'], start: ['profile', 'text', 'uploads'], steer: ['sid', 'profile', 'text', 'turnId'], redirect: ['sid', 'profile', 'text', 'turnId'],
   takeover: ['sid', 'profile'], interrupt: ['sid', 'profile', 'turnId'], modelOptions: ['sid', 'profile', 'profileOnly'], setModel: ['sid', 'profile', 'model', 'provider', 'confirm'],
   answerApproval: ['id', 'profile', 'choice'], answerQuestion: ['id', 'profile', 'answers'], transcribe: ['upload', 'mime', 'language'],
 };
@@ -148,9 +151,10 @@ class MobileRelay {
     this.staging = { ok: false, direct: 0, at: 0, busy: null };
     this.names = { at: 0, map: new Map(), busy: null };
     this.enriching = new Map();
+    this.oplog = new OpLog(); // refused/failed ops, bridge status changes, a 60 s summary (oplog.js)
     this.BridgeClient = null;
     if (bridgeConfig && bridgeConfig.mode !== 'off') {
-      try { this.BridgeClient = require('../../app/main/bridge').BridgeClient; }
+      try { this.BridgeClient = withBackgroundBudget(require('../../app/main/bridge').BridgeClient); }
       catch { throw fail('unavailable', 'Configured mobile bridge requires the full Hermes Deck source layout including app/main/bridge.js', 503); }
     }
     this.available = capabilities;
@@ -199,6 +203,12 @@ class MobileRelay {
       sessionBrowser: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', reasoning: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off',
       work: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', subagents: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', commands: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off',
       workspace: !!this.available.workspace, desktop: !!this.available.desktop, push: !!this.push?.configured, transcribeLanguage: true,
+      errors: { v: 2 }, // typed error codes (mobile-gate.js wireError); v1 = bridge_error + English text
+      readsNeverResume: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // subagents/subagentTail/modelOptions
+      replay: true, // a repeated mutation id answers its first outcome for 10 min (last 256 per device), `pending` while it runs
+      httpOps: { v: 1, ops: [...HTTP_OPS] }, // POST /mobile/op (mobile-op.js)
+      start: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // op start {profile, text, uploads?}: create + send in one
+      historyProfile: !!this.available.history, // GET /session/<sid>/messages|tools|call/<id>?profile=<name> reads only that profile (G8)
       limits: { ...(staged ? this.uploads.limits() : LIMITS), downloadBytes: direct ? this.staging.direct : LEGACY_DOWNLOAD }, uploads: { v: 1, staged }, downloads: { v: 1, direct } };
   }
   stagedReady() { return !!this.bridgeConfig && this.bridgeConfig.mode !== 'off' && this.staging.ok === true; }
@@ -280,6 +290,7 @@ class MobileRelay {
       const bridge = device.bridge = new this.BridgeClient(this.bridgeConfig, this.bridgeOptions);
       // A (re)connected plugin may be a newer or older one: ask again whether it takes staged uploads.
       bridge.on('status', s => { if (s?.status === 'open' && device.bridge === bridge) { this.staging.at = 0; this.probeStaging(device).catch(() => {}); } });
+      bridge.on('status', s => { if (device.bridge === bridge) this.oplog.status(device, s, bridge.pending?.size || 0); });
       for (const [event, label] of [['status', 'status'], ['snapshot', 'snapshot'], ['requests', 'requests'], ['event', 'native'], ['sessions', 'sessions']]) {
         bridge.on(event, data => {
           if (this.devices.get(device.id) !== device || !tokens.stillValid(this.tokensFile, device.id, device.hash)) return;
@@ -493,7 +504,18 @@ class MobileRelay {
     }
     return device.offers;
   }
-  async call(device, message) {
+  /** One phone op (WebSocket frame or POST /mobile/op): checks, gate, dispatch; every refusal or failure is logged. */
+  async call(device, message, meta = {}) {
+    const started = Date.now();
+    let wire = null;
+    try { return await this.callChecked(device, message, meta); }
+    catch (error) { wire = wireError(error); throw error; }
+    finally {
+      this.oplog.op({ device, op: message?.op, sid: message?.args?.sid, ms: Date.now() - started, wire, gate: device.gate?.size,
+        pending: device.bridge?.pending?.size || 0, replayed: meta.replayed === true });
+    }
+  }
+  async callChecked(device, message, meta) {
     if (!message || typeof message.id !== 'string' || !/^[A-Za-z0-9._-]{1,128}$/.test(message.id)) throw fail('bad_request', 'Invalid request ID');
     const args = message.args ?? {};
     if (!args || typeof args !== 'object' || Array.isArray(args)) throw fail('bad_request', 'Invalid arguments');
@@ -510,17 +532,39 @@ class MobileRelay {
       if (timestamp <= device.receiptFloor) throw Object.assign(fail('expired_request', 'Request expired; refresh state before a new action'), { uncertain: true });
       if (timestamp > now + MUTATION_FUTURE) throw fail('clock_skew', 'Mutation timestamp is ahead of server time');
     }
+    // Replay (R10): a repeated mutation id answers the first outcome while it is remembered (mobile-gate.js ReplayMemory).
+    const memory = device.replay ||= new ReplayMemory(this.replayOptions);
+    if (!READ_OPS.has(message.op) && !device.reads.has(message.id)) {
+      const seen = memory.get(message.id);
+      if (seen) return memory.answer(seen, meta);
+    }
     if (device.ids.has(message.id) || device.reads.has(message.id)) throw fail('duplicate', 'Request ID already used; refresh state before a new action');
-    if (READ_OPS.has(message.op)) {
+    // Per-device gate (mobile-gate.js): 8 ops in flight, 32 waiting up to 10 s, then `busy`; identical reads share one
+    // bridge call. A refusal here happens before an ID is burnt or a read slot is held: nothing was accepted.
+    const gate = device.gate ||= new Gate(this.gateOptions);
+    const read = READ_OPS.has(message.op), share = read ? shareKey(message.op, args) : null;
+    if (!gate.admits(share)) throw gate.refusal();
+    const run = () => gate.run(() => foreground(() => this.dispatch(device, message.op, args)), share);
+    if (read) {
       if (device.reads.size >= 64) throw fail('limit', 'Too many active reads', 429);
       device.reads.add(message.id);
-      try { return await this.dispatch(device, message.op, args); }
+      try { return await run(); }
       finally { device.reads.delete(message.id); }
     }
     if (device.ids.size >= 10000) throw fail('limit', 'Mutation limit for the seven-day window reached; reads remain available', 429);
     device.ids.add(message.id);
     this.persist(device);
-    return this.dispatch(device, message.op, args);
+    memory.begin(message.id);
+    try {
+      const result = await run();
+      memory.settle(message.id, true, result);
+      return result;
+    } catch (error) {
+      // Timed out in the gate's queue: it never ran, so the ID is not burnt and the same action may be retried with it.
+      if (error?.gate === 'queued') { device.ids.delete(message.id); this.persist(device); memory.forget(message.id); }
+      else memory.settle(message.id, false, wireError(error));
+      throw error;
+    }
   }
   async dispatch(device, op, args) {
     const bridge = this.bridge(device);
@@ -531,18 +575,19 @@ class MobileRelay {
         if (op === 'commands') return bridge.commandCatalog(args.profile);
         if (typeof args.sid !== 'string' || !/^[\x21-\x7e]{1,512}$/.test(args.sid)) throw fail('bad_request', 'Invalid session ID');
         const options = { profile: args.profile };
-        if (['plan', 'toolCalls', 'subagents'].includes(op)) return bridge[op](args.sid, options);
+        // Reads never resume a session (readsNeverResume): an unbound session answers available:false / [] instead.
+        if (['plan', 'toolCalls', 'subagents'].includes(op)) return bridge[op](args.sid, op === 'subagents' ? { ...options, resume: false } : options);
         if (typeof args.id !== 'string' || !/^[\x21-\x7e]{1,128}$/.test(args.id)) throw fail('bad_request', 'Invalid sub-agent ID');
         if (op === 'steerSubagent') {
           if (typeof args.text !== 'string' || !args.text.trim() || args.text.length > 32000) throw fail('bad_request', 'Invalid guidance text');
           return bridge.steerSubagent(args.sid, args.id, args.text, options);
         }
-        return bridge[op](args.sid, args.id, options);
+        return bridge[op](args.sid, args.id, op === 'subagentTail' ? { ...options, resume: false } : options);
       }
       case 'sessions': return bridge.sessions(args);
       case 'sessionPage': case 'sessionIndex':
         if ('archived' in args && typeof args.archived !== 'boolean' || 'force' in args && typeof args.force !== 'boolean' || 'offset' in args && (!Number.isSafeInteger(args.offset) || args.offset < 0)) throw fail('bad_request', 'Invalid session index arguments');
-        return bridge[op](args);
+        return op === 'sessionIndex' ? wireSessionIndex(await bridge.sessionIndex(args)) : bridge[op](args);
       case 'renameSession': case 'pinSession': case 'archiveSession': case 'branchSession': case 'discard': case 'setEffort': case 'takeover':
         if (!PROFILE_NAME.test(args.profile || '')) throw fail('bad_request', 'Explicit profile required');
         return bridge[op](args.sid, args);
@@ -567,10 +612,15 @@ class MobileRelay {
       case 'createBotChat': return bridge.createBotChat(args.name, args);
       case 'create': return bridge.create(args);
       case 'delete': return bridge.deleteSession(args.sid, args);
-      case 'send': {
+      case 'send': case 'start': {
+        // start (R9): create + first message in one op; send: a created-but-never-stored chat whose runtime is gone is
+        // re-created rather than resumed (the result then names the new sid: {status, sid, profile, recreated: true})
+        if (op === 'start' && !PROFILE_NAME.test(args.profile || '')) throw fail('bad_request', 'Explicit profile required');
+        const submit = extra => op === 'start' ? bridge.startChat({ profile: args.profile, text: args.text, ...extra })
+          : bridge.send(args.sid, args.text, { profile: args.profile, recreate: true, ...extra });
         const refs = args.uploads || [];
         if (!Array.isArray(refs) || refs.length > 10 || new Set(refs).size !== refs.length) throw fail('bad_request', 'Invalid uploads');
-        if (!refs.length) return bridge.send(args.sid, args.text, { profile: args.profile, files: [] });
+        if (!refs.length) return submit({ files: [] });
         // Staged (the plugin on this host takes spool ids): only ids travel, the plugin moves the files itself. Else the
         // old single-line path: each file read from the spool into base64, within the old limits.
         const staged = this.stagedReady();
@@ -581,9 +631,9 @@ class MobileRelay {
         }
         const { items, release } = this.uploads.take(device, refs);
         try {
-          if (staged) return await bridge.send(args.sid, args.text, { profile: args.profile, staged: items.map(item => ({ upload: item.id, filename: item.name })) });
+          if (staged) return await submit({ staged: items.map(item => ({ upload: item.id, filename: item.name })) });
           const files = items.map(item => ({ filename: item.name, content_base64: this.uploads.readBuffer(item, LIMITS.fileBytes).toString('base64') }));
-          return await bridge.send(args.sid, args.text, { profile: args.profile, files });
+          return await submit({ files });
         } catch (error) {
           if (staged && error?.rpcCode === -32601) this.staging = { ok: false, at: Date.now(), busy: null }; // an older plugin came back
           throw error;
@@ -595,7 +645,7 @@ class MobileRelay {
         if (!node || node.sid !== args.sid || node.profile !== args.profile) throw fail('bad_request', 'Live session profile does not match control target');
         return op === 'interrupt' ? bridge.interrupt(args.sid, args) : bridge[op](args.sid, args.text, args);
       }
-      case 'modelOptions': return bridge.modelOptions(args.sid, args);
+      case 'modelOptions': return bridge.modelOptions(args.sid, { ...args, resume: false }); // unbound: the profile's options
       case 'setModel': return bridge.setModel(args.sid, args);
       case 'answerApproval': case 'answerQuestion': {
         const requests = bridge.listRequests().filter(request => request.id === args.id);
@@ -763,12 +813,13 @@ class MobileRelay {
         if (binary) return ws.close(1003);
         let message;
         try { message = JSON.parse(data); } catch { return ws.close(1007); }
+        const meta = {}; // call() sets meta.replayed when it answers a repeated mutation id from memory
         try {
           if (!tokens.stillValid(this.tokensFile, device.id, device.hash)) throw fail('unauthorized', 'Device revoked', 401);
-          const result = await this.call(device, message);
-          if (ws.readyState === 1) ws.send(JSON.stringify({ t: 'response', id: message.id, ok: true, result }));
+          const result = await this.call(device, message, meta);
+          if (ws.readyState === 1) ws.send(JSON.stringify({ t: 'response', id: message.id, ok: true, result, ...(meta.replayed ? { replayed: true } : {}) }));
         } catch (error) {
-          if (ws.readyState === 1) ws.send(JSON.stringify({ t: 'response', id: message?.id, ok: false, error: { code: error.code || 'bridge_error', message: error.message, uncertain: error.uncertain === true || !error.code } }));
+          if (ws.readyState === 1) ws.send(JSON.stringify({ t: 'response', id: message?.id, ok: false, error: wireError(error), ...(meta.replayed ? { replayed: true } : {}) }));
         }
       });
       try {
@@ -781,9 +832,9 @@ class MobileRelay {
   }
   onHttp(req, res, url) {
     if (!url.pathname.startsWith('/mobile/')) return false;
-    this.handle(req, res, url).catch(error => {
+    foreground(() => this.handle(req, res, url)).catch(error => { // a phone's request: not the relay's background budget
       if (res.headersSent) res.destroy();
-      else { settleBody(req, res); json(res, error.status || 500, { error: { code: error.code || 'bridge_error', message: error.message, uncertain: error.uncertain === true || !error.code } }); }
+      else { settleBody(req, res); json(res, error.status || 500, { error: wireError(error) }); }
     });
     return true;
   }
@@ -794,6 +845,11 @@ class MobileRelay {
     if (!auth) throw fail('unauthorized', 'Mobile bearer required', 401);
     const device = this.device(auth.id);
     if (route === '/mobile/pair' && req.method === 'DELETE') return json(res, 200, await this.revoke(device));
+    if (route === '/mobile/op' && req.method === 'POST') {
+      const value = await object(req);
+      if (!tokens.stillValid(this.tokensFile, device.id, device.hash)) throw fail('unauthorized', 'Device revoked', 401);
+      return json(res, 200, await httpOp(this, device, value, { readOps: READ_OPS }));
+    }
     if (route === '/mobile/capabilities' && req.method === 'GET') {
       await this.probeStaging(device).catch(() => false);
       return json(res, 200, { ...this.capabilities(), notificationAdmission: { capacity: NOTIFICATION_CAPACITY, retained: device.notifications.size, overflow: device.notificationOverflow } });
@@ -958,6 +1014,7 @@ class MobileRelay {
   }
   async stop() {
     clearInterval(this.timer);
+    this.oplog.stop();
     this.pushStopped = true;
     if (this.ownSpool) this.uploads.stop();
     for (const device of this.devices.values()) { for (const ws of device.sockets) ws.terminate(); await device.bridge?.stop(); }
