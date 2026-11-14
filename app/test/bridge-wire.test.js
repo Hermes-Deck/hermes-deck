@@ -98,3 +98,28 @@ test("sessionIndex: with keepStaleIndex a failed profile keeps its last good row
     }
   }
 });
+
+test("every profile-scoped request names its profile, \"default\" included; a foreign row is never listed under the asked profile", async () => {
+  const { c, calls } = client(async (method, params) => {
+    if (method === "session.create") return { session_id: "rt-new", stored_session_id: "s-new" };
+    if (method === "session.resume") return { session_id: "rt-r" };
+    if (method === "session.list") {
+      if (params.title) return { sessions: [] };
+      return { sessions: [{ id: "s-own", profile_name: params.profile }, { id: "s-foreign", profile_name: "beta" }, { id: "s-plain" }] };
+    }
+    if (method === "deck.plan") return { plan: null };
+    if (method === "deck.session_index") return { sessions: [] };
+    return { status: "ok" };
+  });
+  await c.create({ profile: "default" });
+  await c.send("s-other", "hi", { profile: "default" });
+  await c.botChat("default");
+  await c.plan("s-other", { profile: "default" });
+  await c.sessionPage({ profile: "default" });
+  const listed = await c.sessions({ profile: "default" });
+  for (const m of ["session.create", "session.resume", "deck.plan", "deck.session_index"]) {
+    assert.equal(calls.find((x) => x.method === m).params.profile, "default", m);
+  }
+  assert.ok(calls.filter((x) => x.method === "session.list").every((x) => x.params.profile === "default"));
+  assert.deepEqual(listed.map((r) => [r.id, r.profile]), [["s-own", "default"], ["s-plain", "default"]]);
+});

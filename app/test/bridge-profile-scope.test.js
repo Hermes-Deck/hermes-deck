@@ -90,7 +90,7 @@ test("one BridgeClient isolates cloned stored SIDs for sends, models, requests, 
 test("fresh sessions with cloned stored SIDs reconcile only their own profile", async (t) => {
   const { c, calls } = await fixture(t);
   await c.send("s-legacy-unknown", "legacy default profile");
-  assert.equal(calls("session.resume")[0].params.profile, undefined);
+  assert.equal(calls("session.resume")[0].params.profile, "default"); // relay-wire W4 (R5): "default" is sent explicitly
   const alpha = await c.create({ profile: "alpha" });
   const beta = await c.create({ profile: "beta" });
   assert.equal(alpha.sid, beta.sid);

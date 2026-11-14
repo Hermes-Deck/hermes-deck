@@ -62,7 +62,7 @@ test("watch: a live session is resumed once with omit_messages, its events reach
   c.on("event", (e) => seen.push([e.type, e.sid]));
   await startOpen(c);
   assert.deepEqual(await c.watch("s-main", { profile: "default", owner: "page-a" }), { watching: true });
-  assert.deepEqual(calls(log, "session.resume").map((e) => e.params), [{ session_id: "s-main", omit_messages: true, inline_images: false }]);
+  assert.deepEqual(calls(log, "session.resume").map((e) => e.params), [{ session_id: "s-main", omit_messages: true, inline_images: false, profile: "default" }]); // relay-wire W4 (R5): "default" is sent explicitly
   await waitCalls(log, "deck.reasoning_view", 1);
   assert.deepEqual(views(log), [["rpc-s-main", true]], "Show thinking on: the watched session streams its reasoning");
   for (let i = 0; i < 100 && seen.length < 2; i++) await sleep(10);
@@ -78,7 +78,7 @@ test("watch: a gateway sub-agent child is resumed lazy (Hermes' agentless watch 
   const c = makeClient(t, ["--log", log]);
   await startOpen(c);
   assert.deepEqual(await c.watch("s-child", { owner: "page-a" }), { watching: true });
-  assert.deepEqual(calls(log, "session.resume").map((e) => e.params), [{ session_id: "s-child", omit_messages: true, inline_images: false, lazy: true }]);
+  assert.deepEqual(calls(log, "session.resume").map((e) => e.params), [{ session_id: "s-child", omit_messages: true, inline_images: false, lazy: true, profile: "default" }]); // relay-wire W4 (R5): "default" is sent explicitly
   assert.deepEqual(views(log), [], "Show thinking off: nothing is armed");
   assert.deepEqual(writes(log), []);
 });

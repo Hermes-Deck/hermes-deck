@@ -702,7 +702,9 @@ function projectSessions(result, profile) {
     if (!isPlainObject(s)) continue;
     const id = str(typeof s.id === "string" ? s.id : s.session_id, 512);
     if (!id.trim()) continue;
-    const p = typeof s.profile_name === "string" ? s.profile_name : typeof s.profile === "string" ? s.profile : (profile ?? launchProfile);
+    const own = typeof s.profile_name === "string" ? s.profile_name : typeof s.profile === "string" ? s.profile : undefined;
+    if (profile !== undefined && own !== undefined && own !== profile) continue; // a row of another profile is never shown under this one (R5)
+    const p = own ?? profile ?? launchProfile;
     out.push({
       id,
       title: str(s.title || s.name, 160).replace(/\s+/g, " ").trim(),
@@ -1718,7 +1720,7 @@ class BridgeClient extends EventEmitter {
   async sessionPage({ profile = "default", archived = false, offset = 0 } = {}) {
     if (!validProfileParam(profile)) throw kindError(i18nText("U0081"), "invalid");
     const params = { limit: INDEX_PAGE, archived: archived ? "only" : "exclude" };
-    if (profile !== "default") params.profile = profile;
+    params.profile = profile; // always explicit, "default" included (R5)
     if (offset) params.offset = offset;
     let r;
     try {
@@ -1728,7 +1730,7 @@ class BridgeClient extends EventEmitter {
       if (!/Unsupported/i.test(String((e && e.message) || e))) throw e;
       if (archived || offset) return { rows: [], hasMore: false, legacy: true };
       const legacy = { limit: 200 };
-      if (profile !== "default") legacy.profile = profile;
+      legacy.profile = profile;
       return { rows: projectIndexRows(await this.request("session.list", legacy), profile), hasMore: false, legacy: true };
     }
     return { rows: projectIndexRows(r, profile), hasMore: isPlainObject(r) && r.has_more === true, legacy: false };
@@ -1805,7 +1807,7 @@ class BridgeClient extends EventEmitter {
     if (clean === null) throw kindError(i18nText("sessions.invalid"), "invalid");
     const params = { session_id: sessionId, title: clean };
     const p = this._profileOf(sessionId, profile);
-    if (p && p !== "default") params.profile = p;
+    if (p) params.profile = p; // always explicit, "default" included (R5)
     const r = await this.request("deck.session_update", params);
     this.indexCache.clear();
     const stored = isPlainObject(r) && typeof r.title === "string" ? str(r.title, 160).trim() : clean;
@@ -1820,7 +1822,7 @@ class BridgeClient extends EventEmitter {
     if (typeof pinned !== "boolean") throw kindError(i18nText("sessions.invalid"), "invalid");
     const params = { session_id: sessionId, pinned };
     const p = this._profileOf(sessionId, profile);
-    if (p && p !== "default") params.profile = p;
+    if (p) params.profile = p; // always explicit, "default" included (R5)
     const r = await this.request("deck.session_update", params);
     this.indexCache.clear();
     return { pinned: isPlainObject(r) ? r.pinned === true : pinned };
@@ -1836,7 +1838,7 @@ class BridgeClient extends EventEmitter {
     }
     const params = { session_id: sessionId, archived };
     const p = this._profileOf(sessionId, profile);
-    if (p && p !== "default") params.profile = p;
+    if (p) params.profile = p; // always explicit, "default" included (R5)
     await this.request("session.archive", params);
     this.indexCache.clear();
     return { archived };
@@ -1852,7 +1854,7 @@ class BridgeClient extends EventEmitter {
     if (p !== "default" && !PROFILE_RE.test(p)) throw kindError(i18nText("U0081"), "invalid");
     const epoch = this.epoch;
     const params = { parent_session_id: sessionId, idempotency_key: require("crypto").randomUUID() };
-    if (p !== "default") params.profile = p;
+    params.profile = p; // always explicit, "default" included (R5)
     const r = await this.request("session.branch_stored", params);
     const { stored } = this._created(r, p, epoch, "");
     const made = this.created.get(sessionKey(p, stored));
@@ -1900,7 +1902,7 @@ class BridgeClient extends EventEmitter {
     checkSid(sessionId);
     const params = { session_id: sessionId, path: filePath, offset, length };
     const p = this._profileOf(sessionId, profile);
-    if (p && p !== "default") params.profile = p;
+    if (p) params.profile = p; // always explicit, "default" included (R5)
     const r = await this.request(FILE_METHOD, params);
     if (!isPlainObject(r) || typeof r.data !== "string" || !Number.isSafeInteger(r.size) || r.size < 0 || r.size > FILE_SIZE_MAX || !Number.isSafeInteger(r.length) || r.length < 0 || r.length > length) {
       throw kindError(i18nText("download.badReply"), "reply");
@@ -1919,7 +1921,7 @@ class BridgeClient extends EventEmitter {
     checkSid(sessionId);
     const params = { session_id: sessionId, path: filePath };
     const p = this._profileOf(sessionId, profile);
-    if (p && p !== "default") params.profile = p;
+    if (p) params.profile = p; // always explicit, "default" included (R5)
     const r = await this.request(GRANT_METHOD, params);
     if (!isPlainObject(r) || typeof r.id !== "string" || !DOWNLOAD_ID_RE.test(r.id) || !Number.isSafeInteger(r.size) || r.size < 0 || r.size > DOWNLOAD_BYTES_MAX) {
       throw kindError(i18nText("download.badReply"), "reply");
@@ -1939,7 +1941,7 @@ class BridgeClient extends EventEmitter {
     const params = { session_id: sessionId };
     const p = this._profileOf(sessionId, profile);
     const key = sessionKey(p, sessionId);
-    if (p && p !== "default") params.profile = p;
+    if (p) params.profile = p; // always explicit, "default" included (R5)
     // A session this Deck resumed is live in Hermes's gateway and would be refused: release an idle one first.
     // A running one is left alone, so Hermes answers "cannot delete an active session" and nothing is torn down.
     const bound = this.bindings.get(key);
@@ -2037,9 +2039,9 @@ class BridgeClient extends EventEmitter {
     const key = sessionKey(profile, storedId);
     const epoch = this.epoch;
     const params = { session_id: storedId, omit_messages: true, inline_images: false, ...(lazy ? { lazy: true } : {}) };
-    if (profile && profile !== "default") {
+    if (profile) {
       if (!PROFILE_RE.test(profile)) throw kindError(i18nText("U0081"), "invalid");
-      params.profile = profile;
+      params.profile = profile; // always explicit, "default" included (R5)
     }
     const r = await this.request("session.resume", params);
     if (this.epoch !== epoch || !this.conn) throw msgError("changed");
@@ -2201,7 +2203,7 @@ class BridgeClient extends EventEmitter {
     if (profile !== "default" && !PROFILE_RE.test(profile)) throw kindError(i18nText("U0081"), "invalid");
     const epoch = this.epoch;
     const params = { idempotency_key: require("crypto").randomUUID() };
-    if (profile !== "default") params.profile = profile;
+    params.profile = profile; // always explicit, "default" included (R5)
     const r = await this.request("session.create", params);
     const { stored } = this._created(r, profile, epoch, "", true);
     return { sid: stored, profile };
@@ -2338,7 +2340,7 @@ class BridgeClient extends EventEmitter {
   async botChat(profile, { expect = false } = {}) {
     if (typeof profile !== "string" || !PROFILE_RE.test(profile)) throw kindError(i18nText("U0081"), "invalid");
     const params = { title: BOT_CHAT_TITLE, include_hidden: true, limit: 200 };
-    if (profile !== "default") params.profile = profile;
+    params.profile = profile; // always explicit, "default" included (R5)
     let r;
     try {
       r = await this.request("session.list", params);
@@ -2387,7 +2389,7 @@ class BridgeClient extends EventEmitter {
   async _mintBotChat(profile) {
     const epoch = this.epoch;
     const params = { idempotency_key: require("crypto").randomUUID(), title: BOT_CHAT_TITLE, hidden: true, follow_profile_config: true };
-    if (profile !== "default") params.profile = profile;
+    params.profile = profile; // always explicit, "default" included (R5)
     const { stored, rpcId } = this._created(await this.request("session.create", params), profile, epoch, BOT_CHAT_TITLE);
     let pending = false;
     try {
@@ -2554,7 +2556,7 @@ class BridgeClient extends EventEmitter {
     const live = this.livePlans.get(sessionKey(p, sessionId));
     if (live) return { sid: sessionId, plan: live, live: true };
     const params = { session_id: sessionId };
-    if (p !== "default") params.profile = p;
+    params.profile = p; // always explicit, "default" included (R5)
     try {
       const r = await this.request("deck.plan", params);
       return { sid: sessionId, plan: projectPlan(isPlainObject(r) ? r.plan : null), live: false };
