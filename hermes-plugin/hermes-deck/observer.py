@@ -2676,9 +2676,25 @@ class Observer:
         # session id -> {"tools": [recent tool calls], "plan": latest plan or None}; see ACTIVITY_* above
         self.activity = OrderedDict()
         self.activity_dirty = False
+        self.retired = False     # set at exit: the record is removed and must not be written again
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.directory.chmod(0o700)
         self._persist()
+
+    def retire(self):
+        """This process stops serving: remove its record, activity file and control socket, so no stream reader
+        keeps reading (or connecting to) them after it is gone. Never raises."""
+        with self.lock:
+            self.retired = True
+            names = [f"{self.pid}{suffix}" for suffix in (".json", ".tmp", ACTIVITY_SUFFIX, f"{ACTIVITY_SUFFIX}.tmp")]
+            paths = [self.directory / name for name in names]
+            if self.control_socket:
+                paths.append(Path(self.control_socket))
+            for path in paths:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
 
     def _activity(self, node):
         """The activity record of a live node (created on first use; the least recently used one goes past the cap)."""
@@ -2900,6 +2916,8 @@ class Observer:
         self.pending_children = {sid:entry for sid,entry in self.pending_children.items()
                                  if now-entry["observed_at"] < 120}
         self.sequence += 1
+        if self.retired:
+            return
         try:
             target = self.directory / f"{self.pid}.json"
             tmp = self.directory / f"{self.pid}.tmp"
@@ -3523,12 +3541,72 @@ def busy_reply(request_id):
                                                          "data": {"retry": True}}}
 
 
+_RECORD_RE = re.compile(r"^([0-9]{1,10})(?:\.json|\.tmp|\.activity|\.activity\.tmp)$")
+_SOCKET_RE = re.compile(r"^control-([0-9]{1,10})-[0-9a-f]{8}\.sock$")
+RECORD_ABANDONED_S = 3600   # a record this old belongs to no running observer (they rewrite it every 10 s)
+
+
+def _pid_alive(pid):
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True             # exists, owned by someone else
+
+
+def sweep_dead(directory, alive=None, now=None):
+    """Remove what dead processes left in one observer base (`directory` = <HERMES_HOME>/hermes-deck): process
+    records and activity files of dead pids (or untouched for an hour: a reused pid) and control sockets of dead
+    pids. Only this base, only names this plugin writes; a live process's socket is never touched. Returns the
+    number of files removed; never raises."""
+    alive = alive or _pid_alive
+    now = time.time() if now is None else now
+    removed = 0
+    for folder, pattern in ((Path(directory) / "processes", _RECORD_RE), (Path(directory), _SOCKET_RE)):
+        try:
+            entries = list(os.scandir(folder))
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                match = pattern.match(entry.name)
+                if not match:
+                    continue
+                mode = entry.stat(follow_symlinks=False).st_mode
+                if not (statmod.S_ISREG(mode) or statmod.S_ISSOCK(mode)):
+                    continue
+                pid = int(match.group(1))
+                if pid == os.getpid():
+                    continue
+                dead = not alive(pid)
+                if not dead and pattern is _RECORD_RE:
+                    dead = now - entry.stat(follow_symlinks=False).st_mtime > RECORD_ABANDONED_S
+                if dead:
+                    os.unlink(entry.path)
+                    removed += 1
+            except (OSError, ValueError):
+                continue
+    return removed
+
+
 def start(directory, on_unload=None):
     """Start observing (snapshots every 10 s) and serving the control socket. Returns the Observer whose
     hook methods (HOOKS) the plugin registers. `directory` is <HERMES_HOME>/hermes-deck."""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     directory.chmod(0o700)
+    try:
+        swept = sweep_dead(directory)
+        if swept:
+            logger.info("Hermes Deck bridge: removed %d files of exited processes", swept)
+    except Exception:
+        logger.debug("Hermes Deck bridge: sweep failed", exc_info=True)
     instance = Observer(directory / "processes")
     stop = threading.Event()
 
@@ -3547,7 +3625,16 @@ def start(directory, on_unload=None):
     threading.Thread(target=heartbeat, name="hermes-deck-bridge-snap", daemon=True).start()
     context = contextvars.copy_context()
     threading.Thread(target=context.run, args=(control,), name="hermes-deck-bridge-control", daemon=True).start()
+    def retire():
+        stop.set()
+        instance.retire()
+
     if callable(on_unload):
-        on_unload(stop.set)
+        on_unload(retire)
+    try:
+        import atexit
+        atexit.register(instance.retire)
+    except Exception:
+        pass
     instance.stop = stop
     return instance
