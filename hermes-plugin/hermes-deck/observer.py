@@ -35,7 +35,7 @@ import shutil
 import stat as statmod
 import tempfile
 import math
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
@@ -3213,6 +3213,57 @@ class Observer:
             avatars = OneInFlight()  # one profiles.get_asset at a time on this connection
             files, budget = file_reader, ReadBudget()  # deck.file_read: the shared reader and this connection's budget
             requests_replayed = False
+            # History reads and inline gateway dispatches run here, in arrival order per session, so one slow read
+            # never holds up this connection's other requests (request.answer and native.* stay on the reader).
+            pool = OrderedPool()
+            created_lock = threading.Lock()
+
+            def pooled(request, work, deadline_running=False, abandon=None):
+                rid = request.get("id")
+                context = contextvars.copy_context()
+                params = request.get("params") or {}
+                task = ControlTask(lambda task: context.run(work, task), lambda: peer.write(busy_reply(rid)),
+                                   abandon=abandon, deadline_running=deadline_running)
+                if not pool.submit(params.get("session_id"), task) and task.settle():
+                    if abandon: abandon()
+
+            def history(task, request=None):
+                params = request.get("params", {})
+                try:
+                    response = {"jsonrpc":"2.0","id":request.get("id"),"result":self.messages(params)}
+                except ValueError as exc:
+                    response = {"jsonrpc":"2.0","id":request.get("id"),"error":{"code":4000,"message":str(exc)}}
+                except Exception:
+                    logger.warning("Hermes Deck bridge: native history read unavailable", exc_info=True)
+                    response = {"jsonrpc":"2.0","id":request.get("id"),"error":{"code":5000,"message":"Native Hermes history unavailable"}}
+                if task.settle(): peer.write(response)
+
+            def gateway(task, request=None, transport=None):
+                method, params = request.get("method"), request.get("params", {})
+                if not task.settle():
+                    if isinstance(transport, AvatarReply): transport.done()
+                    return
+                token = bind_transport(transport)
+                try:
+                    response = server.dispatch(request, transport=transport)
+                    if method in SUBAGENT_READS:
+                        # the sub-agent detail view: Hermes' own reply, completed (and redacted) here
+                        response = enrich_subagent_reply(method, response, self)
+                    # session.create answers inline (not a long handler); a pooled reply is not seen here, which
+                    # only means session.title stays refused (Hermes then titles the chat after its first turn).
+                    # Only a Bot Chat create (title "Bot Chat", hidden) is recorded, before its reply leaves, so a
+                    # session.title that follows the reply finds it: a plain session may never be titled "Bot Chat".
+                    result = response.get("result") if creates_bot_chat(method, params) and isinstance(response, dict) else None
+                    if isinstance(result, dict) and isinstance(result.get("session_id"), str):
+                        with created_lock:
+                            created[result["session_id"]] = True
+                            while len(created) > 256: created.popitem(last=False)
+                    if response is not None: transport.write(response)
+                except Exception:
+                    if isinstance(transport, AvatarReply): transport.done()  # nothing was queued
+                    logger.warning("Hermes Deck bridge: control request failed", exc_info=True)
+                    peer.write({"jsonrpc":"2.0","id":request.get("id"),"error":{"code":-32603,"message":"Hermes Deck control failed"}})
+                finally: reset_transport(token)
             try:
                 with conn.makefile("rb") as incoming:
                     for line in incoming:
@@ -3261,14 +3312,7 @@ class Observer:
                         elif method in {"native.steer","native.redirect","native.interrupt"}:
                             peer.write({"jsonrpc":"2.0","id":request.get("id"),"result":self.control(method,params,request_id=request.get("id"))})
                         elif method == "session.messages":
-                            try:
-                                response = {"jsonrpc":"2.0","id":request.get("id"),"result":self.messages(params)}
-                            except ValueError as exc:
-                                response = {"jsonrpc":"2.0","id":request.get("id"),"error":{"code":4000,"message":str(exc)}}
-                            except Exception:
-                                logger.warning("Hermes Deck bridge: native history read unavailable", exc_info=True)
-                                response = {"jsonrpc":"2.0","id":request.get("id"),"error":{"code":5000,"message":"Native Hermes history unavailable"}}
-                            peer.write(response)
+                            pooled(request, lambda task, r=request: history(task, r), deadline_running=True)
                         elif allowed_request(method, params, created):
                             if method == "session.list" and not requests_replayed:
                                 peer.replay_requests()
@@ -3289,38 +3333,29 @@ class Observer:
                                     continue
                                 transport = AvatarReply(peer, connection_fanout, request.get("id"),
                                                         lambda ticket=ticket: avatars.release(ticket))
-                            opened = open_request(server, params.get("id")) if method == "request.answer" else None
+                            if method != "request.answer":
+                                abandon = transport.done if isinstance(transport, AvatarReply) else None
+                                pooled(request, lambda task, r=request, t=transport: gateway(task, r, t), abandon=abandon)
+                                continue
+                            opened = open_request(server, params.get("id"))
                             token = bind_transport(transport)
                             try:
-                                # any connection may answer a card it shows; Hermes' request.answer is not owner-bound
+                                # any connection may answer a card it shows; Hermes' request.answer is not owner-bound.
+                                # It stays on the reader: an answer must never be overtaken by later frames.
                                 with hub.answer(params.get("id") if opened else None):
                                     response = server.dispatch(request, transport=transport)
-                                    if method == "request.answer":
-                                        withdraw_answered(server, params.get("id"), opened, response)
-                                        settled = response.get("result") if isinstance(response, dict) else None
-                                        if opened and isinstance(settled, dict) and settled.get("status") == "ok":
-                                            hub.answered(params.get("id"))
-                                if method in SUBAGENT_READS:
-                                    # the sub-agent detail view: Hermes' own reply, completed (and redacted) here
-                                    response = enrich_subagent_reply(method, response, self)
+                                    withdraw_answered(server, params.get("id"), opened, response)
+                                    settled = response.get("result") if isinstance(response, dict) else None
+                                    if opened and isinstance(settled, dict) and settled.get("status") == "ok":
+                                        hub.answered(params.get("id"))
                                 if response is not None: transport.write(response)
-                            except BaseException:
-                                if isinstance(transport, AvatarReply): transport.done()  # nothing was queued
-                                raise
                             finally: reset_transport(token)
-                            # session.create answers inline (not a long handler); a pooled reply is not seen
-                            # here, which only means session.title stays refused (Hermes then titles the
-                            # chat after its first turn). Only a Bot Chat create (title "Bot Chat", hidden)
-                            # is recorded: a plain session may never be titled "Bot Chat".
-                            result = response.get("result") if creates_bot_chat(method, params) and isinstance(response, dict) else None
-                            if isinstance(result, dict) and isinstance(result.get("session_id"), str):
-                                created[result["session_id"]] = True
-                                while len(created) > 256: created.popitem(last=False)
                         else:
                             peer.write({"jsonrpc":"2.0","id":request.get("id"),"error":{"code":-32601,"message":"Unsupported Hermes Deck control"}})
             except (OSError,ValueError,TypeError):
                 pass
             finally:
+                pool.close()
                 connection_fanout.detach(peer)
                 fanout.detach(peer)
                 peer.close()
@@ -3340,6 +3375,152 @@ class Observer:
                 path.unlink()
             except OSError:
                 pass
+
+
+CONTROL_WORKERS = 4          # per control connection: requests that may block run here, never on its reader thread
+CONTROL_DEADLINE = 10.0      # seconds: a request that has not started (or a history read still running) answers busy
+BUSY_CODE = -32002
+
+
+class ControlTask:
+    """One request handed to an OrderedPool. ``settle()`` is True exactly once: whoever answers first (the work
+    itself, or the pool's deadline with a busy error) owns the reply, so a request never gets two."""
+    __slots__ = ("run", "busy", "abandon", "deadline_running", "queued", "started", "_done", "_lock")
+
+    def __init__(self, run, busy, abandon=None, deadline_running=False):
+        self.run, self.busy, self.abandon, self.deadline_running = run, busy, abandon, deadline_running
+        self.queued, self.started, self._done, self._lock = time.monotonic(), None, False, threading.Lock()
+
+    def settle(self):
+        with self._lock:
+            if self._done:
+                return False
+            self._done = True
+            return True
+
+
+class OrderedPool:
+    """At most ``size`` requests of one control connection run at once, off its reader thread, in arrival order
+    per key (a session id; requests without one share the key None). A request that waits longer than ``deadline``
+    seconds, or a read-only one (``deadline_running``) that runs longer, is answered busy instead of staying
+    silent; one that never started never runs. Nothing here raises into the caller."""
+
+    def __init__(self, size=None, deadline=None, name="hermes-deck-control"):
+        self.size = CONTROL_WORKERS if size is None else size
+        self.deadline = CONTROL_DEADLINE if deadline is None else deadline
+        self.name = name
+        self.lock = threading.Lock()
+        self.queues = {}          # key -> deque of ControlTask; the head runs or waits for a worker
+        self.ready = deque()      # keys whose head may start now
+        self.running = {}         # task -> key, while it runs
+        self.workers = 0
+        self.watching = False
+        self.closed = False
+
+    def submit(self, key, task):
+        try:
+            hash(key)
+        except TypeError:
+            key = repr(key)
+        with self.lock:
+            if self.closed:
+                return False
+            queue = self.queues.get(key)
+            if queue is None:
+                self.queues[key] = deque([task])
+                self.ready.append(key)
+            else:
+                queue.append(task)
+            while self.ready and self.workers < self.size:
+                self.workers += 1
+                threading.Thread(target=self._work, name=self.name, daemon=True).start()
+            if not self.watching:
+                self.watching = True
+                threading.Thread(target=self._watch, name=f"{self.name}-deadline", daemon=True).start()
+        return True
+
+    def close(self):
+        """The connection is gone: requests that have not started are dropped (their caller saw the connection end)."""
+        with self.lock:
+            self.closed = True
+            dropped = [t for key, q in self.queues.items() for t in q if t not in self.running]
+            for key in list(self.queues):
+                self.queues[key] = deque(t for t in self.queues[key] if t in self.running)
+                if not self.queues[key]:
+                    del self.queues[key]
+            self.ready.clear()
+        for task in dropped:
+            if task.settle():
+                self._abandon(task)
+
+    def _abandon(self, task):
+        try:
+            if task.abandon:
+                task.abandon()
+        except Exception:
+            logger.debug("Hermes Deck bridge: abandon failed", exc_info=True)
+
+    def _work(self):
+        while True:
+            with self.lock:
+                if not self.ready or self.closed:
+                    self.workers -= 1
+                    return
+                key = self.ready.popleft()
+                task = self.queues[key][0]
+                task.started = time.monotonic()
+                self.running[task] = key
+            try:
+                task.run(task)
+            except BaseException:
+                logger.warning("Hermes Deck bridge: a pooled control request failed", exc_info=True)
+            with self.lock:
+                self.running.pop(task, None)
+                queue = self.queues.get(key)
+                if queue and queue[0] is task:
+                    queue.popleft()
+                if queue:
+                    if not self.closed:
+                        self.ready.append(key)
+                elif key in self.queues:
+                    del self.queues[key]
+
+    def _watch(self):
+        while True:
+            time.sleep(min(.5, self.deadline / 4))
+            late, now = [], time.monotonic()
+            with self.lock:
+                for key in list(self.queues):
+                    queue = self.queues[key]
+                    for task in list(queue):
+                        if task in self.running:
+                            if task.deadline_running and now - task.started > self.deadline:
+                                late.append((task, False))
+                        elif now - task.queued > self.deadline:
+                            queue.remove(task)
+                            late.append((task, True))
+                    if not queue:
+                        del self.queues[key]
+                        if key in self.ready:
+                            self.ready.remove(key)
+                idle = not self.queues
+                if idle:
+                    self.watching = False
+            for task, never_ran in late:
+                if task.settle():
+                    try:
+                        task.busy()
+                    except Exception:
+                        pass
+                    if never_ran:
+                        self._abandon(task)
+            if idle:
+                return
+
+
+def busy_reply(request_id):
+    return {"jsonrpc": "2.0", "id": request_id, "error": {"code": BUSY_CODE, "message": "Hermes Deck bridge busy; retry",
+                                                         "data": {"retry": True}}}
 
 
 def start(directory, on_unload=None):
