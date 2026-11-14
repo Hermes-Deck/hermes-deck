@@ -47,8 +47,20 @@ class MobilePushClient {
   offers(feature) { return this.features.has(feature); }
   setDevice(deviceId,registration) { return this.request('/v1/devices/'+encodeURIComponent(deviceId),'PUT',registration); }
   removeDevice(deviceId) { return this.request('/v1/devices/'+encodeURIComponent(deviceId),'DELETE'); }
-  async notify(deviceId,{id,kind,collapse,badge}) {
+  /** A Live Activity's push token at the gateway (X7): `{target, token, expires}`; only to a gateway that offers it. */
+  setActivity(activityId,body) {
+    if (!this.offers('liveActivity')) return Promise.reject(Object.assign(Error('The push gateway does not support Live Activities'),{status:409,code:'unsupported'}));
+    return this.request('/v1/activities/'+encodeURIComponent(activityId),'PUT',body);
+  }
+  removeActivity(activityId) { return this.request('/v1/activities/'+encodeURIComponent(activityId),'DELETE'); }
+  async notify(deviceId,{id,kind,collapse,badge,activity,live}) {
     if (kind==='badge' && !this.offers('badge')) return {skipped:true}; // a badge-only push needs a gateway that knows it
+    if (kind==='liveactivity') {
+      // A Live Activity update (X7): the activity id and its content-free state, nothing else.
+      if (!this.offers('liveActivity')) return {skipped:true};
+      try { return await this.request('/v1/events','POST',{target:deviceId,id,kind,activity,live}); }
+      catch (error) { if (error.status===400) this.featuresAt=0; throw error; }
+    }
     // Optional kinds fall back for a gateway that does not list them: a digest travels as `done`; a test as `done` (the
     // relay only asks for `test` when offered; this is the guard for a gateway replaced in between).
     const optional=kind==='digest' || kind==='test';

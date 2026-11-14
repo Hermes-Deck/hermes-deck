@@ -462,3 +462,128 @@ test('X6 hue: profiles rows carry a valid hue from ui_meta[hermes-deck]; anythin
   assert.equal(answer[0].hue, 'teal');
   await assert.rejects(mobile.call(device, { id: 'm.1', op: 'setHue', args: { profile: 'default', hue: 'teal' } }), error => error.code === 'operation');
 });
+
+// -------------------------------------------------------------------------------------------------- X7 Live Activity
+const ACT = 'b'.repeat(160);
+function activityGateway() {
+  const activities = new Map();
+  return {
+    activities,
+    setActivity: async (id, body) => { activities.set(id, body); return { registered: true }; },
+    removeActivity: async id => { activities.delete(id); return { removed: true }; },
+  };
+}
+const jsonFetch = (url, method, token, body) => fetch(url, { method, headers: { ...bearer(token), 'content-type': 'application/json' }, body: JSON.stringify(body) });
+
+test('X7 Live Activity: register per chat; needs-you and finished go to the activity instead of a banner; answered elsewhere -> silent Working', async t => {
+  const clock = fakeClock(1700000000000);
+  const open = [];
+  const gateway = activityGateway();
+  const { mobile, device, sent, paired } = fixture(t, { now: clock, features: ['liveActivity', 'badge'], push: gateway, bridge: { listRequests: () => open } });
+  assert.equal(mobile.capabilities().liveActivity, true);
+  const url = await serve(t, mobile);
+  const answer = await jsonFetch(`${url}/mobile/activity`, 'PUT', paired.token, { token: ACT, profile: 'default', sid: 's1', since: 1699999990 });
+  assert.equal(answer.status, 200);
+  const registered = await answer.json();
+  assert.match(registered.id, /^a_[a-f0-9]{48}$/);
+  assert.equal(registered.expires, clock() + 8 * 3600000);
+  assert.deepEqual(gateway.activities.get(registered.id), { target: device.id, token: ACT, expires: registered.expires });
+  assert.ok(!JSON.stringify(registered).includes(ACT), 'the token is never echoed');
+  // An approval opens in s1: the activity gets it (alert), not a banner.
+  open.push({ id: 'ap-1', sid: 's1', profile: 'default', kind: 'approval', at: clock(), command: 'git push', description: 'Push', choices: ['once', 'deny'] });
+  mobile.notify(device, 'requests', [...open]);
+  await flush(mobile);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0], { target: device.id, id: sent[0].id, kind: 'liveactivity', activity: registered.id, live: { state: 'approval', waiting: 1, since: 1699999990, at: 1700000000, event: 'update', alert: true } });
+  assert.ok(!JSON.stringify(sent).includes('git push'), 'content-free');
+  // Answered at the desktop: one silent update back to Working.
+  open.length = 0;
+  mobile.activityCheck(device);
+  await flush(mobile);
+  assert.deepEqual([sent[1].kind, sent[1].live.state, sent[1].live.alert, sent[1].live.waiting], ['liveactivity', 'working', undefined, 0]);
+  mobile.activityCheck(device); await flush(mobile);
+  assert.equal(sent.length, 2, 'once');
+  // An approval in another chat is a normal banner.
+  open.push({ id: 'ap-2', sid: 's2', profile: 'default', kind: 'approval', at: clock(), command: 'ls', description: 'List', choices: ['once', 'deny'] });
+  mobile.notify(device, 'requests', [...open]);
+  await flush(mobile);
+  assert.equal(sent[2].kind, 'approval');
+  // The turn ends: the end update (alert, dismissal in 15 minutes) instead of the done banner; the activity is gone.
+  clock.advance(60000);
+  device.notifications.set(`e_${clock()}_${'c'.repeat(48)}`, { sid: 's1', profile: 'default', kind: 'done', title: 'Atlas', body: 'Deployed', agent: '', thread: 'd'.repeat(32), expires: clock() + 3600000, delivery: 'pending' });
+  mobile.persist(device); await flush(mobile);
+  const end = sent.at(-1);
+  assert.deepEqual([end.kind, end.live.state, end.live.event, end.live.alert, end.live.dismiss], ['liveactivity', 'finished', 'end', true, Math.floor(clock() / 1000) + 900]);
+  assert.ok(!JSON.stringify(end).includes('Deployed'));
+  assert.equal(mobile.activityFor(device, 'default', 's1'), null);
+  // A later done in that chat is a banner again.
+  device.notifications.set(`e_${clock()}_${'e'.repeat(48)}`, { sid: 's1', profile: 'default', kind: 'done', title: 'Atlas', body: 'Again', agent: '', thread: 'd'.repeat(32), expires: clock() + 3600000, delivery: 'pending' });
+  mobile.persist(device); await flush(mobile);
+  assert.equal(sent.at(-1).kind, 'done');
+});
+
+test('X7 Live Activity: same breaker as banners; bounded to three; unregister; expiry; refused without push, gateway support or a phone token', async t => {
+  const clock = fakeClock(1700000000000);
+  const gateway = activityGateway();
+  const { mobile, device, sent, paired, file } = fixture(t, { now: clock, features: ['liveActivity'], push: gateway, policy: { scope: 'all', burst: 1 } });
+  const url = await serve(t, mobile);
+  const put = (body, token = paired.token) => jsonFetch(`${url}/mobile/activity`, 'PUT', token, body);
+  for (const body of [{ token: 'xyz', profile: 'default', sid: 's1' }, { token: ACT, sid: 's1' }, { token: ACT, profile: 'default' }, { token: ACT, profile: 'default', sid: 's1', since: 1 }, { token: ACT, profile: 'default', sid: 's1', title: 'x' }])
+    assert.equal((await put(body)).status, 400, JSON.stringify(body).slice(0, 60));
+  assert.equal((await put({ token: ACT, profile: 'default', sid: 's1' }, 'x'.repeat(32))).status, 401, 'the desktop token is not a phone');
+  const ids = [];
+  for (const sid of ['s1', 's2', 's3', 's4']) { ids.push((await (await put({ token: ACT, profile: 'default', sid })).json()).id); clock.advance(10); }
+  assert.equal(mobile.activities(device).size, 3);
+  assert.equal(mobile.activityFor(device, 'default', 's1'), null, 'the oldest is replaced');
+  assert.ok(!gateway.activities.has(ids[0]));
+  // Re-registering a chat replaces its activity.
+  const again = (await (await put({ token: ACT, profile: 'default', sid: 's4' })).json()).id;
+  assert.equal(mobile.activityFor(device, 'default', 's4').id, again);
+  assert.ok(!gateway.activities.has(ids[3]));
+  // Another phone cannot remove this phone's activity.
+  const other = mobile.pair({ code: createPair(file), name: 'tablet' });
+  assert.deepEqual(await (await jsonFetch(`${url}/mobile/activity`, 'DELETE', other.token, { profile: 'default', sid: 's2' })).json(), { ok: true, removed: false });
+  assert.ok(mobile.activityFor(device, 'default', 's2'));
+  assert.equal((await put({ token: ACT, profile: 'default', sid: 's9' }, other.token)).status, 409, 'no push registration: not_registered');
+  assert.deepEqual(await (await jsonFetch(`${url}/mobile/activity`, 'DELETE', paired.token, { profile: 'default', sid: 's2' })).json(), { ok: true, removed: true });
+  // The breaker: burst 1 -> the second alerting update is held like a banner would be.
+  const record = (sid, kind) => device.notifications.set(`e_${clock()}_${crypto.randomBytes(24).toString('hex')}`, { sid, profile: 'default', kind, title: '', body: '', agent: '', expires: clock() + 3600000, delivery: 'pending' }) && mobile.persist(device);
+  record('s3', 'approval'); await flush(mobile);
+  record('s4', 'question'); await flush(mobile);
+  assert.deepEqual(sent.map(event => [event.kind, event.live?.state]), [['liveactivity', 'approval']]);
+  assert.ok([...device.notifications.values()].some(item => item.kind === 'question' && item.delivery === 'held'));
+  // Expiry: after eight hours the activity is forgotten and its chat gets banners again.
+  clock.advance(8 * 3600000); mobile.govern(device);
+  assert.equal(mobile.activities(device).size, 0);
+  // Push disabled: activities forgotten; a gateway without the feature: 409 unsupported and the flag is off.
+  const old = fixture(t, { now: clock, push: activityGateway() });
+  const url2 = await serve(t, old.mobile);
+  const refused = await jsonFetch(`${url2}/mobile/activity`, 'PUT', old.paired.token, { token: ACT, profile: 'default', sid: 's1' });
+  assert.equal(refused.status, 409);
+  assert.equal((await refused.json()).error.code, 'unsupported');
+  assert.equal(old.mobile.capabilities().liveActivity, false);
+});
+
+test('X7 push client: activity routes and liveactivity events only to a gateway that lists liveActivity', async () => {
+  const { MobilePushClient } = require('../src/mobile-push');
+  const requests = [];
+  let features = ['liveActivity'];
+  const fetchImpl = async (url, options) => {
+    const route = new URL(url).pathname;
+    if (route === '/health') return { ok: true, status: 200, json: async () => ({ ok: true, features }) };
+    requests.push([options.method, route, options.body ? JSON.parse(options.body) : null]);
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+  const client = new MobilePushClient({ url: 'https://push.example', credential: 'a'.repeat(43), fetch: fetchImpl });
+  await client.refreshFeatures(true);
+  await client.setActivity('a_1', { target: 'd1', token: ACT, expires: 1 });
+  const live = { state: 'working', waiting: 0, since: 1700000000, at: 1700000001, event: 'update' };
+  await client.notify('d1', { id: 'e_1', kind: 'liveactivity', activity: 'a_1', live, collapse: 'c'.repeat(32), badge: 2 });
+  await client.removeActivity('a_1');
+  assert.deepEqual(requests, [['PUT', '/v1/activities/a_1', { target: 'd1', token: ACT, expires: 1 }], ['POST', '/v1/events', { target: 'd1', id: 'e_1', kind: 'liveactivity', activity: 'a_1', live }], ['DELETE', '/v1/activities/a_1', null]]);
+  features = [];
+  await client.refreshFeatures(true);
+  await assert.rejects(client.setActivity('a_2', { target: 'd1', token: ACT, expires: 1 }), error => error.code === 'unsupported');
+  assert.deepEqual(await client.notify('d1', { id: 'e_2', kind: 'liveactivity', activity: 'a_1', live }), { skipped: true });
+  assert.equal(requests.length, 3);
+});

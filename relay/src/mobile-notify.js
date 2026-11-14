@@ -256,7 +256,7 @@ class NotifyCenter {
    * returned so the caller stores it.
    */
   release(device, item) {
-    if (item.kind === 'digest' || item.kind === 'badge' || item.test) return { action: 'bypass', digest: null };
+    if (item.kind === 'digest' || item.kind === 'badge' || item.kind === 'liveactivity' || item.test) return { action: 'bypass', digest: null };
     const verdict = device.governor.release({ kind: item.kind, chat: item.thread || collapseId(device.id, item.profile, item.sid) });
     if (verdict.action === 'hold') this.log(device, 'held', item);
     return verdict;

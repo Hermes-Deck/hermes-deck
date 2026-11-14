@@ -27,6 +27,11 @@ const MUTATION_ID = /^m\.(\d{13})\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{
 const mutationTime = id => { const match = typeof id === 'string' && MUTATION_ID.exec(id); return match ? Number(match[1]) : null; };
 const TITLE_MAX = 80, BODY_MAX = 300, BODY_LINES = 4, SOURCE_MAX = 4000, LAST_REPLY_LIMIT = 200;
 // One banner per turn: reply and done of the same turn are merged inside this window (and by turn id when both are known).
+// Live Activities (relay-extras X7): at most three per device (DESIGN §7.4), each bound to one chat, expiring after
+// eight hours (ActivityKit's own limit); the push token lives in memory here and at the gateway, never in a file.
+const ACTIVITY_LIMIT = 3, ACTIVITY_TTL_MS = 8 * 3600000, ACTIVITY_DISMISS_S = 15 * 60;
+const ACTIVITY_TOKEN = /^[a-fA-F0-9]{64,512}$/;
+const LIVE_STATE = { approval: 'approval', question: 'question', done: 'finished', error: 'failed' };
 // Badge corrections (relay-extras X2): settle a burst of answers, then at most one silent badge push per interval.
 const BADGE_SETTLE_MS = 2000, BADGE_INTERVAL_MS = 10000;
 const SETTLE_MS = 3500, NAMES_TTL = 10 * 60 * 1000, LOOKUP_MS = 3000, GROUP_LIMIT = 200;
@@ -235,6 +240,7 @@ class MobileRelay {
       maskedPrompt: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // snapshot nodes `maskedPrompt: true` + event `maskedPrompts` [{sid, profile}] (X4)
       watch: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // ops watch/unwatch {sid, profile}: stream a session running elsewhere, read-only (X3)
       historyProfile: !!this.available.history,
+      liveActivity: this.push?.offers?.('liveActivity') === true, // PUT/DELETE /mobile/activity; content-free liveactivity updates (X7)
       profileHue: true, // profiles rows may carry `hue` (one of seven names) from ui_meta['hermes-deck'].hue; read-only (X6)
       searchMessages: this.history?.hermes ? { v: 1, scanRows: SCAN_TOTAL, maxLimit: SEARCH_LIMIT } : false, // X5: op searchMessages // GET /session/<sid>/messages|tools|call/<id>?profile=<name> reads only that profile (G8)
       limits: { ...(staged ? this.uploads.limits() : LIMITS), downloadBytes: direct ? this.staging.direct : LEGACY_DOWNLOAD }, uploads: { v: 1, staged }, downloads: { v: 1, direct }, ...this.notices.capabilities(this.push) };
@@ -327,7 +333,7 @@ class MobileRelay {
           if (event === 'snapshot') data = this.markMasked(device, data);
           this.emit(device, { t: 'bridge', event: label, data });
           try { this.notify(device, label, data); } catch { this.emit(device, { t: 'bridge', event: 'status', data: { status: 'error', error: 'Notification metadata could not be saved' } }); }
-          if (event === 'requests') this.badgeCheck(device);
+          if (event === 'requests') { this.badgeCheck(device); this.activityCheck(device); }
         });
       }
       bridge.start();
@@ -499,6 +505,51 @@ class MobileRelay {
     try { digest = this.notices.tick(device); } catch {}
     if (digest) { try { this.storeDigest(device, digest); } catch {} }
     try { this.badgeTick(device); } catch {}
+    try { this.activitySweep(device); } catch {}
+  }
+  // --- Live Activities (X7) -----------------------------------------------------------------------------------------
+  activities(device) { return device.activities ||= new Map(); }
+  activityFor(device, profile, sid) {
+    const entry = this.activities(device).get(JSON.stringify([profile, sid]));
+    return entry && entry.expires > this.now() ? entry : null;
+  }
+  /** Open approvals + questions of one chat (the activity's `waiting`). */
+  waitingIn(device, profile, sid) {
+    if (device.bridge?.status?.status !== 'open') return 0;
+    return Math.min(99, phoneRequests(this.openRequests(device)).filter(request => request.profile === profile && request.sid === sid).length);
+  }
+  /** The content-free state of a Live Activity update: enums and numbers only (no title, no tool, no text). */
+  liveState(device, entry, state, { alert = false, end = false } = {}) {
+    const at = Math.floor(this.now() / 1000);
+    return { state, waiting: this.waitingIn(device, entry.profile, entry.sid), since: entry.since, at, event: end ? 'end' : 'update', ...(alert ? { alert: true } : {}), ...(end ? { dismiss: at + ACTIVITY_DISMISS_S } : {}) };
+  }
+  forgetActivity(device, entry, { remote = true } = {}) {
+    const key = JSON.stringify([entry.profile, entry.sid]);
+    if (this.activities(device).get(key) === entry) this.activities(device).delete(key);
+    if (remote) this.push?.removeActivity?.(entry.id)?.catch?.(() => {});
+  }
+  /** Expired activities are forgotten here (the gateway expires its copy by itself). */
+  activitySweep(device) {
+    for (const entry of [...this.activities(device).values()]) if (entry.expires <= this.now()) this.forgetActivity(device, entry, { remote: false });
+  }
+  /**
+   * The request list changed: an activity showing a request that is no longer open (answered here, at the desktop,
+   * cancelled, timed out) goes back to Working with one silent update (no alert; past the breaker like the badge).
+   */
+  activityCheck(device) {
+    if (this.push?.offers?.('liveActivity') !== true || !device.observePush || device.bridge?.status?.status !== 'open') return;
+    for (const entry of this.activities(device).values()) {
+      if (!['approval', 'question'].includes(entry.state) || entry.expires <= this.now()) continue;
+      if (this.waitingIn(device, entry.profile, entry.sid) > 0) continue;
+      if (device.notifications.size >= NOTIFICATION_CAPACITY) return;
+      for (const item of device.notifications.values()) if (item.kind === 'liveactivity' && item.activity === entry.id && item.delivery === 'pending') item.delivery = 'superseded';
+      const now = this.now();
+      entry.state = 'working';
+      device.notifications.set(`e_${now}_${opaque()}`, { kind: 'liveactivity', activity: entry.id, profile: entry.profile, sid: entry.sid, live: this.liveState(device, entry, 'working'), title: '', body: '', agent: '', expires: now + 3600000, delivery: 'pending' });
+      this.notices.log(device, 'activity', { kind: 'liveactivity', sid: entry.sid, profile: entry.profile }, { state: 'working' });
+      this.persist(device);
+      this.flushPush().catch(() => {});
+    }
   }
   /** Open approvals + questions of the device's bridge right now, or null while the bridge is not open (unknown). */
   badgeCount(device) {
@@ -923,8 +974,28 @@ class MobileRelay {
       const owner = this.devices.get(deviceId) || this.device(deviceId);
       const verdict = this.notices.release(owner, item);
       if (verdict.digest) this.storeDigest(owner, verdict.digest);
+      // A Live Activity for this chat takes the event instead of a banner (DESIGN §7.4: one or the other), after the
+      // same breaker verdict; its own silent updates (kind liveactivity) passed the breaker like the badge (X7).
+      const activity = item.kind === 'liveactivity' ? (this.activities(owner).get(JSON.stringify([item.profile, item.sid]))?.id === item.activity ? this.activityFor(owner, item.profile, item.sid) : null)
+        : LIVE_STATE[item.kind] && !item.test && this.push.offers?.('liveActivity') === true ? this.activityFor(owner, item.profile, item.sid) : null;
       if (verdict.action === 'hold') delivery = 'held';
       else if (item.kind === 'badge' && this.push.offers?.('badge') !== true) delivery = 'dropped'; // the gateway changed meanwhile
+      else if (item.kind === 'liveactivity' && (!activity || this.push.offers?.('liveActivity') !== true)) delivery = 'dropped'; // ended or replaced meanwhile
+      else if (activity) {
+        const state = item.kind === 'liveactivity' ? item.live.state : LIVE_STATE[item.kind];
+        const end = state === 'finished' || state === 'failed';
+        const live = item.kind === 'liveactivity' ? item.live : this.liveState(owner, activity, state, { alert: true, end });
+        try { await this.push.notify(deviceId, { id, kind: 'liveactivity', activity: activity.id, live }); }
+        catch (error) {
+          if (verdict.action === 'send') owner.governor.refund();
+          if (error.status === 410 && error.code === 'EVENT_EXPIRED') delivery = 'expired'; else throw error;
+        }
+        if (delivery === 'accepted') {
+          activity.state = state;
+          if (end) this.forgetActivity(owner, activity, { remote: false }); // the gateway removes it once the end went out
+          this.notices.log(owner, 'activity-sent', item, { state, ...(item.kind !== 'liveactivity' ? { instead: item.kind } : {}) });
+        }
+      }
       else {
         // The badge rides on the push (X2): open approvals + questions now, or the correction's own count.
         const badge = item.kind === 'badge' ? item.badge : this.badgeCount(owner);
@@ -969,6 +1040,7 @@ class MobileRelay {
   async disablePush(device) {
     if (this.devices.get(device.id) !== device || !tokens.stillValid(this.tokensFile, device.id, device.hash)) throw fail('unauthorized', 'Device revoked', 401);
     device.observePush = false;
+    device.activities?.clear(); // the gateway removes them with the device registration
     if (!device.registrationBusy) device.pushAttempt = null;
     device.pushRemoval = opaque();
     this.persist(device);
@@ -989,6 +1061,7 @@ class MobileRelay {
     tokens.revoke(this.tokensFile, device.id);
     for (const id of [...device.uploads.keys()]) this.uploads.remove(device, id); // its uploads go too, running ones aborted
     for (const ws of device.sockets) ws.terminate();
+    device.activities?.clear();
     if (!device.registrationBusy) this.devices.delete(device.id);
     await device.bridge?.stop();
     if (persistenceError) throw persistenceError;
@@ -1233,6 +1306,34 @@ class MobileRelay {
         }
       }
     }
+    if (route === '/mobile/activity' && (req.method === 'PUT' || req.method === 'DELETE')) {
+      // A Live Activity's push token for one chat (X7). PUT {token, profile, sid, since?} -> {ok, id, expires};
+      // DELETE {profile, sid} -> {ok, removed}. At most three per device: a fourth replaces the oldest.
+      const input = await object(req);
+      const allowed = req.method === 'PUT' ? ['token', 'profile', 'sid', 'since'] : ['profile', 'sid'];
+      if (Object.keys(input).some(key => !allowed.includes(key))) throw fail('bad_request', 'Unknown field');
+      if (typeof input.profile !== 'string' || !PROFILE_NAME.test(input.profile)) throw fail('bad_request', 'Explicit profile required');
+      if (typeof input.sid !== 'string' || !/^[\x21-\x7e]{1,512}$/.test(input.sid)) throw fail('bad_request', 'Invalid session ID');
+      const key = JSON.stringify([input.profile, input.sid]), list = this.activities(device), prior = list.get(key);
+      if (req.method === 'DELETE') {
+        if (prior) { this.forgetActivity(device, prior, { remote: false }); await this.push?.removeActivity?.(prior.id)?.catch?.(() => {}); }
+        return json(res, 200, { ok: true, removed: !!prior });
+      }
+      if (typeof input.token !== 'string' || !ACTIVITY_TOKEN.test(input.token)) throw fail('bad_request', 'Invalid activity token');
+      const nowS = Math.floor(this.now() / 1000);
+      if (input.since !== undefined && (!Number.isSafeInteger(input.since) || input.since > nowS + 60 || input.since < nowS - 86400)) throw fail('bad_request', 'since must be a recent Unix time in seconds');
+      if (!this.push?.configured) throw fail('unavailable', 'Push gateway not configured', 503);
+      if (!device.observePush) throw fail('not_registered', 'Push is not enabled for this device', 409);
+      if (this.push.offers?.('liveActivity') !== true) throw fail('unsupported', 'The push gateway does not support Live Activities', 409);
+      const id = `a_${opaque()}`, expires = this.now() + ACTIVITY_TTL_MS;
+      await this.push.setActivity(id, { target: device.id, token: input.token, expires });
+      if (prior) this.forgetActivity(device, prior);
+      this.activitySweep(device);
+      while (list.size >= ACTIVITY_LIMIT) this.forgetActivity(device, [...list.values()].sort((a, b) => a.at - b.at)[0]);
+      list.set(key, { id, profile: input.profile, sid: input.sid, since: input.since ?? nowS, expires, at: this.now(), state: 'working' });
+      this.notices.log(device, 'activity-registered', { kind: 'liveactivity', sid: input.sid, profile: input.profile });
+      return json(res, 200, { ok: true, id, expires });
+    }
     if (route === '/mobile/push/test' && req.method === 'POST') {
       // One test banner to this device, past scope, at-desk and the burst breaker (never counted, never held); at most one
       // per 30 s. Gateway kind `test` when the gateway offers it (delivered whatever kinds the phone picked); otherwise a
@@ -1268,6 +1369,7 @@ class MobileRelay {
       if (!item || item.expires < Date.now()) throw fail('not_found', 'Notification expired', 404);
       // Wire additions (mobile-notify.js wire()): thread, badge, request, digest counts, test. Older builds ignore them.
       const extra = this.notices.wire(device, item, phoneRequests(this.openRequests(device)).length);
+      if (item.kind === 'liveactivity') return json(res, 200, { kind: 'liveactivity', title: '', body: '', agent: '' });
       if (item.kind === 'digest' || item.kind === 'badge' || item.test) return json(res, 200, extra);
       // Extra fields only: older app builds read sid/profile/kind and ignore the rest.
       await this.refreshNames(device.bridge).catch(() => {});
