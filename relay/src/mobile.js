@@ -227,6 +227,7 @@ class MobileRelay {
       replay: true, // a repeated mutation id answers its first outcome for 10 min (last 256 per device), `pending` while it runs
       httpOps: { v: 1, ops: [...HTTP_OPS] }, // POST /mobile/op (mobile-op.js)
       start: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // op start {profile, text, uploads?}: create + send in one
+      maskedPrompt: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // snapshot nodes `maskedPrompt: true` + event `maskedPrompts` [{sid, profile}] (X4)
       watch: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // ops watch/unwatch {sid, profile}: stream a session running elsewhere, read-only (X3)
       historyProfile: !!this.available.history, // GET /session/<sid>/messages|tools|call/<id>?profile=<name> reads only that profile (G8)
       limits: { ...(staged ? this.uploads.limits() : LIMITS), downloadBytes: direct ? this.staging.direct : LEGACY_DOWNLOAD }, uploads: { v: 1, staged }, downloads: { v: 1, direct }, ...this.notices.capabilities(this.push) };
@@ -315,7 +316,8 @@ class MobileRelay {
       for (const [event, label] of [['status', 'status'], ['snapshot', 'snapshot'], ['requests', 'requests'], ['event', 'native'], ['sessions', 'sessions']]) {
         bridge.on(event, data => {
           if (this.devices.get(device.id) !== device || !tokens.stillValid(this.tokensFile, device.id, device.hash)) return;
-          if (event === 'requests') data = phoneRequests(data);
+          if (event === 'requests') { this.maskedCheck(device, data, bridge); data = phoneRequests(data); }
+          if (event === 'snapshot') data = this.markMasked(device, data);
           this.emit(device, { t: 'bridge', event: label, data });
           try { this.notify(device, label, data); } catch { this.emit(device, { t: 'bridge', event: 'status', data: { status: 'error', error: 'Notification metadata could not be saved' } }); }
           if (event === 'requests') this.badgeCheck(device);
@@ -324,6 +326,36 @@ class MobileRelay {
       bridge.start();
     }
     return device.bridge;
+  }
+  /**
+   * Open masked prompts (sudo, secret, vault: request kind `secret`) never reach the phone (phoneRequests); X4 tells it,
+   * content-free, that one is open on the computer: `[{sid, profile}]` (sid null while the host has not bound it).
+   * Never the prompt's text, method, kind or any field of it.
+   */
+  maskedList(device, list, bridge = device.bridge) {
+    const out = new Map();
+    for (const request of Array.isArray(list) ? list : []) {
+      if (request?.kind !== 'secret' || typeof request.profile !== 'string' || !PROFILE_NAME.test(request.profile)) continue;
+      let sid = typeof request.sid === 'string' && request.sid ? request.sid : null;
+      if (!sid) { try { sid = bridge?.nodeFor?.(request.rpcId, request.profile)?.sid || null; } catch {} }
+      out.set(JSON.stringify([request.profile, sid]), { sid, profile: request.profile });
+      if (out.size >= 64) break;
+    }
+    return out;
+  }
+  /** The request list changed: when the set of chats with an open masked prompt changed, tell the phone (X4). */
+  maskedCheck(device, list, bridge) {
+    const masked = this.maskedList(device, list, bridge);
+    const signature = JSON.stringify([...masked.keys()].sort());
+    if (signature === (device.maskedSignature || '[]')) return;
+    device.masked = masked; device.maskedSignature = signature;
+    this.emit(device, { t: 'bridge', event: 'maskedPrompts', data: [...masked.values()] });
+    if (bridge?.snapshot) this.emit(device, { t: 'bridge', event: 'snapshot', data: this.markMasked(device, bridge.snapshot) });
+  }
+  /** A snapshot for the phone: nodes of chats with an open masked prompt carry `maskedPrompt: true` (a copy; X4). */
+  markMasked(device, snapshot) {
+    if (!device.masked?.size || !snapshot || !Array.isArray(snapshot.nodes)) return snapshot;
+    return { ...snapshot, nodes: snapshot.nodes.map(node => node && device.masked.has(JSON.stringify([node.profile, node.sid])) ? { ...node, maskedPrompt: true } : node) };
   }
   emit(device, event) {
     const text = JSON.stringify(event);
@@ -999,8 +1031,12 @@ class MobileRelay {
       try {
         const bridge = this.bridge(device);
         ws.send(JSON.stringify({ t: 'bridge', event: 'status', data: bridge.status }));
-        if (bridge.snapshot) ws.send(JSON.stringify({ t: 'bridge', event: 'snapshot', data: bridge.snapshot }));
-        ws.send(JSON.stringify({ t: 'bridge', event: 'requests', data: phoneRequests(bridge.listRequests()) }));
+        const listed = bridge.listRequests();
+        const masked = this.maskedList(device, listed, bridge);
+        device.masked = masked; device.maskedSignature = JSON.stringify([...masked.keys()].sort());
+        if (bridge.snapshot) ws.send(JSON.stringify({ t: 'bridge', event: 'snapshot', data: this.markMasked(device, bridge.snapshot) }));
+        ws.send(JSON.stringify({ t: 'bridge', event: 'requests', data: phoneRequests(listed) }));
+        if (masked.size) ws.send(JSON.stringify({ t: 'bridge', event: 'maskedPrompts', data: [...masked.values()] }));
       } catch (error) { ws.send(JSON.stringify({ t: 'bridge', event: 'status', data: { status: 'off', error: error.message } })); }
     });
   }

@@ -274,3 +274,77 @@ test('X3 watch: ends when the last live socket closes; not over HTTP; another de
   assert.equal(device.watching, null);
   assert.deepEqual(spy.calls.filter(call => call[1] === 's1').map(call => call[0]), ['watch', 'unwatch']);
 });
+
+// ------------------------------------------------------------------------------------------------- X4 masked prompts
+function bridgeClass(state) {
+  const { EventEmitter } = require('node:events');
+  return class FakeBridge extends EventEmitter {
+    constructor() { super(); state.instance = this; this.status = { status: 'open' }; this.snapshot = state.snapshot; }
+    start() {}
+    async stop() {}
+    listRequests() { return state.requests; }
+    nodeFor(id, profile) { return (state.snapshot?.nodes || []).find(node => (node.sid === id || node.rpcId === id) && node.profile === profile) || null; }
+  };
+}
+
+test('X4 masked prompt: content-free flag on the snapshot node and a maskedPrompts event; never text, method or kind', async t => {
+  const state = { snapshot: { nodes: [{ sid: 's1', rpcId: 'rpc-1', profile: 'default', state: 'working', title: 'Atlas' }, { sid: 's2', profile: 'default', state: 'idle' }] }, requests: [] };
+  const { mobile, device } = fixture(t, { bridgeConfig: { mode: 'local' } });
+  delete mobile.bridge; device.bridge = null;
+  mobile.BridgeClient = bridgeClass(state);
+  assert.equal(mobile.capabilities().maskedPrompt, true);
+  const frames = [];
+  device.sockets.add({ ...liveSocket(), send: text => frames.push(JSON.parse(text)) });
+  const bridge = mobile.bridge(device);
+  bridge.emit('snapshot', state.snapshot);
+  assert.equal(frames.at(-1).data.nodes[0].maskedPrompt, undefined, 'nothing open: the snapshot is passed through untouched');
+  assert.equal(frames.at(-1).data, frames.at(-1).data);
+  // A sudo prompt opens for s1 (known by its runtime id only) next to an approval.
+  state.requests = [
+    { id: 'srq-1', kind: 'secret', method: 'sudo', rpcId: 'rpc-1', sid: null, profile: 'default', prompt: 'Password for apt-get install ripgrep' },
+    { id: 'srq-2', kind: 'approval', sid: 's2', profile: 'default', command: 'make', choices: ['once', 'deny'] },
+  ];
+  frames.length = 0;
+  bridge.emit('requests', state.requests);
+  const masked = frames.find(frame => frame.event === 'maskedPrompts');
+  assert.deepEqual(masked.data, [{ sid: 's1', profile: 'default' }]);
+  const snap = frames.find(frame => frame.event === 'snapshot');
+  assert.deepEqual(snap.data.nodes.map(node => node.maskedPrompt), [true, undefined]);
+  assert.deepEqual(frames.find(frame => frame.event === 'requests').data.map(request => request.id), ['srq-2'], 'the prompt itself stays off the phone');
+  assert.equal(state.snapshot.nodes[0].maskedPrompt, undefined, 'the bridge snapshot itself is never changed');
+  // The same set again: no repeated event; a later snapshot carries the flag.
+  frames.length = 0;
+  bridge.emit('requests', state.requests);
+  assert.equal(frames.filter(frame => frame.event === 'maskedPrompts').length, 0);
+  bridge.emit('snapshot', state.snapshot);
+  assert.equal(frames.at(-1).data.nodes[0].maskedPrompt, true);
+  // Answered on the computer: an empty list, and the flag is gone.
+  state.requests = [];
+  frames.length = 0;
+  bridge.emit('requests', state.requests);
+  assert.deepEqual(frames.find(frame => frame.event === 'maskedPrompts').data, []);
+  assert.equal(frames.find(frame => frame.event === 'snapshot').data.nodes[0].maskedPrompt, undefined);
+  const text = JSON.stringify(frames);
+  for (const word of ['sudo', 'ripgrep', 'Password', 'srq-1', '"secret"']) assert.ok(!text.includes(word), word);
+});
+
+test('X4 masked prompt: the handshake of a new socket carries the flag; an old client simply ignores both', async t => {
+  const { WebSocket } = require('ws');
+  const state = { snapshot: { nodes: [{ sid: 's1', profile: 'research', state: 'working' }] }, requests: [{ id: 'srq-9', kind: 'secret', method: 'vault.code', sid: 's1', profile: 'research', hint: '6-digit code' }] };
+  const { mobile, paired } = fixture(t, { bridgeConfig: { mode: 'local' } });
+  delete mobile.bridge;
+  mobile.device(paired.deviceId).bridge = null;
+  mobile.BridgeClient = bridgeClass(state);
+  const url = await serve(t, mobile);
+  const ws = new WebSocket(`${url.replace('http', 'ws')}/mobile/bridge`, { headers: bearer(paired.token) });
+  const frames = [];
+  ws.on('message', data => frames.push(JSON.parse(data)));
+  await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
+  for (let i = 0; i < 50 && !frames.some(frame => frame.event === 'maskedPrompts'); i++) await new Promise(resolve => setTimeout(resolve, 10));
+  ws.close();
+  assert.deepEqual(frames.map(frame => frame.event || frame.t), ['hello', 'status', 'snapshot', 'requests', 'maskedPrompts']);
+  assert.equal(frames[2].data.nodes[0].maskedPrompt, true);
+  assert.deepEqual(frames[3].data, []);
+  assert.deepEqual(frames[4].data, [{ sid: 's1', profile: 'research' }]);
+  assert.ok(!JSON.stringify(frames).includes('6-digit') && !JSON.stringify(frames).includes('vault'));
+});

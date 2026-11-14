@@ -30,6 +30,7 @@ The desktop app, relay and Hermes plugin share one version number.
 - Phone notifications: the test notification now arrives also when "Finished" notifications are turned off (it uses a kind the phone has on, or the push gateway's own `test` kind), and its answer says it is exempt from the burst breaker.
 - Phone notifications: with an updated push gateway the app icon badge (open approvals and questions) rides on every notification, and an approval or question answered at the desktop lowers it again with a silent badge-only push.
 - Phone API: a phone can watch a chat that runs elsewhere (started at the desktop, by another app or by a schedule) and see its turn stream live, read-only (`watch` / `unwatch`, `capabilities.watch`); one watched chat per phone, released when the app disconnects.
+- Phone API: when a password or secret prompt is open on the computer, the phone learns that a chat needs input there (`maskedPrompt: true` on the session, event `maskedPrompts`, `capabilities.maskedPrompt`), without any of the prompt's content.
 
 ## [1.2.0] - 2026-11-10
 
