@@ -266,3 +266,40 @@ valid for 5 minutes); `list` and `revoke <deviceId>` manage paired phones. The p
 publish the relay to it through a private HTTPS reverse proxy (for example on your tailnet), never on the public
 internet. Set `DECK_MOBILE_BRIDGE_STREAM` (and `DECK_MOBILE_BRIDGE_PYTHON`) for live Hermes sessions on the phone, and
 the `HERMES_PUSH_*` variables for push. Building the app: the [iOS app repository](https://github.com/Hermes-Deck/ios-app).
+
+### Phone notifications
+
+The relay decides which events reach a phone; the push gateway only ever sees opaque ids. Per paired phone:
+
+- **One banner per turn.** Assistant messages of a running turn update one pending banner; the turn's end (done or
+  error) sends it with the last message. Phones that never sent a kinds list get `done`, `error`, `approval` and
+  `question`, not `reply`. A phone that sends a policy and turns `reply` on also gets a still-running turn after
+  20 seconds without a further message (then at most one more banner when the turn ends).
+- **Scope.** By default (`mine`) finished turns and errors reach the phone only for chats this phone sent to, steered,
+  or opened within the last 12 hours, or for agents it follows; `all` lifts that. Muted agents never push replies or
+  ends. Sub-agent sessions never push their own replies or ends. Approvals and questions come from every agent.
+  Turns started at a desktop Deck do not count as "mine": the desktop talks to Hermes directly, not through the relay.
+- **Burst breaker.** After 5 banners sent since the phone was last seen, nothing is sent for 10 minutes; what arrives
+  meanwhile is counted, not queued. If the phone is still unseen when the quiet time ends, one digest
+  ("9 updates in 3 chats, 1 needs you") goes out and the next quiet time doubles (20, 40, at most 60 minutes). Opening
+  the app, opening a notification, any action from the phone, or a foreground heartbeat resets it and drops what it held.
+  The phone sets the numbers (`burst` 1..20, `quietMinutes` 1..120) and may let approvals/questions bypass it.
+- **At the desk.** While a desktop Deck had input recently (`DECK_PUSH_DESK_IDLE`), nothing is sent to phones.
+- **Restarts.** The breaker, the policy, the 12-hour chat list and open turns are kept in the mobile state file next to
+  the notification records (bounded per phone).
+- **Decision log.** Every decision prints one JSON line (`{"t":"push","decision":...,"kind":...,"profile":...,
+  "sid":<8 characters>}`; decisions `admitted`, `merged`, `held`, `sent`, `digest`, `scoped-out`, `muted`, `subagent`,
+  `kind-off`, `at-desk`, `seen`, `test`) to the relay's log; never message text or titles.
+
+Wire additions (announced as `capabilities.pushPolicy` and `capabilities.notificationRequests`):
+
+| Route | What |
+|---|---|
+| `PUT /mobile/push` | optional `policy {burst, quietMinutes, bypass, scope, agents, muted}`; kept on the relay, never sent to the gateway; the answer echoes the effective policy |
+| `POST /mobile/seen` | `{reason}` -> `{ok, held}`; also the socket op `seen` |
+| `POST /mobile/push/test` | one test banner to this phone, at most one per 30 seconds |
+| `GET /mobile/notifications/<id>` | adds `thread` (per-chat id), `badge` (open approvals + questions), `request` for approvals/questions; a digest is `{kind: "digest", counts}` |
+
+The relay reads the gateway's `GET /health` `features` at start, hourly and at each registration, and sends the
+per-chat `collapse` id and the `digest` kind only to a gateway that lists them; an older gateway gets the digest as a
+`done` banner and no collapse id, so a newer banner of a chat does not replace the older one there.

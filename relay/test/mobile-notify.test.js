@@ -464,3 +464,42 @@ test('decision log: one JSON line per decision with kind, profile and 8 sid char
   new NotifyCenter({ now: clock }).log({ id: 'abcdefghijkl' }, 'held', { kind: 'done', profile: 'default', sid: 'session-xyz' });
   assert.deepEqual(lines.map(line => JSON.parse(line)), [{ t: 'push', decision: 'held', device: 'abcdefgh', kind: 'done', profile: 'default', sid: 'session-' }]);
 });
+
+test('persistence: a quiet window, its held counts, the stake and the open turn survive a relay restart', async t => {
+  const clock = fakeClock(), nodes = {};
+  const first = fixture(t, { now: clock, policy: { scope: 'all', burst: 2 }, bridge: { nodeFor: sid => nodes[sid] || null } });
+  await finishTurns(clock, first.mobile, first.device, nodes, 4);
+  assert.equal(first.sent.length, 2);
+  first.mobile.notices.stake(first.device, 'default', 'mine-1');
+  nodes.open1 = { title: 'Open', turnId: 'o1' };
+  first.mobile.notify(first.device, 'native', reply('open1', 'Half way.'));
+  first.mobile.persist(first.device);
+  await first.mobile.stop();
+  const sent = [];
+  const again = new MobileRelay({ tokensFile: first.file, bridgeConfig: { mode: 'off' }, clock, pushLog: () => {},
+    push: { configured: true, notify: async (target, event) => { sent.push(event); }, removeDevice: async () => {} } });
+  t.after(() => again.stop());
+  again.sweep(); // loads devices whose quiet window outlived the restart
+  assert.ok(again.devices.has(first.device.id));
+  const device = again.devices.get(first.device.id);
+  assert.equal(device.governor.policy.burst, 2);
+  assert.equal(device.governor.state.held.updates, 2);
+  assert.equal(again.notices.mine(device, 'default', ['mine-1']), true);
+  assert.equal(device.turns.get(JSON.stringify(['default', 'open1'])).phase, 'open');
+  clock.advance(10 * 60000); again.sweep(); await flush(again);
+  assert.equal(sent.length, 1, 'the digest of the window that started before the restart');
+  assert.deepEqual(device.notifications.get(sent[0].id).counts, { updates: 2, chats: 2, needsYou: 0 });
+  // The open turn's end after the restart closes the banner it opened before.
+  device.observePush = true;
+  device.bridge = { stop: async () => {}, nodeFor: sid => ({ open1: { title: 'Open', turnId: 'o1' } })[sid] || null };
+  again.seen(device, 'foreground');
+  again.notify(device, 'native', { type: 'turn.complete', sid: 'open1', profile: 'default', payload: { turn_id: 'o1' } });
+  await flush(again);
+  assert.equal(sent.length, 2);
+  assert.equal(device.notifications.get(sent[1].id).body, 'Half way.');
+  // Bounded: at most 200 stake entries and 200 turns are kept per device.
+  for (let i = 0; i < 300; i++) again.notices.stake(device, 'default', `s${i}`);
+  assert.equal(device.stake.size, 200);
+  const saved = JSON.parse(fs.readFileSync(`${first.file}.state`, 'utf8')).devices[device.id];
+  assert.ok(Array.isArray(saved.stake) && Array.isArray(saved.turns) && saved.pushPolicy.burst === 2);
+});

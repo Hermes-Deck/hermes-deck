@@ -6,6 +6,9 @@ The desktop app, relay and Hermes plugin share one version number.
 
 ## [Unreleased]
 
+- Phone notifications are calm: one banner per finished turn instead of one per assistant message (replies only update it); by default only chats you sent to, steered or opened on that phone in the last 12 hours (or agents you follow) notify, sub-agent sessions never do, and approvals and questions still come from every agent. After 5 banners you have not looked at, the phone gets nothing for 10 minutes, then one summary ("9 updates in 3 chats, 1 needs you"), with the quiet time doubling up to an hour while the phone stays unopened. Opening the app, a notification or any action from the phone resets it. Needs a relay update; phones on the current app get these defaults without changes.
+- Relay for the new iOS app: the push registration takes a notification policy (burst, quiet minutes, scope, followed and muted agents, approvals that bypass the quiet time), `POST /mobile/seen`, a test push, and notification records with a per-chat thread id, the badge count (open approvals and questions) and the request to answer from the banner. A banner replaces the previous one of the same chat once the push gateway offers it.
+
 ## [1.2.0] - 2026-11-10
 
 - Every saved host is live at once: each keeps its relay and direct connection open while the Deck runs, so replies, finished turns, approvals and questions from any host raise their notification and open that host's chat when clicked. Every host you open keeps its page warm in the background: switching back is instant with scroll, open chat and draft intact, nothing reloads.
