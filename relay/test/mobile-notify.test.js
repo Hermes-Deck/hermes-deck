@@ -408,10 +408,10 @@ test('capabilities: pushPolicy follows the gateway features; an old client witho
   const { mobile, device, sent, paired } = fixture(t, { now: clock, bridge: { nodeFor: sid => nodes[sid] || null, send: async () => ({ ok: true }) },
     push: { ...strictGateway(registrations), offers: feature => features.includes(feature), refreshFeatures: async () => {} } });
   mobile.bridge = () => device.bridge;
-  assert.deepEqual(mobile.capabilities().pushPolicy, { v: 1, collapse: false, digest: false, scope: true, seen: true, test: true, testKind: false });
+  assert.deepEqual(mobile.capabilities().pushPolicy, { v: 1, collapse: false, digest: false, scope: true, seen: true, test: true, testKind: false, badge: false });
   assert.equal(mobile.capabilities().notificationRequests, true);
   features = ['collapse', 'digest'];
-  assert.deepEqual(mobile.capabilities().pushPolicy, { v: 1, collapse: true, digest: true, scope: true, seen: true, test: true, testKind: false });
+  assert.deepEqual(mobile.capabilities().pushPolicy, { v: 1, collapse: true, digest: true, scope: true, seen: true, test: true, testKind: false, badge: false });
   features = [];
   // An old app registers exactly as before (all five kinds, no policy) and talks only over the socket ops it knows.
   device.observePush = false;

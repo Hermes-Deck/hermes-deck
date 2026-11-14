@@ -47,16 +47,18 @@ class MobilePushClient {
   offers(feature) { return this.features.has(feature); }
   setDevice(deviceId,registration) { return this.request('/v1/devices/'+encodeURIComponent(deviceId),'PUT',registration); }
   removeDevice(deviceId) { return this.request('/v1/devices/'+encodeURIComponent(deviceId),'DELETE'); }
-  async notify(deviceId,{id,kind,collapse}) {
+  async notify(deviceId,{id,kind,collapse,badge}) {
+    if (kind==='badge' && !this.offers('badge')) return {skipped:true}; // a badge-only push needs a gateway that knows it
     // Optional kinds fall back for a gateway that does not list them: a digest travels as `done`; a test as `done` (the
     // relay only asks for `test` when offered; this is the guard for a gateway replaced in between).
     const optional=kind==='digest' || kind==='test';
     const body={target:deviceId,id,kind:optional && !this.offers(kind) ? 'done' : kind};
     if (typeof collapse==='string' && COLLAPSE.test(collapse) && this.offers('collapse')) body.collapse=collapse;
+    if (Number.isSafeInteger(badge) && badge>=0 && this.offers('badge')) body.badge=Math.min(badge,999);
     try { return await this.request('/v1/events','POST',body); }
     catch (error) {
       // A gateway replaced by an older one refuses the optional key or kind: read its features again soon.
-      if (error.status===400 && (body.collapse || body.kind==='digest' || body.kind==='test')) this.featuresAt=0;
+      if (error.status===400 && (body.collapse || body.badge!==undefined || ['digest','test','badge'].includes(body.kind))) this.featuresAt=0;
       throw error;
     }
   }

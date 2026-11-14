@@ -31,6 +31,9 @@ const collapseId = (deviceId, profile, sid) => hash(`${deviceId}:${profile}:${si
 const digestCollapse = deviceId => hash(`${deviceId}:digest`);
 /** The test banner has its own thread so it never replaces a chat's banner. */
 const testCollapse = deviceId => hash(`${deviceId}:test`);
+/** Badge corrections of a device replace each other at APNs and never a chat banner (relay-extras X2). */
+const badgeCollapse = deviceId => hash(`${deviceId}:badge`);
+const BADGE_MAX = 999;
 const short = value => typeof value === 'string' ? value.slice(0, 8) : null;
 const singleLine = (text, max) => typeof text === 'string' && !!text.trim() && !/[\r\n]/.test(text.trim()) && [...text.trim()].length <= max;
 
@@ -68,12 +71,17 @@ function requestRecord(source) {
  * The event body towards the push gateway (PROGRAMME "Push gateway contract for D9"): `collapse` only when the gateway
  * offers it, kind `digest` only when offered (else the digest travels as `done`). Old gateways reject unknown keys.
  */
-function gatewayEvent(push, id, item) {
+function gatewayEvent(push, id, item, badge = null) {
   const offers = feature => typeof push?.offers === 'function' && push.offers(feature) === true;
   // The test banner travels as kind `test` (delivered whatever kinds the phone picked) when the gateway offers it, else
   // as the registration kind stored on the record when it was made (relay-extras X1).
   const kind = item.kind === 'digest' ? (offers('digest') ? 'digest' : 'done') : item.test && offers('test') ? 'test' : item.kind;
-  return { id, kind, ...(offers('collapse') && /^[a-f0-9]{32}$/.test(item.thread || '') ? { collapse: item.thread } : {}) };
+  const out = { id, kind, ...(offers('collapse') && /^[a-f0-9]{32}$/.test(item.thread || '') ? { collapse: item.thread } : {}) };
+  // The badge (open approvals + questions) rides on every push to a gateway that offers it, so the app icon is right
+  // even when the notification extension cannot reach the relay; a `badge` event is the silent correction (X2).
+  const count = item.kind === 'badge' ? item.badge : badge;
+  if (offers('badge') && Number.isSafeInteger(count) && count >= 0) out.badge = Math.min(count, BADGE_MAX);
+  return out;
 }
 
 class NotifyCenter {
@@ -248,7 +256,7 @@ class NotifyCenter {
    * returned so the caller stores it.
    */
   release(device, item) {
-    if (item.kind === 'digest' || item.test) return { action: 'bypass', digest: null };
+    if (item.kind === 'digest' || item.kind === 'badge' || item.test) return { action: 'bypass', digest: null };
     const verdict = device.governor.release({ kind: item.kind, chat: item.thread || collapseId(device.id, item.profile, item.sid) });
     if (verdict.action === 'hold') this.log(device, 'held', item);
     return verdict;
@@ -263,7 +271,7 @@ class NotifyCenter {
    */
   capabilities(push) {
     const offers = feature => typeof push?.offers === 'function' && push.offers(feature) === true;
-    return { pushPolicy: { v: 1, collapse: offers('collapse'), digest: offers('digest'), scope: true, seen: true, test: true, testKind: offers('test') }, notificationRequests: true };
+    return { pushPolicy: { v: 1, collapse: offers('collapse'), digest: offers('digest'), scope: true, seen: true, test: true, testKind: offers('test'), badge: offers('badge') }, notificationRequests: true };
   }
   /** Fields stored on a new record: the thread id and, for approvals and questions, the request (G3, G17). */
   recordFields(device, item) {
@@ -278,6 +286,7 @@ class NotifyCenter {
    * no text. Records stored by older relays get their thread computed now.
    */
   wire(device, item, badge) {
+    if (item.kind === 'badge') return { kind: 'badge', badge, title: '', body: '', agent: '', thread: item.thread || badgeCollapse(device.id) };
     if (item.kind === 'digest') return { kind: 'digest', counts: item.counts || { updates: 0, chats: 0, needsYou: 0 }, title: '', body: '', agent: '', thread: item.thread || digestCollapse(device.id), badge };
     if (item.test) return { kind: item.kind, test: true, title: item.title || '', body: item.body || '', agent: '', thread: item.thread || testCollapse(device.id), badge };
     const out = { thread: item.thread || collapseId(device.id, item.profile, item.sid), badge };
@@ -286,6 +295,10 @@ class NotifyCenter {
   }
   digestRecord(device, digest, timestamp) {
     return { kind: 'digest', counts: digest.counts, title: '', body: '', agent: '', thread: digestCollapse(device.id), expires: timestamp + 7 * 86400000, delivery: 'pending' };
+  }
+  /** A silent badge correction (no banner, no sound): the count only, kept for an hour (X2). */
+  badgeRecord(device, count, timestamp) {
+    return { kind: 'badge', badge: Math.min(count, BADGE_MAX), title: '', body: '', agent: '', thread: badgeCollapse(device.id), expires: timestamp + 3600000, delivery: 'pending' };
   }
   testRecord(device, timestamp, kind = 'done') {
     return { kind, test: true, title: 'Hermes Deck', body: 'Test notification', agent: '', thread: testCollapse(device.id), expires: timestamp + 7 * 86400000, delivery: 'pending' };
@@ -305,4 +318,4 @@ class NotifyCenter {
   }
 }
 
-module.exports = { NotifyCenter, gatewayEvent, requestRecord, collapseId, digestCollapse, isSubagentNode, STAKE_MS, REPLY_SETTLE_MS, TURN_ABANDON_MS, TEST_INTERVAL_MS, STAKE_OPS };
+module.exports = { NotifyCenter, gatewayEvent, requestRecord, collapseId, digestCollapse, badgeCollapse, isSubagentNode, STAKE_MS, REPLY_SETTLE_MS, TURN_ABANDON_MS, TEST_INTERVAL_MS, STAKE_OPS };

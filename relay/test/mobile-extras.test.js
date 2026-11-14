@@ -104,3 +104,108 @@ test('X1 push client: `test` only to a gateway that lists it, else `done`; a 400
   await client.notify('d1', { id: 'e_2', kind: 'test' });
   assert.equal(bodies.at(-1).kind, 'done');
 });
+
+// ---------------------------------------------------------------------------------------------------------- X2 badge
+test('X2 badge: every push carries open approvals + questions to a gateway that offers `badge`; none to an older gateway', async t => {
+  const clock = fakeClock();
+  const open = [
+    { id: 'ap-1', sid: 's1', profile: 'default', kind: 'approval', at: clock(), command: 'make', description: 'Build', choices: ['once', 'deny'] },
+    { id: 'q-1', sid: 's2', profile: 'default', kind: 'question', at: clock(), questions: [{ qid: 'a', question: 'Which?', choices: ['x'] }] },
+    { id: 'sec-1', sid: 's1', profile: 'default', kind: 'secret', method: 'sudo' },
+  ];
+  const { mobile, device, sent } = fixture(t, { now: clock, features: ['badge'], bridge: { listRequests: () => open } });
+  assert.equal(mobile.capabilities().pushPolicy.badge, true);
+  mobile.notify(device, 'requests', open.filter(request => request.kind !== 'secret'));
+  await flush(mobile);
+  assert.deepEqual(sent.map(event => [event.kind, event.badge]), [['approval', 2], ['question', 2]], 'the masked prompt is never counted');
+  assert.equal(device.badgeSent, 2);
+  // An older gateway (no `badge` feature): exactly target/id/kind as before.
+  const old = fixture(t, { now: clock, bridge: { listRequests: () => open } });
+  old.mobile.notify(old.device, 'requests', open.slice(0, 1));
+  await flush(old.mobile);
+  assert.deepEqual(Object.keys(old.sent[0]).sort(), ['id', 'kind', 'target']);
+  assert.equal(old.mobile.capabilities().pushPolicy.badge, false);
+  // A bridge that is not open does not know the count: no badge rather than a wrong 0.
+  device.bridge.status = { status: 'connecting' };
+  mobile.storeDigest(device, { counts: { updates: 1, chats: 1, needsYou: 0 } });
+  await flush(mobile);
+  assert.equal(sent.at(-1).kind, 'done');
+  assert.equal('badge' in sent.at(-1), false);
+});
+
+test('X2 badge: answered elsewhere -> one silent badge push with the lower count, settled, rate-limited, never upwards', async t => {
+  const clock = fakeClock();
+  const open = [
+    { id: 'ap-1', sid: 's1', profile: 'default', kind: 'approval', at: clock(), command: 'make', description: 'Build', choices: ['once', 'deny'] },
+    { id: 'ap-2', sid: 's2', profile: 'default', kind: 'approval', at: clock(), command: 'test', description: 'Test', choices: ['once', 'deny'] },
+  ];
+  const { mobile, device, sent, paired } = fixture(t, { now: clock, features: ['badge', 'collapse'], policy: { scope: 'all', burst: 1 }, bridge: { listRequests: () => open } });
+  const listeners = {};
+  device.bridge.on = (event, fn) => { (listeners[event] ||= []).push(fn); };
+  mobile.notify(device, 'requests', [...open]);
+  await flush(mobile);
+  assert.deepEqual(sent.map(event => event.badge), [2], 'burst 1: the second approval is held by the breaker');
+  // Both answered at the desktop: the list empties; nothing until the 2 s settle.
+  open.length = 0;
+  mobile.badgeCheck(device);
+  mobile.govern(device); await flush(mobile);
+  assert.equal(sent.length, 1);
+  clock.advance(2000); mobile.govern(device); await flush(mobile);
+  assert.equal(sent.length, 2);
+  assert.deepEqual([sent[1].kind, sent[1].badge], ['badge', 0], 'past the breaker: a badge push shows nothing');
+  assert.match(sent[1].collapse, /^[a-f0-9]{32}$/);
+  assert.notEqual(sent[1].collapse, sent[0].collapse, 'its own collapse id: it never replaces a chat banner');
+  const url = await serve(t, mobile);
+  const record = await (await fetch(`${url}/mobile/notifications/${sent[1].id}`, { headers: bearer(paired.token) })).json();
+  assert.deepEqual([record.kind, record.badge, record.body, record.sid], ['badge', 0, '', undefined]);
+  // A new request raises the count: no badge push upwards (its own banner carries it).
+  open.push({ id: 'ap-3', sid: 's3', profile: 'default', kind: 'approval', at: clock(), command: 'ls', description: 'List', choices: ['once', 'deny'] });
+  mobile.badgeCheck(device); clock.advance(2000); mobile.govern(device); await flush(mobile);
+  assert.equal(sent.filter(event => event.kind === 'badge').length, 1);
+  // Rate limit: two drops within 10 s -> the second waits for the interval, and only the newest count is sent.
+  device.badgeSent = 3; open.length = 1; clock.advance(10000);
+  mobile.badgeCheck(device); clock.advance(2000); mobile.govern(device); await flush(mobile);
+  assert.equal(sent.filter(event => event.kind === 'badge').length, 2, 'more than 10 s since the first');
+  open.length = 0;
+  mobile.badgeCheck(device); clock.advance(2000); mobile.govern(device); await flush(mobile);
+  assert.equal(sent.filter(event => event.kind === 'badge').length, 2, 'within 10 s: waits');
+  clock.advance(8000); mobile.govern(device); await flush(mobile);
+  assert.deepEqual(sent.filter(event => event.kind === 'badge').map(event => event.badge), [0, 1, 0]);
+});
+
+test('X2 badge: no correction without a badge-capable gateway or before any push; another device is not touched', async t => {
+  const clock = fakeClock();
+  const open = [{ id: 'ap-1', sid: 's1', profile: 'default', kind: 'approval', at: clock(), command: 'make', description: 'Build', choices: ['once', 'deny'] }];
+  const old = fixture(t, { now: clock, bridge: { listRequests: () => open } });
+  old.mobile.notify(old.device, 'requests', [...open]);
+  await flush(old.mobile);
+  open.length = 0;
+  old.mobile.badgeCheck(old.device); clock.advance(5000); old.mobile.govern(old.device); await flush(old.mobile);
+  assert.deepEqual(old.sent.map(event => event.kind), ['approval'], 'an older gateway gets no badge event');
+  const fresh = fixture(t, { now: clock, features: ['badge'], bridge: { listRequests: () => [] } });
+  fresh.mobile.badgeCheck(fresh.device); clock.advance(5000); fresh.mobile.govern(fresh.device); await flush(fresh.mobile);
+  assert.deepEqual(fresh.sent, [], 'nothing pushed yet: nothing to correct');
+  const second = fresh.mobile.device(fresh.mobile.pair({ code: createPair(fresh.file), name: 'tablet' }).deviceId);
+  assert.equal(second.badgeSent, undefined);
+});
+
+test('X2 push client: `badge` key and kind only to a gateway that lists `badge`; an older one gets neither', async () => {
+  const { MobilePushClient } = require('../src/mobile-push');
+  const bodies = [];
+  let features = ['badge'];
+  const fetchImpl = async (url, options) => {
+    if (new URL(url).pathname === '/health') return { ok: true, status: 200, json: async () => ({ ok: true, features }) };
+    bodies.push(JSON.parse(options.body));
+    return { ok: true, status: 202, json: async () => ({ accepted: true }) };
+  };
+  const client = new MobilePushClient({ url: 'https://push.example', credential: 'a'.repeat(43), fetch: fetchImpl });
+  await client.refreshFeatures(true);
+  await client.notify('d1', { id: 'e_1', kind: 'approval', badge: 3 });
+  await client.notify('d1', { id: 'e_2', kind: 'badge', badge: 1200 });
+  assert.deepEqual(bodies, [{ target: 'd1', id: 'e_1', kind: 'approval', badge: 3 }, { target: 'd1', id: 'e_2', kind: 'badge', badge: 999 }]);
+  features = [];
+  await client.refreshFeatures(true);
+  await client.notify('d1', { id: 'e_3', kind: 'approval', badge: 3 });
+  assert.deepEqual((await client.notify('d1', { id: 'e_4', kind: 'badge', badge: 0 })), { skipped: true });
+  assert.deepEqual(bodies.slice(2), [{ target: 'd1', id: 'e_3', kind: 'approval' }]);
+});

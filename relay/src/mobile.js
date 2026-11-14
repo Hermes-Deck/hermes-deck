@@ -26,6 +26,8 @@ const MUTATION_ID = /^m\.(\d{13})\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{
 const mutationTime = id => { const match = typeof id === 'string' && MUTATION_ID.exec(id); return match ? Number(match[1]) : null; };
 const TITLE_MAX = 80, BODY_MAX = 300, BODY_LINES = 4, SOURCE_MAX = 4000, LAST_REPLY_LIMIT = 200;
 // One banner per turn: reply and done of the same turn are merged inside this window (and by turn id when both are known).
+// Badge corrections (relay-extras X2): settle a burst of answers, then at most one silent badge push per interval.
+const BADGE_SETTLE_MS = 2000, BADGE_INTERVAL_MS = 10000;
 const SETTLE_MS = 3500, NAMES_TTL = 10 * 60 * 1000, LOOKUP_MS = 3000, GROUP_LIMIT = 200;
 const LANGUAGE = /^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8}){0,2}$/;
 /** Dictation language hint: a BCP-47-ish tag reduced to the lowercase primary subtag Whisper-style engines take ('tr-TR' -> 'tr'). */
@@ -308,6 +310,7 @@ class MobileRelay {
           if (event === 'requests') data = phoneRequests(data);
           this.emit(device, { t: 'bridge', event: label, data });
           try { this.notify(device, label, data); } catch { this.emit(device, { t: 'bridge', event: 'status', data: { status: 'error', error: 'Notification metadata could not be saved' } }); }
+          if (event === 'requests') this.badgeCheck(device);
         });
       }
       bridge.start();
@@ -448,6 +451,39 @@ class MobileRelay {
     let digest = null;
     try { digest = this.notices.tick(device); } catch {}
     if (digest) { try { this.storeDigest(device, digest); } catch {} }
+    try { this.badgeTick(device); } catch {}
+  }
+  /** Open approvals + questions of the device's bridge right now, or null while the bridge is not open (unknown). */
+  badgeCount(device) {
+    if (device.bridge?.status?.status !== 'open') return null;
+    return phoneRequests(this.openRequests(device)).length;
+  }
+  /** The request list changed: look at the badge once things settle (X2). */
+  badgeCheck(device) {
+    if (!device.badgeDueAt) device.badgeDueAt = this.now() + BADGE_SETTLE_MS;
+  }
+  /**
+   * Silent badge correction (X2): when the open approvals + questions dropped below the badge the phone was last pushed
+   * (answered at the desktop, cancelled, timed out), one badge-only push sets the icon again. Only to a gateway that
+   * offers `badge`; past the breaker (it shows nothing); at most one per BADGE_INTERVAL_MS, the newest count wins.
+   * The count is never raised this way: a new approval or question brings its own banner and badge.
+   */
+  badgeTick(device) {
+    if (!device.badgeDueAt || this.now() < device.badgeDueAt) return;
+    device.badgeDueAt = 0;
+    if (this.push?.offers?.('badge') !== true || !device.observePush || typeof device.badgeSent !== 'number') return;
+    const count = this.badgeCount(device);
+    if (count === null || count >= device.badgeSent) return;
+    const wait = (device.lastBadgeAt || 0) + BADGE_INTERVAL_MS - this.now();
+    if (wait > 0) { device.badgeDueAt = this.now() + wait; return; }
+    if (device.notifications.size >= NOTIFICATION_CAPACITY) return;
+    for (const item of device.notifications.values()) if (item.kind === 'badge' && item.delivery === 'pending') item.delivery = 'superseded';
+    const now = this.now();
+    device.notifications.set(`e_${now}_${opaque()}`, this.notices.badgeRecord(device, count, now));
+    device.badgeSent = count; device.lastBadgeAt = now;
+    this.notices.log(device, 'badge', { kind: 'badge' }, { badge: count });
+    this.persist(device);
+    this.flushPush().catch(() => {});
   }
   /** A turn closed into its open banner without any text: read the session's last assistant message before pushing. */
   enrichClosed(device, item) {
@@ -818,13 +854,17 @@ class MobileRelay {
       const verdict = this.notices.release(owner, item);
       if (verdict.digest) this.storeDigest(owner, verdict.digest);
       if (verdict.action === 'hold') delivery = 'held';
+      else if (item.kind === 'badge' && this.push.offers?.('badge') !== true) delivery = 'dropped'; // the gateway changed meanwhile
       else {
-        try { await this.push.notify(deviceId, gatewayEvent(this.push, id, item)); }
+        // The badge rides on the push (X2): open approvals + questions now, or the correction's own count.
+        const badge = item.kind === 'badge' ? item.badge : this.badgeCount(owner);
+        try { await this.push.notify(deviceId, gatewayEvent(this.push, id, item, badge)); }
         catch (error) {
           if (verdict.action === 'send') owner.governor.refund(); // not delivered: a retry must not count twice
           if (error.status === 410 && error.code === 'EVENT_EXPIRED') delivery = 'expired'; else throw error;
         }
-        if (delivery === 'accepted') this.notices.log(owner, item.kind === 'digest' ? 'digest-sent' : 'sent', item, verdict.action === 'bypass' && item.kind !== 'digest' && !item.test ? { bypass: true } : undefined);
+        if (delivery === 'accepted' && Number.isSafeInteger(badge) && this.push.offers?.('badge') === true) owner.badgeSent = badge;
+        if (delivery === 'accepted') this.notices.log(owner, item.kind === 'digest' ? 'digest-sent' : item.kind === 'badge' ? 'badge-sent' : 'sent', item, verdict.action === 'bypass' && !['digest', 'badge'].includes(item.kind) && !item.test ? { bypass: true } : undefined);
       }
     }
     if (this.meta.revocations[deviceId] || !tokens.load(this.tokensFile).devices[deviceId]) return;
@@ -1147,7 +1187,7 @@ class MobileRelay {
       if (!item || item.expires < Date.now()) throw fail('not_found', 'Notification expired', 404);
       // Wire additions (mobile-notify.js wire()): thread, badge, request, digest counts, test. Older builds ignore them.
       const extra = this.notices.wire(device, item, phoneRequests(this.openRequests(device)).length);
-      if (item.kind === 'digest' || item.test) return json(res, 200, extra);
+      if (item.kind === 'digest' || item.kind === 'badge' || item.test) return json(res, 200, extra);
       // Extra fields only: older app builds read sid/profile/kind and ignore the rest.
       await this.refreshNames(device.bridge).catch(() => {});
       // Stored labels from before the roster was known (or older relay builds: the raw profile id) are resolved now.

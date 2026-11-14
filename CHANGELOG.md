@@ -28,6 +28,7 @@ The desktop app, relay and Hermes plugin share one version number.
 - Hermes plugin: provider quotas are always published in the default agent's state file when the gateway serves it, whichever agent profile registered first.
 - Phone API: the agent picture (`avatar`) can be read over `POST /mobile/op`, so a notification can show which agent it is from.
 - Phone notifications: the test notification now arrives also when "Finished" notifications are turned off (it uses a kind the phone has on, or the push gateway's own `test` kind), and its answer says it is exempt from the burst breaker.
+- Phone notifications: with an updated push gateway the app icon badge (open approvals and questions) rides on every notification, and an approval or question answered at the desktop lowers it again with a silent badge-only push.
 
 ## [1.2.0] - 2026-11-10
 
