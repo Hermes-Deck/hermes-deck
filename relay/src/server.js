@@ -39,7 +39,7 @@ function tokenOk(req, token, queryToken = false) {
  *                              (deck.file_grant), streamed from disk with Range; the hello carries `downloads: {v, host, maxBytes}`
  *   POST /host/update | /host/restart (Bearer header + desktop device token + live desktop; host-update.js)
  *   GET /session/<sid>/plan    (Bearer token) {sid, plan, stored}: the latest plan, live or rebuilt from state.db (plan.js)
- *   GET /session/<sid>/messages | /session/<sid>/tools | /session/<sid>/call/<id> | /message/<id>/full   (Bearer token; history.js)
+ *   GET /session/<sid>/messages | /session/<sid>/tools | /session/<sid>/call/<id> | /message/<id>/full   (Bearer token; history.js; optional ?profile=<name> reads only that profile)
  *   WS  /events                (Bearer token; ?token= only with queryToken)  hello -> snapshot -> {t:"evs"|"fleet"|"agents"} pushes
  *
  * `hooks` (optional; index.js deckHooks, Workspace tab): onConnect(ws), onMessage(ws, data, isBinary) ->

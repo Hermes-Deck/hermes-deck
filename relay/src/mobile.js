@@ -208,6 +208,7 @@ class MobileRelay {
       replay: true, // a repeated mutation id answers its first outcome for 10 min (last 256 per device), `pending` while it runs
       httpOps: { v: 1, ops: [...HTTP_OPS] }, // POST /mobile/op (mobile-op.js)
       start: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // op start {profile, text, uploads?}: create + send in one
+      historyProfile: !!this.available.history, // GET /session/<sid>/messages|tools|call/<id>?profile=<name> reads only that profile (G8)
       limits: { ...(staged ? this.uploads.limits() : LIMITS), downloadBytes: direct ? this.staging.direct : LEGACY_DOWNLOAD }, uploads: { v: 1, staged }, downloads: { v: 1, direct } };
   }
   stagedReady() { return !!this.bridgeConfig && this.bridgeConfig.mode !== 'off' && this.staging.ok === true; }
