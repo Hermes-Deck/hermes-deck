@@ -400,3 +400,31 @@ test('test push: one banner to the calling device, past a quiet window, at most 
   assert.equal((await post(other.token)).status, 409, 'a device without push gets no test banner');
   assert.equal((await post('wrong')).status, 401);
 });
+
+test('capabilities: pushPolicy follows the gateway features; an old client without any new field gets per-turn, scope mine, 5/10', async t => {
+  let features = [];
+  const registrations = [];
+  const clock = fakeClock(), nodes = {};
+  const { mobile, device, sent, paired } = fixture(t, { now: clock, bridge: { nodeFor: sid => nodes[sid] || null, send: async () => ({ ok: true }) },
+    push: { ...strictGateway(registrations), offers: feature => features.includes(feature), refreshFeatures: async () => {} } });
+  mobile.bridge = () => device.bridge;
+  assert.deepEqual(mobile.capabilities().pushPolicy, { v: 1, collapse: false, digest: false, scope: true, seen: true, test: true });
+  assert.equal(mobile.capabilities().notificationRequests, true);
+  features = ['collapse', 'digest'];
+  assert.deepEqual(mobile.capabilities().pushPolicy, { v: 1, collapse: true, digest: true, scope: true, seen: true, test: true });
+  features = [];
+  // An old app registers exactly as before (all five kinds, no policy) and talks only over the socket ops it knows.
+  device.observePush = false;
+  const url = await serve(t, mobile);
+  const response = await fetch(`${url}/mobile/push`, { method: 'PUT', headers: { authorization: `Bearer ${paired.token}` }, body: JSON.stringify({ enabled: true, environment: 'production', kinds: ['reply', 'done', 'approval', 'question', 'error'], token: 'b'.repeat(64) }) });
+  assert.equal(response.status, 200);
+  assert.equal(registrations.length, 1);
+  await finishTurns(clock, mobile, device, nodes, 3, 'auto');
+  assert.equal(sent.length, 0, 'scope mine: chats this phone never touched stay quiet');
+  for (let i = 0; i < 8; i++) await mobile.call(device, { id: `h${i}`, op: 'history', args: { sid: `own${i}`, profile: 'default' } }).catch(() => {});
+  await finishTurns(clock, mobile, device, nodes, 8, 'own');
+  assert.equal(sent.length, 5, 'breaker 5');
+  assert.ok(sent.every(event => event.kind === 'done' && !('collapse' in event)), 'one done per turn, no new keys towards an old gateway');
+  clock.advance(10 * 60000); mobile.govern(device); await flush(mobile);
+  assert.equal(sent.length, 6, 'then one digest after 10 minutes');
+});

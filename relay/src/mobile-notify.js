@@ -251,6 +251,15 @@ class NotifyCenter {
   /** Sweep: a quiet window that ended with held events yields one digest (the caller stores and pushes it). */
   tick(device) { return device.governor.tick(this.now()); }
   // --- wire ---------------------------------------------------------------------------------------------------------
+  /**
+   * Capability flags (N10): `pushPolicy` says the relay takes `policy` in the registration, answers `/mobile/seen` and
+   * the `seen` op, scopes pushes and has the test push; `collapse`/`digest` follow the gateway's features right now.
+   * `notificationRequests`: approval/question records carry `request`.
+   */
+  capabilities(push) {
+    const offers = feature => typeof push?.offers === 'function' && push.offers(feature) === true;
+    return { pushPolicy: { v: 1, collapse: offers('collapse'), digest: offers('digest'), scope: true, seen: true, test: true }, notificationRequests: true };
+  }
   /** Fields stored on a new record: the thread id and, for approvals and questions, the request (G3, G17). */
   recordFields(device, item) {
     const fields = { thread: collapseId(device.id, item.profile, item.sid) };
