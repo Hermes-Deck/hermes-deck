@@ -8,6 +8,8 @@ const { atomicWriteJson, readJson } = require('./util');
 const compat = require('./compat');
 const { UploadSpool, LEGACY, settleBody } = require('./uploads');
 const { DownloadTickets, LEGACY_MAX: LEGACY_DOWNLOAD } = require('./downloads');
+const { kindsOf } = require('./mobile-notify-policy');
+const { NotifyCenter } = require('./mobile-notify');
 // The old single-line limits (base64 through the plugin's stdio): what a host without staged uploads can take. With a
 // plugin that answers deck.attach_staged on this host, capabilities() reports the spool's limits instead (uploads.js).
 const LIMITS = LEGACY;
@@ -132,8 +134,11 @@ const OPS = {
   answerApproval: ['id', 'profile', 'choice'], answerQuestion: ['id', 'profile', 'answers'], transcribe: ['upload', 'mime', 'language'],
 };
 class MobileRelay {
-  constructor({ tokensFile, bridgeConfig, bridgeOptions = {}, capabilities = {}, push = null, settleMs = SETTLE_MS, uploads = null, downloads = null, atDesk = null }) {
+  constructor({ tokensFile, bridgeConfig, bridgeOptions = {}, capabilities = {}, push = null, settleMs = SETTLE_MS, uploads = null, downloads = null, atDesk = null, clock = null, pushLog = null }) {
     Object.assign(this, { tokensFile, bridgeConfig, bridgeOptions, push, settleMs });
+    // Push decisions (mobile-notify.js): one banner per turn, scope, breaker, digest. `clock` is injectable for tests.
+    this.now = typeof clock === 'function' ? clock : Date.now;
+    this.notices = new NotifyCenter({ now: () => this.now(), log: pushLog });
     // () => boolean: the user is working at a Deck computer right now (presence.atDesk). While true, phone pushes are
     // not sent: replies and finished turns are dropped, open approvals/questions are offered again once the desk goes quiet.
     this.atDesk = typeof atDesk === 'function' ? atDesk : () => false;
@@ -266,12 +271,13 @@ class MobileRelay {
       if (this.devices.size >= 64) throw fail('limit', 'Too many active devices', 429);
       device = { id, hash: tokens.load(this.tokensFile).devices[id]?.hash, sockets: new Set(), uploads: new Map(), inflightBytes: 0, files: new Map(),
         notifications: new Map(Object.entries(this.meta.devices[id]?.notifications || {})), ids: new Set(this.meta.devices[id]?.ids || []), receiptFloor: this.meta.devices[id]?.receiptFloor || Date.now() - MUTATION_AGE, registrationBusy: false, observePush: this.meta.devices[id]?.observePush === true, pushAttempt: this.meta.devices[id]?.pushAttempt || null, pushRemoval: this.meta.devices[id]?.pushRemoval || null, notificationOverflow: this.meta.devices[id]?.notificationOverflow || 0, pushKinds: this.meta.devices[id]?.pushKinds || null, groups: new Map(), merged: new Set(), reads: new Set(), offers: null, bridge: null };
+      this.notices.attach(device, this.meta.devices[id] || {});
       this.devices.set(id, device);
     }
     return device;
   }
   persist(device) {
-    this.meta.devices[device.id] = { ids: [...device.ids], receiptFloor: device.receiptFloor, observePush: device.observePush, pushAttempt: device.pushAttempt, pushRemoval: device.pushRemoval, notificationOverflow: device.notificationOverflow, pushKinds: device.pushKinds, notifications: Object.fromEntries(device.notifications) };
+    this.meta.devices[device.id] = { ids: [...device.ids], receiptFloor: device.receiptFloor, observePush: device.observePush, pushAttempt: device.pushAttempt, pushRemoval: device.pushRemoval, notificationOverflow: device.notificationOverflow, pushKinds: device.pushKinds, notifications: Object.fromEntries(device.notifications), ...this.notices.save(device) };
     privateWrite(this.metaFile, this.meta);
   }
   bridge(device) {
@@ -376,6 +382,8 @@ class MobileRelay {
           continue;
         }
       }
+      // A kind the phone does not want is never stored or sent (its text is still remembered for the turn's done banner).
+      if (!this.kindEnabled(device, item.kind)) { admission.skipped++; continue; }
       if (device.notifications.size >= NOTIFICATION_CAPACITY) { admission.overflow++; continue; }
       let title = '', agent = '';
       try { ({ title, agent } = this.describe(device.bridge, item.sid, item.profile)); } catch {}
@@ -408,7 +416,9 @@ class MobileRelay {
     }
     this.wasAtDesk = at;
   }
-  kindEnabled(device, kind) { return !Array.isArray(device.pushKinds) || device.pushKinds.includes(kind); }
+  setPushPolicy(device, raw) { return this.notices.setPolicy(device, raw); }
+  // A device that never sent a kinds list gets done/approval/question/error (R14): no banner per assistant message.
+  kindEnabled(device, kind) { return kindsOf(device.pushKinds).includes(kind); }
   /** Keeps a turn's reply text under every id the session is known by (stored sid and runtime id), so a done event can find it. */
   rememberReply(device, profile, ids, text) {
     device.lastReply ||= new Map();

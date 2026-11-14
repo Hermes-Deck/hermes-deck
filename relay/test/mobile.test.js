@@ -322,7 +322,7 @@ test('persisted expiry floor prevents replay after server clock rollback and res
 test('standalone relay imports with mobile bridge off and configured missing library fails before sockets start', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'deck-mobile-standalone-')), src = path.join(dir, 'relay', 'src');
   fs.mkdirSync(src, { recursive: true });
-  for (const name of ['mobile.js', 'devtokens.js', 'util.js', 'compat.js', 'uploads.js', 'downloads.js']) fs.copyFileSync(path.join(__dirname, '..', 'src', name), path.join(src, name));
+  for (const name of ['mobile.js', 'devtokens.js', 'util.js', 'compat.js', 'uploads.js', 'downloads.js', ...fs.readdirSync(path.join(__dirname, '..', 'src')).filter(name => name.startsWith('mobile-notify'))]) fs.copyFileSync(path.join(__dirname, '..', 'src', name), path.join(src, name));
   fs.copyFileSync(path.join(__dirname, '..', 'package.json'), path.join(dir, 'relay', 'package.json')); // compat.js: the relay version
   fs.symlinkSync(path.resolve(__dirname, '../node_modules'), path.join(dir, 'relay', 'node_modules'), 'dir');
   const { MobileRelay: Standalone } = require(path.join(src, 'mobile.js'));
@@ -794,12 +794,13 @@ test('notification previews: plain-text title/body stored on the relay, served t
   assert.ok(!JSON.stringify(sent).includes('flights') && !JSON.stringify(sent).includes('Trip planning'));
   const get = async (id, token) => fetch(`${url}/mobile/notifications/${id}`, { headers: { authorization: `Bearer ${token}` } });
   const byKind = Object.fromEntries(sent.map(event => [event.kind, event.id]));
-  const reply = await (await get(byKind.reply, first.token)).json();
-  assert.deepEqual(reply, { sid: 'sid-a', profile: 'research', kind: 'reply', title: 'Trip planning', body: 'Your flights are booked.\nHotel next.\nThird line.', agent: 'Research' });
+  // Default kinds (no reply): the turn's one banner is its done, carrying the last reply's text.
+  const reply = await (await get(byKind.done, first.token)).json();
+  assert.deepEqual(reply, { sid: 'sid-a', profile: 'research', kind: 'done', title: 'Trip planning', body: 'Your flights are booked.\nHotel next.\nThird line.', agent: 'Research' });
   const approval = await (await get(byKind.approval, first.token)).json();
   assert.equal(approval.body, 'Push the release branch'); assert.equal(approval.kind, 'approval');
-  assert.equal((await get(byKind.reply, other.token)).status, 404); // another device cannot read it
-  assert.equal((await get(byKind.reply, 'wrong')).status, 401);
+  assert.equal((await get(byKind.done, other.token)).status, 404); // another device cannot read it
+  assert.equal((await get(byKind.done, 'wrong')).status, 401);
   // Content is stored in the owner's private state file only, never in the tokens file.
   assert.ok(!fs.readFileSync(file, 'utf8').includes('flights'));
   assert.ok(fs.readFileSync(file + '.state', 'utf8').includes('Trip planning'));
@@ -880,8 +881,9 @@ test('notify2: a subagent notification shows the parent conversation and its own
   const nodes = { child: { title: 'Release audit subagent', parent: 'root', subagentId: 'sa-1', role: 'subagent' }, root: { title: 'Release audit' } };
   const { mobile, device } = notifyFixture(t, { bridge: { nodeFor: sid => nodes[sid] || null, profiles: async () => [{ name: 'default', displayName: 'Atlas' }] } });
   await mobile.refreshNames(device.bridge);
-  mobile.notify(device, 'native', { type: 'message.complete', sid: 'child', profile: 'default', payload: { text: 'Audit finished.' } });
-  const item = bodyOf(device, 'reply');
+  // Sub-agent sessions push only when they need the user (D13): a question carries the same title and agent label.
+  mobile.notify(device, 'requests', [{ id: 'q-1', sid: 'child', profile: 'default', kind: 'question', at: Date.now(), questions: [{ qid: 'a', question: 'Audit finished.' }] }]);
+  const item = bodyOf(device, 'question');
   assert.deepEqual([item.title, item.agent, item.body], ['Release audit', 'Release audit subagent \u00b7 Atlas', 'Audit finished.']);
 });
 
