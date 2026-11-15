@@ -287,6 +287,30 @@ plugin ships an agent skill (`hermes-deck:pair-phone`) that runs this tool when 
 - `GET /pair/<ticket>/status` (what the page polls every two seconds) answers `{state: "waiting", expiresAt, remainingS}`,
   `{state: "paired", name}` or `404 {state: "gone"}`; it never carries the code.
 
+Threat notes. `/pair/<ticket>` is the relay's only route besides `/health` that needs no token: the ticket in the path
+*is* the credential, so **treat the link exactly like the pairing code for its five minutes**. Whoever opens it first
+can pair a phone with this relay and then read and drive your Hermes sessions from it. Send it only over a private
+channel (your own chat with your agent), not into a group, a ticket system or a shared screen, and revoke a phone you
+do not recognise (`node tools/mobile-token.js list` / `revoke <deviceId>`). What the relay does about it:
+
+- The ticket is 192 random bits and is not the code; the code is derived from it, and the pairing file holds only
+  SHA-256 hashes of both. Lookups compare every stored hash in constant time.
+- Five minutes or the first pairing, whichever comes first; then the page shows the paired phone's name for a minute
+  and never the code again. At most three tickets wait at once (the oldest is dropped with its code); they share the
+  limit of ten pending codes with `pair`. Like pending codes, open tickets survive a relay restart.
+- Unknown, expired and malformed tickets get one generic page and status. Misses are limited to 20 a minute per client
+  address (at most 1024 addresses tracked; beyond that new addresses share one bucket); a limited address gets 429 for
+  every `/pair/` request. Behind a reverse proxy every client has the proxy's address, so one guesser can lock the page
+  for everyone for a minute; it cannot get closer to a ticket.
+- Every answer is `cache-control: no-store`, `referrer-policy: no-referrer`, `x-robots-tag: noindex, nofollow`,
+  `x-content-type-options: nosniff`, `x-frame-options: DENY`, with a Content-Security-Policy of `default-src 'none'`
+  plus a per-response nonce for the one inline style and script and `connect-src 'self'` for the status poll. The QR
+  code is inline SVG drawn by the relay; nothing loads from elsewhere.
+- Only `GET` is answered; the page embeds nothing from the request (the language follows `Accept-Language`, choosing
+  between two fixed texts). Without `DECK_RELAY_PUBLIC_URL` the QR address comes from the `Host` header, accepted only
+  as a plain host name; a forged one changes only the forger's own uncached answer, and the forger already holds the
+  ticket. Neither ticket nor code is ever written to the relay's log.
+
 ### Phone requests: errors, limits, replay and the HTTP route
 
 A failed phone request answers `{code, message, uncertain}`. `code` is the field to act on; `message` is English text
