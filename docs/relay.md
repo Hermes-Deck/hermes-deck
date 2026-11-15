@@ -263,7 +263,8 @@ containing data you do not want shared. See [the device protocol](bot-screen-pro
 ## iOS app
 
 The iOS app pairs with the relay: on the relay host run `node tools/mobile-token.js pair` (prints a single-use code,
-valid for 5 minutes); `list` and `revoke <deviceId>` manage paired phones. The phone requires an HTTPS address, so
+valid for 5 minutes) or, easier, `node tools/mobile-token.js page` for a [pairing page](#pairing-page) with a QR code
+the app scans; `list` and `revoke <deviceId>` manage paired phones. The phone requires an HTTPS address, so
 publish the relay to it through a private HTTPS reverse proxy (for example on your tailnet), never on the public
 internet. Set `DECK_MOBILE_BRIDGE_STREAM` (and `DECK_MOBILE_BRIDGE_PYTHON`) for live Hermes sessions on the phone, and
 the `HERMES_PUSH_*` variables for push. Building the app: the [iOS app repository](https://github.com/Hermes-Deck/ios-app).
