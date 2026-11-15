@@ -19,5 +19,8 @@
   "dependencies": {
     "libsodium-wrappers": "0.8.4",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "jsqr": "1.4.0"
   }
 }
