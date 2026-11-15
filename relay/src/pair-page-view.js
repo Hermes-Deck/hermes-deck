@@ -10,10 +10,10 @@ const STRINGS = {
     lang: "en",
     title: "Connect your phone to Hermes Deck",
     step1: "Open Hermes Deck on your phone and scan this code.",
-    step2: "Reading this on the phone itself? Tap the button below.",
+    step2: "Reading this on your phone? Tap “Open in Hermes Deck”.",
     open: "Open in Hermes Deck",
-    manual: "Can't scan? Enter these in the app:",
-    noAddress: "Enter your Deck's web address and this code in the app.",
+    manual: "Can’t scan? Enter these in the app:",
+    noAddress: "Enter your Deck’s web address and this code in the app.",
     address: "Address",
     code: "Code",
     left: ["This page closes in ", "."],
@@ -26,12 +26,12 @@ const STRINGS = {
   },
   tr: {
     lang: "tr",
-    title: "Telefonunu Hermes Deck'e bağla",
-    step1: "Telefonunda Hermes Deck'i aç ve bu kodu tara.",
-    step2: "Bu sayfayı zaten telefonunda mı okuyorsun? Aşağıdaki düğmeye dokun.",
-    open: "Hermes Deck'te aç",
+    title: "Telefonunu Hermes Deck’e bağla",
+    step1: "Telefonunda Hermes Deck’i aç ve bu kodu tara.",
+    step2: "Bu sayfa telefonunda mı açık? “Hermes Deck’te aç”a dokun.",
+    open: "Hermes Deck’te aç",
     manual: "Tarayamıyor musun? Uygulamaya bunları yaz:",
-    noAddress: "Uygulamaya Deck'inin web adresini ve bu kodu yaz.",
+    noAddress: "Uygulamaya Deck’inin web adresini ve bu kodu yaz.",
     address: "Adres",
     code: "Kod",
     left: ["Bu sayfa ", " içinde kapanır."],
@@ -40,7 +40,7 @@ const STRINGS = {
     paired: ["", " bağlandı. Bu sayfayı kapatabilirsin."],
     pairedNoName: "Telefonun bağlandı. Bu sayfayı kapatabilirsin.",
     goneTitle: "Bu bağlantı artık çalışmıyor",
-    gone: "Süresi doldu ya da zaten kullanıldı. Ajanından yeni bir bağlantı iste.",
+    gone: "Süresi doldu ya da zaten kullanıldı. Hermes’ten yeni bir bağlantı iste.",
   },
 };
 
@@ -71,28 +71,33 @@ const clock = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
 const CSS = `
 :root{color-scheme:light dark;--bg:#f4f3ef;--card:#fff;--ink:#1d1c1a;--soft:#5d5a53;--line:#e2dfd7;--accent:#8a5a14;--accent-ink:#fff;--field:#f4f3ef}
-@media (prefers-color-scheme:dark){:root{--bg:#121211;--card:#1d1c1a;--ink:#edebe6;--soft:#aaa69c;--line:#34322d;--accent:#d9a548;--accent-ink:#1a1306;--field:#262522}}
+@media (prefers-color-scheme:dark){:root{--bg:#121211;--card:#1d1c1a;--ink:#edebe6;--soft:#aaa69c;--line:#4a4740;--accent:#d9a548;--accent-ink:#1a1306;--field:#2f2d29}}
 *{box-sizing:border-box}
 html,body{margin:0;min-height:100%;background:var(--bg);color:var(--ink)}
 body{font:17px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;display:flex;align-items:center;justify-content:center;padding:24px 16px;min-height:100vh}
-main{width:100%;max-width:460px;background:var(--card);border:1px solid var(--line);border-radius:20px;padding:28px 24px}
+main{width:100%;max-width:460px;background:var(--card);border:1px solid var(--line);border-radius:20px;padding:24px 20px}
 h1{font-size:1.45rem;line-height:1.25;margin:0 0 12px;font-weight:650}
 p{margin:0 0 8px}
 .steps{color:var(--soft);margin:0 0 20px}
 .grid{display:flex;flex-direction:column;gap:20px}
-.qr{background:#fff;border-radius:14px;padding:8px;width:min(100%,320px);margin:0 auto;line-height:0}
+.side{display:flex;flex-direction:column;gap:20px}
+.qr{background:#fff;border-radius:14px;padding:8px;width:min(100%,280px);margin:0 auto;line-height:0}
 .qr svg{width:100%;height:auto;display:block}
-.open{display:block;text-align:center;background:var(--accent);color:var(--accent-ink);text-decoration:none;font-weight:600;border-radius:12px;padding:14px 16px;min-height:48px}
+.open{display:block;text-align:center;background:var(--accent);color:var(--accent-ink);text-decoration:none;font-weight:600;border-radius:12px;padding:14px 16px;min-height:48px;border:2px solid var(--accent)}
 .open:focus-visible{outline:3px solid var(--ink);outline-offset:2px}
 .manual{font-size:.95rem;color:var(--soft)}
 dl{margin:8px 0 0;display:grid;grid-template-columns:auto 1fr;gap:6px 12px;align-items:baseline}
 dt{color:var(--soft)}
-dd{margin:0;color:var(--ink);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.95rem;background:var(--field);border-radius:8px;padding:6px 8px;overflow-wrap:anywhere;user-select:all;-webkit-user-select:all}
-.left{margin-top:20px;font-size:.95rem;color:var(--soft)}
+dd{margin:0;color:var(--ink);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.95rem;background:var(--field);border:1px solid var(--line);border-radius:8px;padding:6px 8px;overflow-wrap:anywhere;user-select:all;-webkit-user-select:all}
+dd.code .half{display:inline-block;white-space:nowrap}
+dd.code .half:first-child{margin-right:.5em}
+dd.code .half span+span{margin-left:.4em}
+.left{margin:0;font-size:.95rem;color:var(--soft)}
 .left span{font-variant-numeric:tabular-nums;color:var(--ink);font-weight:600}
-section[hidden]{display:none}
-@media (max-width:719px){.grid .open{order:-1}}
-@media (min-width:720px){main{max-width:820px;padding:40px}h1{font-size:1.8rem}.grid{display:grid;grid-template-columns:320px 1fr;gap:16px 36px;align-items:start}.grid .qr{grid-row:1/span 3;margin:0}}
+section[hidden],p[hidden]{display:none}
+@media (max-width:719px){.side .open{order:-1}.grid .side{display:contents}.grid .open{order:-1}}
+@media (min-width:720px){main{max-width:820px;padding:40px}h1{font-size:1.8rem}.grid{display:grid;grid-template-columns:300px 1fr;gap:36px;align-items:center}.grid .qr{margin:0;width:300px}}
+@media (min-width:720px){.open{background:transparent;color:var(--accent)}}
 `;
 
 const SCRIPT = `(()=>{const d=document,root=d.documentElement,left=d.getElementById("left");let deadline=Date.now()+Number(root.dataset.remaining||0)*1000,done=false;
@@ -142,17 +147,22 @@ function waitingPage({ lang, nonce, address, code, remainingS }) {
   const t = STRINGS[lang] || STRINGS.en;
   const link = address ? deepLink(address, code) : null;
   const svg = link ? qr.toSvg(qr.encode(link, { ecl: "M" }), { label: t.qrLabel }) : "";
+  const groups = String(code).match(/.{1,4}/g) || [];
+  const half = (list) => `<span class="half">${list.map((g) => `<span>${esc(g)}</span>`).join("")}</span>`;
+  const codeHtml = half(groups.slice(0, 4)) + (groups.length > 4 ? half(groups.slice(4)) : "");
   const body = `<section id="waiting" data-state>
 <h1>${esc(t.title)}</h1>
 <div class="steps">${link ? `<p>${esc(t.step1)}</p>\n<p>${esc(t.step2)}</p>` : `<p>${esc(t.noAddress)}</p>`}</div>
 <div class="grid">
-${link ? `<div class="qr">${svg}</div>\n<a class="open" href="${esc(link)}">${esc(t.open)}</a>\n` : ""}<div class="manual">
+${link ? `<div class="qr">${svg}</div>\n` : ""}<div class="side">
+${link ? `<a class="open" href="${esc(link)}">${esc(t.open)}</a>\n` : ""}<div class="manual">
 ${link ? `<p>${esc(t.manual)}</p>\n` : ""}<dl>
-${address ? `<dt>${esc(t.address)}</dt><dd>${esc(address)}</dd>\n` : ""}<dt>${esc(t.code)}</dt><dd>${esc(code)}</dd>
+${address ? `<dt>${esc(t.address)}</dt><dd>${esc(address)}</dd>\n` : ""}<dt>${esc(t.code)}</dt><dd class="code">${codeHtml}</dd>
 </dl>
 </div>
-</div>
 <p class="left">${esc(t.left[0])}<span id="left">${clock(Math.max(0, Math.floor(remainingS)))}</span>${esc(t.left[1])}</p>
+</div>
+</div>
 </section>
 ${pairedSection(t, "", true)}
 ${goneSection(t, true)}`;

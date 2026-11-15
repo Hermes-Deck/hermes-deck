@@ -49,6 +49,8 @@ function request(port, { method = "GET", path: p = "/", headers = {}, body = nul
 }
 const json = (r) => JSON.parse(r.body);
 const ticketOf = (made) => (made.url || made.path).split("/pair/")[1];
+/** The code as the page shows it: groups of four in one selectable field. */
+const shown = (code) => `<dd class="code">${[code.slice(0, 16), code.slice(16)].map((h) => `<span class="half">${h.match(/.{4}/g).map((g) => `<span>${g}</span>`).join("")}</span>`).join("")}</dd>`;
 
 test("pair page: a ticket is 192 random bits as base64url, is not the code, and the pairing file stores hashes only", () => {
   const file = tmp("store");
@@ -82,7 +84,7 @@ test("pair page: waiting page shows QR code, deep link, address and code; status
   const u = Buffer.from("https://relay.example").toString("base64url");
   const link = `hermesdeck://pair?u=${u}&amp;c=${code}`;
   assert.ok(page.body.includes(`href="${link}"`), "Open in Hermes Deck link");
-  assert.ok(page.body.includes(`<dd>${code}</dd>`), "code as selectable text");
+  assert.ok(page.body.includes(shown(code)), "code as selectable text");
   assert.ok(page.body.includes("<dd>https://relay.example</dd>"), "address as selectable text");
   assert.match(page.body, /<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"[^>]*role="img"/);
   assert.match(page.body, /<span id="left">[45]:\d\d<\/span>/);
@@ -107,7 +109,7 @@ test("pair page: the first pairing kills the ticket; page and status then show t
   const page = await request(r.port, { path: `/pair/${ticket}` });
   assert.equal(page.status, 200);
   assert.ok(page.body.includes("Ada&#39;s &lt;phone&gt;"), "name escaped");
-  assert.ok(!page.body.includes("<svg") && !page.body.includes(code) && !page.body.includes("hermesdeck://"));
+  assert.ok(!page.body.includes("<svg") && !page.body.includes(code) && !page.body.includes(`<span>${code.slice(0, 4)}</span>`) && !page.body.includes("hermesdeck://"));
   // the code is spent: a second pairing fails
   const again = await request(r.port, { method: "POST", path: "/mobile/pair", headers: { "content-type": "application/json" }, body: JSON.stringify({ code, name: "other" }) });
   assert.equal(again.status, 401);

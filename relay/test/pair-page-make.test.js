@@ -16,6 +16,8 @@ const TOKEN = "x".repeat(32);
 const TOOL = path.join(__dirname, "..", "tools", "mobile-token.js");
 const model = { snapshot: () => ({}), sessions: new Map(), tokens: () => ({}) };
 const tmpDir = (name) => fs.mkdtempSync(path.join(os.tmpdir(), `deck-pairpage-${name}-`));
+/** The code as the page shows it: groups of four in one selectable field. */
+const shown = (code) => `<dd class="code">${[code.slice(0, 16), code.slice(16)].map((h) => `<span class="half">${h.match(/.{4}/g).map((g) => `<span>${g}</span>`).join("")}</span>`).join("")}</dd>`;
 
 async function relay(t, { publicUrl = null } = {}) {
   const file = path.join(tmpDir("make"), "devices.json");
@@ -138,7 +140,7 @@ test("address: unset setting -> https://<Host> when Host is a plain name; anythi
     const res = await page(host);
     assert.equal(res.status, 200, host);
     assert.ok(!res.body.includes("<svg") && !res.body.includes("hermesdeck://"), `no QR for ${host}`);
-    assert.ok(res.body.includes(`<dd>${code}</dd>`), "the code is still shown");
+    assert.ok(res.body.includes(shown(code)), "the code is still shown");
     assert.ok(!res.body.includes("<script>x") && !res.body.includes("evil") && !res.body.includes("user@"), `nothing reflected for ${host}`);
   }
   const fixed = await relay(t, { publicUrl: "https://relay.example/deck" });
