@@ -13,6 +13,12 @@ const { OpLog } = require('./oplog');
 const { httpOp, HTTP_OPS } = require('./mobile-op');
 const { kindsOf } = require('./mobile-notify-policy');
 const { NotifyCenter, gatewayEvent } = require('./mobile-notify');
+/** pair(): the pairing page (pair-page.js) showing this code now answers "paired" with the device's name. */
+function markPaired(data, codeKey, name, now = Date.now()) {
+  for (const page of Object.values(data.pages || {})) {
+    if (page && page.code === codeKey && !page.paired) page.paired = { name, at: now };
+  }
+}
 // Loaded on first use: only a relay with a history store searches (the standalone mobile layout has neither).
 let messageSearch = null;
 const search = () => (messageSearch ||= require('./message-search'));
@@ -305,6 +311,7 @@ class MobileRelay {
     const file = pairFile(this.tokensFile), data = readJson(file, { pairs: {} }), key = tokens.hash(code), ticket = data.pairs[key];
     if (!ticket || ticket.expires < now) throw fail('invalid_pair', 'Invalid or expired pairing code', 401);
     delete data.pairs[key];
+    markPaired(data, key, oneLine(name, 80)); // a pairing page (pair-page.js) showing this code now says "paired"
     privateWrite(file, data);
     const deviceId = `mobile-${crypto.randomBytes(10).toString('hex')}`, token = tokens.add(this.tokensFile, deviceId);
     return { token, deviceId, capabilities: this.capabilities() };

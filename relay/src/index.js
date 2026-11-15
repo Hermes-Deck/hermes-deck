@@ -31,6 +31,7 @@ const { BrowserTransfers } = require("./browser-transfer");
 const { loadIdentity } = require("./browser-bundle");
 
 const { MobileRelay } = require("./mobile");
+const { PairPages } = require("./pair-page");
 const { MobilePushClient } = require("./mobile-push");
 const { UploadSpool, uploadConfig } = require("./uploads"); // large attachments: disk spool shared with the plugin
 const { DownloadTickets, downloadConfig } = require("./downloads"); // large downloads: tickets the plugin grants
@@ -121,6 +122,8 @@ function config(env = process.env, mem = os.totalmem()) {
     extraHosts: list(env.DECK_RELAY_HOST).slice(1),
     port: Number(env.DECK_RELAY_PORT || 9330),
     token: env.DECK_RELAY_TOKEN || "",
+    // the https address phones reach the relay at, behind a reverse proxy (pairing page links and QR codes; pair-page.js)
+    publicUrl: env.DECK_RELAY_PUBLIC_URL || null,
     mobileDevicesFile: env.DECK_MOBILE_DEVICES_FILE || home(".hermes-deck", "mobile-devices.json"),
     mobileBridge: { mode: env.DECK_MOBILE_BRIDGE_STREAM ? "local" : "off", python: env.DECK_MOBILE_BRIDGE_PYTHON || "python3", stream: env.DECK_MOBILE_BRIDGE_STREAM || "" },
     // phone pushes stay quiet while a desktop Deck had input within this many seconds (presence.atDesk); 0 turns it off
@@ -511,6 +514,15 @@ async function start(cfg) {
   const mobile = new MobileRelay({ uploads, downloads, tokensFile: cfg.mobileDevicesFile || path.join(cfg.dataDir, "mobile-devices.json"), bridgeConfig: cfg.mobileBridge, push: new MobilePushClient(), atDesk: () => presence.atDesk(cfg.pushDeskIdleS), capabilities: { history: !!history, workspace: !!workspace && !!fallback?.available, desktop: false, screen: !!driver }, history });
   // R4: every phone bridge reports which profile owns each live session; the model takes it over event stamps.
   if (mobile.BridgeClient) mobile.BridgeClient = reconcilingBridge(mobile.BridgeClient, model);
+  // Phone pairing page (pair-page.js): GET /pair/<ticket>, no bearer; its state sits next to the mobile devices file.
+  // DECK_RELAY_PUBLIC_URL (optional) is the https address phones use; an unusable value is reported and ignored.
+  let pairPages;
+  try {
+    pairPages = new PairPages({ file: mobile.tokensFile, publicUrl: cfg.publicUrl || null });
+  } catch (e) {
+    console.warn(`deck-relay: ${e.message}; pairing pages use the request's host name instead`);
+    pairPages = new PairPages({ file: mobile.tokensFile });
+  }
   const host = { protocol: compat.PROTOCOL, plugins: compat.pluginCache(cfg.hermesRoot || null), update: () => compat.updateStatus(cfg.dataDir) };
   const { HostUpdate } = require("./host-update");
   const { Restarts } = require("./restarts");
@@ -532,7 +544,7 @@ async function start(cfg) {
   });
   let quitRelay = null; // set by the entry point below: stop, then exit so the service manager starts the relay again
   const hermesConfig = new HermesConfig({ ...(cfg.hermesConfig || hermesConfigOptions({})), root: cfg.hermesRoot || (cfg.hermesConfig || {}).root, quit: () => (quitRelay ? quitRelay() : null) });
-  const srv = createServer({ hermesConfig, hostUpdate, mobile, host, uploads, downloads, token: cfg.token, queryToken: !!cfg.queryToken, model, fleet, version: VERSION, hooks: deckHooks(presence, gateway, driver, workspace, bundles, spaces, spaceTunnel, mobile), history, plans, bundles });
+  const srv = createServer({ hermesConfig, hostUpdate, mobile, pairPages, host, uploads, downloads, token: cfg.token, queryToken: !!cfg.queryToken, model, fleet, version: VERSION, hooks: deckHooks(presence, gateway, driver, workspace, bundles, spaces, spaceTunnel, mobile), history, plans, bundles });
   broadcast = srv.broadcast;
   if (workspace) workspace.setBroadcast(srv.broadcast);
 

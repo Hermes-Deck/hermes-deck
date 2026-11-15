@@ -30,6 +30,8 @@ function tokenOk(req, token, queryToken = false) {
  *   GET /health                (no auth)  liveness for launchd checks and the deck's host list:
  *                              {ok, v, protocol, updateAvailable?, latest?, uptime, ...}; profile names and
  *                              plugin versions only in the authenticated WS hello
+ *   GET /pair/<ticket>[/status] (no auth; pair-page.js) the phone pairing page and its state; the ticket is the
+ *                              capability (192 random bits, 5 minutes, dies at the first pairing)
  *   POST /fleet/quotas/refresh (Bearer token or mobile token) force a quota refresh through the plugins; >= 30 s apart
  *   GET /snapshot | /fleet | /tokens?range=24h|7d|14d|30d|all (or legacy ?days=N) | /session/<sid>   (Bearer token)
  *   GET|POST /hermes/config[/schema], /hermes/restart   (Bearer token, never a mobile token; hermes-config.js)
@@ -47,7 +49,7 @@ function tokenOk(req, token, queryToken = false) {
  * onHttp(req, res, url) -> true when it answered an authenticated request (bot screen: /desktop/*, /cu/*; spaces: /spaces*).
  * onUpgrade(req, socket, head, url) -> true when it took a relay-token WebSocket under /spaces/ (the space viewer).
  */
-function createServer({ token, model, fleet, version, hooks = null, history = null, plans = null, queryToken = false, bundles = null, mobile = null, host = null, hermesConfig = null, hostUpdate = null, uploads = null, downloads = null }) {
+function createServer({ token, model, fleet, version, hooks = null, history = null, plans = null, queryToken = false, bundles = null, mobile = null, host = null, hermesConfig = null, hostUpdate = null, uploads = null, downloads = null, pairPages = null }) {
   const started = Date.now();
   // Host versions (compat.js): protocol, each profile's plugin version, the updater's last check. `v` stays first
   // and unchanged: apps before 0.3.6 read only `v` (as "the newest app version" signal).
@@ -96,6 +98,9 @@ function createServer({ token, model, fleet, version, hooks = null, history = nu
       const pub = hostUpdate ? hostUpdate.publicInfo() : null;
       return json(res, 200, { ok: true, v: version, ...publicHost, ...(pub ? { hostUpdate: pub } : {}), uptime: Math.round((Date.now() - started) / 1000), clients: clients.size, sessions: model.sessions.size });
     }
+    // Phone pairing page (pair-page.js): /pair/<ticket> and /pair/<ticket>/status, no bearer. The ticket in the path is
+    // the capability (192 random bits, 5 minutes, one pairing); misses are rate-limited there.
+    if (pairPages && pairPages.onHttp(req, res, url)) return;
     if (mobile && mobile.onHttp(req, res, url)) return;
     const mobileAuth = mobile && mobile.authenticate(req);
     if (!mobileAuth && !tokenOk(req, token, queryToken)) return json(res, 401, { error: "unauthorized" });
