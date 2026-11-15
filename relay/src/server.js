@@ -32,6 +32,7 @@ function tokenOk(req, token, queryToken = false) {
  *                              plugin versions only in the authenticated WS hello
  *   GET /pair/<ticket>[/status] (no auth; pair-page.js) the phone pairing page and its state; the ticket is the
  *                              capability (192 random bits, 5 minutes, dies at the first pairing)
+ *   POST /mobile/pair/page     (Bearer relay token only, never a mobile token) make one pairing page: {url | path, expiresAt}
  *   POST /fleet/quotas/refresh (Bearer token or mobile token) force a quota refresh through the plugins; >= 30 s apart
  *   GET /snapshot | /fleet | /tokens?range=24h|7d|14d|30d|all (or legacy ?days=N) | /session/<sid>   (Bearer token)
  *   GET|POST /hermes/config[/schema], /hermes/restart   (Bearer token, never a mobile token; hermes-config.js)
@@ -101,6 +102,18 @@ function createServer({ token, model, fleet, version, hooks = null, history = nu
     // Phone pairing page (pair-page.js): /pair/<ticket> and /pair/<ticket>/status, no bearer. The ticket in the path is
     // the capability (192 random bits, 5 minutes, one pairing); misses are rate-limited there.
     if (pairPages && pairPages.onHttp(req, res, url)) return;
+    // The desktop app asks for a pairing page: relay (desktop) token in the header only; a phone token is refused.
+    if (pairPages && url.pathname === "/mobile/pair/page") {
+      req.resume();
+      if (mobile && mobile.authenticate(req)) return json(res, 403, { error: "relay bearer required" });
+      if (!tokenOk(req, token, false)) return json(res, 401, { error: "relay bearer required" });
+      if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+      try {
+        return json(res, 200, pairPages.create());
+      } catch (e) {
+        return json(res, e.status || 500, { error: e.code === "limit" ? "too many pending pairs" : "pairing page failed" });
+      }
+    }
     if (mobile && mobile.onHttp(req, res, url)) return;
     const mobileAuth = mobile && mobile.authenticate(req);
     if (!mobileAuth && !tokenOk(req, token, queryToken)) return json(res, 401, { error: "unauthorized" });

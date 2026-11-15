@@ -106,6 +106,7 @@ file named by `DECK_RELAY_ENV`); restart it to apply changes.
 | `DECK_UPDATE_REPO`, `DECK_RELAY_AUTO_UPDATE`, `DECK_RELAY_SERVICE` | Relay updates ([updating.md](updating.md)) |
 | `DECK_REMOTE_UPDATE` | Host update from the app (default on; [updating.md](updating.md#updating-from-the-app)) |
 | `DECK_MOBILE_DEVICES_FILE`, `DECK_MOBILE_BRIDGE_PYTHON`, `DECK_MOBILE_BRIDGE_STREAM` | iOS app: mobile token store, and Hermes' Python plus `stream.py` path for the mobile bridge (empty stream disables it) |
+| `DECK_RELAY_PUBLIC_URL` | The `https://` address phones reach this relay at (e.g. `https://relay.example`, a path prefix is allowed), used for [pairing page](#pairing-page) links and their QR codes. Optional: when unset, `mobile-token.js page` prints the path only and the page uses the request's host name; a value that is not a plain `https://` address is reported and ignored |
 | `DECK_PUSH_DESK_IDLE` | iOS push: no phone notifications while a desktop Deck on this relay had input within this many seconds (default `120`; `0` turns it off). Approvals and questions still open when the desk goes quiet are sent then |
 | `HERMES_PUSH_URL`, `HERMES_PUSH_SENDER_TOKEN` | iOS push: your push gateway's HTTPS origin and this relay's sender credential ([push gateway](https://github.com/Hermes-Deck/ios-app/tree/main/push) in the iOS app repository) |
 | `DECK_HOME`, `DECK_DRIVER_SOCK` | Plugin home (default `~/.hermes-deck`) and driver socket (default `<DECK_HOME>/driver.sock`). Must equal the plugin's |
@@ -266,6 +267,25 @@ valid for 5 minutes); `list` and `revoke <deviceId>` manage paired phones. The p
 publish the relay to it through a private HTTPS reverse proxy (for example on your tailnet), never on the public
 internet. Set `DECK_MOBILE_BRIDGE_STREAM` (and `DECK_MOBILE_BRIDGE_PYTHON`) for live Hermes sessions on the phone, and
 the `HERMES_PUSH_*` variables for push. Building the app: the [iOS app repository](https://github.com/Hermes-Deck/ios-app).
+
+### Pairing page
+
+Instead of reading a code off the terminal, open a pairing page: `node tools/mobile-token.js page` prints a link such as
+`https://relay.example/pair/<ticket>` and its expiry. The page shows a QR code for the app's scanner, an "Open in
+Hermes Deck" button for a page opened on the phone itself, and the address and code to type by hand. It lives five
+minutes or until the first phone pairs, whichever comes first, then it only says the link no longer works. The Hermes
+plugin ships an agent skill (`hermes-deck:pair-phone`) that runs this tool when you ask your agent to connect a phone.
+
+- The relay does not know its own public address behind a reverse proxy: set `DECK_RELAY_PUBLIC_URL`. Without it the
+  tool prints only `/pair/<ticket>` (and says so); put your relay's https address in front of it. The page then builds
+  the address inside the QR code from the request's host name (`https://<Host>`), and shows no QR code when that host
+  name is not a plain name or IPv4 address with an optional port.
+- `node tools/mobile-token.js page --json` prints `{"url": ..., "expiresAt": ...}` (`path` instead of `url` without
+  the setting). `pair` still prints a bare code, as before.
+- The desktop app can ask for one: `POST /mobile/pair/page` with the relay token (a phone token gets 403) answers the
+  same `{url | path, expiresAt}`.
+- `GET /pair/<ticket>/status` (what the page polls every two seconds) answers `{state: "waiting", expiresAt, remainingS}`,
+  `{state: "paired", name}` or `404 {state: "gone"}`; it never carries the code.
 
 ### Phone requests: errors, limits, replay and the HTTP route
 
