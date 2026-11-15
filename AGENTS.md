@@ -22,6 +22,9 @@ Architecture and data flow: [docs/architecture.md](docs/architecture.md). Deskto
 - **The relay is never public.** It defaults to `127.0.0.1` and refuses to start with a token shorter than 24
   characters. Every route except `/health` needs the token (constant-time compare); the `?token=` query form stays
   opt-in (`DECK_RELAY_QUERY_TOKEN`). Do not add unauthenticated routes, `0.0.0.0` defaults or token-in-URL defaults.
+  The one documented exception is the phone pairing page `GET /pair/<ticket>[/status]` (`relay/src/pair-page.js`): a
+  five-minute capability URL whose 192-bit ticket is the credential (no-store, rate-limited, constant-time lookups,
+  never logged; `docs/relay.md` "Pairing page"). Keep it that narrow.
 - **The renderer has no Node access.** Every window and view uses `contextIsolation: true`, `sandbox: true`,
   `nodeIntegration: false`. Pages reach the system only through the named calls in their preload
   (`app/main/preload.js` for the main window; `pet-preload.js` and `cua/bar-preload.js` for the pet and the
