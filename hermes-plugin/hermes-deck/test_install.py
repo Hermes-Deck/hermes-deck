@@ -165,6 +165,7 @@ class InstallerTests(unittest.TestCase):
         stage = Path(tempfile.mkdtemp(prefix="hermes-deck-stage-"))
         self.addCleanup(shutil.rmtree, stage, True)
         for name in install.SOURCE_FILES:
+            (stage / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(HERE / name, stage / name)
         (stage / "plugin.yaml").write_text("name: hermes-deck\n", encoding="utf-8")
         with self.assertRaises(install.InstallError):
@@ -198,7 +199,8 @@ class InstallerTests(unittest.TestCase):
         # the plugin folder in every profile, exactly the allowlisted files
         for home in (self.root, self.root / "profiles" / "research", self.root / "profiles" / "plain"):
             target = home / "plugins" / "hermes-deck"
-            self.assertEqual(sorted(p.name for p in target.iterdir()), sorted(install.SOURCE_FILES))
+            self.assertEqual(install.installed_files(target), sorted(install.SOURCE_FILES))
+            self.assertIn("skills/pair-phone/SKILL.md", install.SOURCE_FILES)
             for name in install.SOURCE_FILES:
                 self.assertEqual((target / name).read_bytes(), (HERE / name).read_bytes(), name)
             self.assertFalse(list(home.glob(".hermes-deck-staging-*")))

@@ -115,7 +115,27 @@ def hooks(events, observer=None) -> dict:
     return {name: fns[0][1] if len(fns) == 1 else _compose(name, fns) for name, fns in parts.items()}
 
 
+# Agent skills this plugin ships (Hermes lists them as `hermes-deck:<name>` while the plugin is enabled; install.py
+# copies skills/<name>/SKILL.md with the plugin). Hermes without plugin skills simply has no register_skill.
+SKILLS = (
+    ("pair-phone", "Use when the user wants to connect a phone to Hermes Deck. Sends a five-minute pairing link."),
+)
+
+
+def _register_skills(ctx) -> None:
+    """Registers SKILLS; never raises (an older Hermes or a missing file only skips the skill)."""
+    register_skill = getattr(ctx, "register_skill", None)
+    if not callable(register_skill):
+        return
+    for name, description in SKILLS:
+        try:
+            register_skill(name, HERE / "skills" / name / "SKILL.md", description)
+        except Exception:
+            logger.warning("hermes-deck: skill %s not registered", name, exc_info=True)
+
+
 def register(ctx):
+    _register_skills(ctx)
     events = _sibling("events")
     observer = _start_bridge(ctx)
     for name, fn in hooks(events, observer).items():
