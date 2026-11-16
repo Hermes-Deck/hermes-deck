@@ -6,6 +6,8 @@ The desktop app, relay and Hermes plugin share one version number.
 
 ## [Unreleased]
 
+## [1.2.6] - 2026-11-16
+
 - Copy buttons work: the code block **Copy**, the copy action of a message or a Thinking block, the command box and the other Copy buttons did nothing, because the app refused its own pages the permission to write to the clipboard. Writing text is now allowed for the app's own pages; reading the clipboard stays refused.
 
 ## [1.2.5] - 2026-11-16
