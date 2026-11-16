@@ -6,6 +6,8 @@ The desktop app, relay and Hermes plugin share one version number.
 
 ## [Unreleased]
 
+- Copy buttons work: the code block **Copy**, the copy action of a message or a Thinking block, the command box and the other Copy buttons did nothing, because the app refused its own pages the permission to write to the clipboard. Writing text is now allowed for the app's own pages; reading the clipboard stays refused.
+
 ## [1.2.5] - 2026-11-16
 
 - A click on a tool call in the transcript (the `terminal ...` line under a thought) unfolds that one call right there, with its whole arguments and output, also while the turn is still running. The turn's "Working ... tools" receipt and the Work pane no longer open on that click; **Open in Run** inside the unfolded call takes you there.

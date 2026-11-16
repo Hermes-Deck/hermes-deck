@@ -1453,11 +1453,20 @@ function micAllowed(contents, permission, details) {
   const types = details && Array.isArray(details.mediaTypes) ? details.mediaTypes : [];
   return !types.length || types.every((t) => t === "audio"); // never video
 }
+// Copy buttons write text to the clipboard (navigator.clipboard.writeText); Chromium asks for that too. Writing only:
+// reading the clipboard stays refused.
+function pageAllowed(contents, permission, details) {
+  if (permission === "clipboard-sanitized-write") {
+    const url = String((details && (details.requestingUrl || details.securityOrigin)) || (contents && contents.getURL && contents.getURL()) || "");
+    return url.startsWith("deck://app/");
+  }
+  return micAllowed(contents, permission, details);
+}
 const ownPage = (contents) => !!contents && views.hostIds().some((id) => { const p = views.pageOf(id); return p && p.wc === contents; });
 function installPermissions() {
   const ses = require("electron").session.defaultSession;
-  ses.setPermissionRequestHandler((contents, permission, callback, details) => callback(ownPage(contents) && micAllowed(contents, permission, details)));
-  ses.setPermissionCheckHandler((contents, permission, _origin, details) => ownPage(contents) && micAllowed(contents, permission, details));
+  ses.setPermissionRequestHandler((contents, permission, callback, details) => callback(ownPage(contents) && pageAllowed(contents, permission, details)));
+  ses.setPermissionCheckHandler((contents, permission, _origin, details) => ownPage(contents) && pageAllowed(contents, permission, details));
 }
 
 app.whenReady().then(() => {

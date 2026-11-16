@@ -670,3 +670,20 @@ test("main: the microphone permission handler grants only audio to the Deck's ow
   assert.equal(micAllowed(page, "notifications", { requestingUrl: "deck://app/index.html" }), false);
   assert.equal(micAllowed(page, "media", { requestingUrl: "deck://evil/x", mediaTypes: ["audio"] }), false);
 });
+
+test("main: Copy buttons may write text to the clipboard from the Deck's own page; reading it stays refused", () => {
+  const src = fs.readFileSync(path.join(__dirname, "../main/main.js"), "utf8");
+  const start = src.indexOf("const MIC_PERMISSIONS");
+  const body = src.slice(start, src.indexOf("const ownPage"));
+  const pageAllowed = new Function(`${body}; return pageAllowed;`)();
+  const page = { getURL: () => "deck://app/index.html" };
+  assert.equal(pageAllowed(page, "clipboard-sanitized-write", {}), true);
+  assert.equal(pageAllowed(page, "clipboard-sanitized-write", { requestingUrl: "deck://app/index.html" }), true);
+  assert.equal(pageAllowed(page, "clipboard-sanitized-write", { requestingUrl: "https://example.com/" }), false, "another origin");
+  assert.equal(pageAllowed(page, "clipboard-sanitized-write", { requestingUrl: "deck://apple/" }), false);
+  assert.equal(pageAllowed(page, "clipboard-read", { requestingUrl: "deck://app/index.html" }), false, "never read");
+  assert.equal(pageAllowed(page, "notifications", { requestingUrl: "deck://app/index.html" }), false);
+  assert.equal(pageAllowed(page, "microphone", { requestingUrl: "deck://app/index.html" }), true, "dictation as before");
+  // both handlers go through it, still only for the Deck's own pages
+  assert.equal(src.split("ownPage(contents) && pageAllowed(contents, permission, details)").length, 3);
+});
