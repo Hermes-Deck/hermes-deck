@@ -6,6 +6,8 @@ The desktop app, relay and Hermes plugin share one version number.
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-11-16
+
 - A click on a tool call in the transcript (the `terminal ...` line under a thought) unfolds that one call right there, with its whole arguments and output, also while the turn is still running. The turn's "Working ... tools" receipt and the Work pane no longer open on that click; **Open in Run** inside the unfolded call takes you there.
 - A downloaded file always has an **Open** button, also an installer or a script; for a file type that runs code the app asks first, with Cancel as the default. Media from Telegram chats is still never opened this way.
 - While a turn runs, the composer shows the command it is running (or ran last) in a box of its own that comes out from behind the composer card: clipped to three lines by default, or unfolded with **Show all** to the whole command down to its last line, with the call's other arguments and a **Copy** button. The choice is remembered.
