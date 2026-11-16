@@ -38,6 +38,7 @@ and a main area that shows the chat or the [inbox](#inbox-and-fleet). The right 
 | Shortcut (Cmd on macOS) | Action |
 |---|---|
 | **Ctrl+K** | Search: the All sessions browser (Hermes modes) |
+| **Ctrl+F** | Find in the open chat: matches are marked and counted, Enter / Shift+Enter step through them, Esc closes |
 | **Ctrl+Shift+K** | Model picker |
 | **Ctrl+E** | Cycle the reasoning effort |
 | **Ctrl+\\** | Work pane |

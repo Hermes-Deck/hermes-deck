@@ -327,3 +327,20 @@
 .sysnotice-head:focus-visible { outline: 2px solid var(--patina); outline-offset: 2px; }
 .sysnotice-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sysnotice-body { margin: 4px 0 0; padding: 8px 10px; border: 1px solid var(--vein); border-radius: 8px; background: var(--well); color: var(--marble-dim); font: 12px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; }
+
+/* Find in the open chat (chat-find.js): a small bar at the top right of the chat; matches are CSS highlights. */
+.chat-find { position: absolute; top: 72px; right: 22px; z-index: 5; display: flex; flex-direction: column; gap: 4px; padding: 6px; border: 1px solid var(--line2); border-radius: 10px; background: var(--l2); box-shadow: 0 8px 24px rgba(0, 0, 0, .35); max-width: calc(100% - 44px); box-sizing: border-box; }
+.chat-find[hidden] { display: none; }
+.chat-find-row { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.chat-find-input { flex: 1 1 200px; min-width: 60px; width: 200px; padding: 4px 8px; border: 1px solid var(--line2); border-radius: 6px; background: var(--bg); color: var(--t1); font: 13px var(--sans); outline: none; }
+.chat-find-input:focus-visible { border-color: var(--brass); }
+.chat-find.none .chat-find-input, .chat-find.none .chat-find-input:focus-visible { border-color: var(--red); }
+.chat-find-count { flex: none; min-width: 52px; padding: 0 4px; color: var(--t3); font: 11.5px var(--sans); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.chat-find-btn { flex: none; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 5px; background: none; color: var(--t2); font: 14px/1 var(--sans); cursor: pointer; }
+.chat-find-btn:hover:not(:disabled) { background: var(--l3); color: var(--t1); }
+.chat-find-btn:disabled { opacity: .35; cursor: default; }
+.chat-find-btn:focus-visible, .chat-find-more:focus-visible { outline: 2px solid var(--brass); outline-offset: 1px; }
+.chat-find-more { align-self: flex-start; padding: 3px 8px; border: 0; border-radius: 5px; background: none; color: var(--t3); font: 11.5px var(--sans); cursor: pointer; }
+.chat-find-more:hover:not(:disabled) { background: var(--l3); color: var(--t1); }
+::highlight(deck-find) { background-color: color-mix(in srgb, var(--brass) 38%, transparent); color: inherit; }
+::highlight(deck-find-current) { background-color: var(--brass); color: #111; }

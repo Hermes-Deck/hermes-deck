@@ -6,6 +6,10 @@ The desktop app, relay and Hermes plugin share one version number.
 
 ## [Unreleased]
 
+## [1.2.7] - 2026-11-16
+
+- Find in the open chat: **Ctrl+F** (**Cmd+F** on macOS) opens a small bar at the top right of the chat. Every match in the transcript is marked and counted ("3 / 17"), starting at the newest; **Enter** goes to the match before, **Shift+Enter** to the one after, **Esc** closes. Letter case is ignored. A session opens on its latest messages only, so when earlier ones are not loaded the bar offers **Search earlier messages**, which loads older pages until a match shows up or the session's start is reached. Folded content (a collapsed Thinking block, a tool call that is not unfolded) is not searched.
+
 ## [1.2.6] - 2026-11-16
 
 - Copy buttons work: the code block **Copy**, the copy action of a message or a Thinking block, the command box and the other Copy buttons did nothing, because the app refused its own pages the permission to write to the clipboard. Writing text is now allowed for the app's own pages; reading the clipboard stays refused.

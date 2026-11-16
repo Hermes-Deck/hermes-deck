@@ -581,6 +581,11 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
       e.preventDefault();
       SV.toggle(); // Settings view (settings-view.js)
     }
+    // Ctrl/Cmd+F: find in the open chat (chat-find.js), when the chat is what the main area shows
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "f" && !e.isComposing && CF && chatEl.offsetParent !== null) {
+      e.preventDefault();
+      CF.open();
+    }
     // Ctrl/Cmd+K: search (the All sessions browser); Ctrl/Cmd+Shift+K: the model picker (model-picker.js).
     // Ctrl+M is the window menu's Minimize, Ctrl+Shift+M is dictation.
     if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "k" && !e.isComposing) {
@@ -3172,6 +3177,13 @@ var i18nLocale = typeof module === "object" && module.exports ? require("./i18n"
   }
   const histSig = (msgs) => msgs.map((m) => `${m.id || ""}:${m.role}:${m.text.length}:${m.think ? m.think.length : 0}:${m.calls ? m.calls.length : 0}`).join("|");
 
+  // find in the open chat (chat-find.js); "Search earlier" loads a Hermes session's older pages
+  const chatEl = document.getElementById("chat");
+  const CF = window.DeckChatFind ? window.DeckChatFind.create({ h, t: i18nText, host: chatEl, scroller: els.msgs, inner: els.msgsInner,
+    earlier: () => {
+      const sid = hermesMode() ? H.sel : null, st = sid ? H.hist.get(sid) : null;
+      return { available: !!st && st.loaded === true && st.hasMore === true && !st.olderFailed, load: () => hermesLoadHistory(sid, { older: true }) };
+    } }) : null;
   // history window (history-window.js): a session opens on its latest ~200 rows, older pages load by themselves
   // while the reader scrolls toward the top, and the poll merges the newest page under what is loaded
   const HW = window.DeckHistory;
