@@ -34,7 +34,8 @@ from pathlib import Path
 PLUGIN = "hermes-deck"
 RUNTIME_DIR = PLUGIN
 OLD_PLUGINS = ("deck-events",)
-SOURCE_FILES = ("__init__.py", "events.py", "observer.py", "stream.py", "plugin.yaml")
+SOURCE_FILES = ("__init__.py", "events.py", "observer.py", "stream.py", "plugin.yaml",
+                "skills/pair-phone/SKILL.md")  # relative paths; skills are registered by __init__.py
 STATE_FILE = "hermes-deck-install.json"  # in the profile runtime directory
 # <profile home>/hermes-deck/installed.json: {version, protocol, installedAt}. The relay reads it to report each
 # profile's plugin version (relay/src/compat.js); scripts/doctor.py reads it too. Keep the names.
@@ -220,10 +221,15 @@ def rewrite_plugins(text: str, yaml, plugins: dict) -> str:
 
 # ---------------------------------------------------------------------------- plan
 
+def installed_files(target: Path) -> list:
+    """Every file under an installed plugin folder, as sorted relative POSIX paths (folders themselves left out)."""
+    return sorted(p.relative_to(target).as_posix() for p in target.rglob("*") if not p.is_dir())
+
+
 def same_copy(stage: Path, target: Path) -> bool:
     """An installed folder holding exactly this version's files."""
     try:
-        if sorted(p.name for p in target.iterdir()) != sorted(SOURCE_FILES):
+        if installed_files(target) != sorted(SOURCE_FILES):
             return False
         return all((target / f).read_bytes() == (stage / f).read_bytes() for f in SOURCE_FILES)
     except OSError:
@@ -336,6 +342,7 @@ def atomic_write(path: Path, data: bytes, mode: int = 0o600) -> None:
 def _copy_plugin(stage: Path, dest: Path) -> None:
     dest.mkdir(mode=0o700)
     for name in SOURCE_FILES:
+        (dest / name).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         atomic_write(dest / name, (stage / name).read_bytes())
 
 

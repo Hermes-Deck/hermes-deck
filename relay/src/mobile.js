@@ -8,6 +8,20 @@ const { atomicWriteJson, readJson } = require('./util');
 const compat = require('./compat');
 const { UploadSpool, LEGACY, settleBody } = require('./uploads');
 const { DownloadTickets, LEGACY_MAX: LEGACY_DOWNLOAD } = require('./downloads');
+const { wireError, wireSessionIndex, Gate, shareKey, foreground, withBackgroundBudget, ReplayMemory } = require('./mobile-gate');
+const { OpLog } = require('./oplog');
+const { httpOp, HTTP_OPS } = require('./mobile-op');
+const { kindsOf } = require('./mobile-notify-policy');
+const { NotifyCenter, gatewayEvent } = require('./mobile-notify');
+/** pair(): the pairing page (pair-page.js) showing this code now answers "paired" with the device's name. */
+function markPaired(data, codeKey, name, now = Date.now()) {
+  for (const page of Object.values(data.pages || {})) {
+    if (page && page.code === codeKey && !page.paired) page.paired = { name, at: now };
+  }
+}
+// Loaded on first use: only a relay with a history store searches (the standalone mobile layout has neither).
+let messageSearch = null;
+const search = () => (messageSearch ||= require('./message-search'));
 // The old single-line limits (base64 through the plugin's stdio): what a host without staged uploads can take. With a
 // plugin that answers deck.attach_staged on this host, capabilities() reports the spool's limits instead (uploads.js).
 const LIMITS = LEGACY;
@@ -21,7 +35,14 @@ const MUTATION_ID = /^m\.(\d{13})\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{
 const mutationTime = id => { const match = typeof id === 'string' && MUTATION_ID.exec(id); return match ? Number(match[1]) : null; };
 const TITLE_MAX = 80, BODY_MAX = 300, BODY_LINES = 4, SOURCE_MAX = 4000, LAST_REPLY_LIMIT = 200;
 // One banner per turn: reply and done of the same turn are merged inside this window (and by turn id when both are known).
-const SETTLE_MS = 3500, COALESCE_MS = 10000, NAMES_TTL = 10 * 60 * 1000, LOOKUP_MS = 3000, GROUP_LIMIT = 200;
+// Live Activities (relay-extras X7): at most three per device (DESIGN §7.4), each bound to one chat, expiring after
+// eight hours (ActivityKit's own limit); the push token lives in memory here and at the gateway, never in a file.
+const ACTIVITY_LIMIT = 3, ACTIVITY_TTL_MS = 8 * 3600000, ACTIVITY_DISMISS_S = 15 * 60;
+const ACTIVITY_TOKEN = /^[a-fA-F0-9]{64,512}$/;
+const LIVE_STATE = { approval: 'approval', question: 'question', done: 'finished', error: 'failed' };
+// Badge corrections (relay-extras X2): settle a burst of answers, then at most one silent badge push per interval.
+const BADGE_SETTLE_MS = 2000, BADGE_INTERVAL_MS = 10000;
+const SETTLE_MS = 3500, NAMES_TTL = 10 * 60 * 1000, LOOKUP_MS = 3000, GROUP_LIMIT = 200;
 const LANGUAGE = /^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8}){0,2}$/;
 /** Dictation language hint: a BCP-47-ish tag reduced to the lowercase primary subtag Whisper-style engines take ('tr-TR' -> 'tr'). */
 const dictationLanguage = value => LANGUAGE.test(value) ? value.split(/[-_]/)[0].toLowerCase() : null;
@@ -80,7 +101,8 @@ function conversationTitle(bridge, sid, profile, fallback = oneLine(profile, TIT
   return fallback;
 }
 /** A pending notification is pushed once its text lookup has finished (or its short hold ran out). */
-const ready = item => item.delivery === 'pending' && !(item.hold > Date.now());
+// An open turn banner (mobile-notify.js) waits for the turn's end or its settle time.
+const ready = (item, now = Date.now()) => item.delivery === 'pending' && !(item.hold > now) && !item.open;
 const fail = (code, message, status = 400) => Object.assign(new Error(message), { code, status });
 const opaque = () => crypto.randomBytes(24).toString('hex');
 const pairFile = file => `${file}.pairs`;
@@ -127,13 +149,30 @@ const OPS = {
   setEffort: ['sid', 'profile', 'effort'], reasoning: ['show'],
   sessions: ['profile', 'limit'], history: ['sid', 'profile', 'limit', 'offset'], profiles: [], avatar: ['name'],
   botChat: ['name', 'expect'], createBotChat: ['name', 'expect'], create: ['profile'], delete: ['sid', 'profile'],
-  send: ['sid', 'profile', 'text', 'uploads'], steer: ['sid', 'profile', 'text', 'turnId'], redirect: ['sid', 'profile', 'text', 'turnId'],
+  send: ['sid', 'profile', 'text', 'uploads'], start: ['profile', 'text', 'uploads'], steer: ['sid', 'profile', 'text', 'turnId'], redirect: ['sid', 'profile', 'text', 'turnId'],
   takeover: ['sid', 'profile'], interrupt: ['sid', 'profile', 'turnId'], modelOptions: ['sid', 'profile', 'profileOnly'], setModel: ['sid', 'profile', 'model', 'provider', 'confirm'],
   answerApproval: ['id', 'profile', 'choice'], answerQuestion: ['id', 'profile', 'answers'], transcribe: ['upload', 'mime', 'language'],
 };
+// Push bookkeeping op (mobile-notify.js): the app says it is in the foreground (G1); answered without the bridge.
+OPS.seen = ['reason'];
+READ_OPS.add('seen');
+// Read-only watch of a session running elsewhere (G11, relay-extras X3): binds it on this device's bridge so its events
+// stream to the phone; never drives it. Reads (no mutation id): they change only this device's subscriptions.
+OPS.watch = ['sid', 'profile'];
+OPS.unwatch = ['sid', 'profile'];
+READ_OPS.add('watch'); READ_OPS.add('unwatch');
+// Message-text search over the relay's read-only history stores (relay-extras X5); a read, no bridge needed.
+OPS.searchMessages = ['q', 'profile', 'cursor', 'limit'];
+READ_OPS.add('searchMessages');
+/** The bridge's watch owner for a phone: one bridge per device, one watched session per owner. */
+const WATCH_OWNER = 'mobile';
 class MobileRelay {
-  constructor({ tokensFile, bridgeConfig, bridgeOptions = {}, capabilities = {}, push = null, settleMs = SETTLE_MS, uploads = null, downloads = null, atDesk = null }) {
+  constructor({ tokensFile, bridgeConfig, bridgeOptions = {}, capabilities = {}, push = null, settleMs = SETTLE_MS, uploads = null, downloads = null, atDesk = null, clock = null, pushLog = null, history = null }) {
     Object.assign(this, { tokensFile, bridgeConfig, bridgeOptions, push, settleMs });
+    this.history = history; // the relay's History (history.js): searchMessages reads its Hermes stores
+    // Push decisions (mobile-notify.js): one banner per turn, scope, breaker, digest. `clock` is injectable for tests.
+    this.now = typeof clock === 'function' ? clock : Date.now;
+    this.notices = new NotifyCenter({ now: () => this.now(), log: pushLog });
     // () => boolean: the user is working at a Deck computer right now (presence.atDesk). While true, phone pushes are
     // not sent: replies and finished turns are dropped, open approvals/questions are offered again once the desk goes quiet.
     this.atDesk = typeof atDesk === 'function' ? atDesk : () => false;
@@ -148,9 +187,10 @@ class MobileRelay {
     this.staging = { ok: false, direct: 0, at: 0, busy: null };
     this.names = { at: 0, map: new Map(), busy: null };
     this.enriching = new Map();
+    this.oplog = new OpLog(); // refused/failed ops, bridge status changes, a 60 s summary (oplog.js)
     this.BridgeClient = null;
     if (bridgeConfig && bridgeConfig.mode !== 'off') {
-      try { this.BridgeClient = require('../../app/main/bridge').BridgeClient; }
+      try { this.BridgeClient = withBackgroundBudget(require('../../app/main/bridge').BridgeClient); }
       catch { throw fail('unavailable', 'Configured mobile bridge requires the full Hermes Deck source layout including app/main/bridge.js', 503); }
     }
     this.available = capabilities;
@@ -179,6 +219,7 @@ class MobileRelay {
     this.timer = setInterval(() => this.sweep(), 1000);
     this.timer.unref();
     this.flushPush().catch(() => {});
+    if (this.push?.configured) this.push.refreshFeatures?.()?.catch?.(() => {}); // gateway features: at start, hourly (sweep), per registration
     if (this.push?.configured && this.capabilities().bridge) {
       const authorized = tokens.load(this.tokensFile).devices;
       for (const [id, state] of Object.entries(this.meta.devices)) {
@@ -198,8 +239,22 @@ class MobileRelay {
       takeover: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off',
       sessionBrowser: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', reasoning: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off',
       work: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', subagents: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', commands: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off',
-      workspace: !!this.available.workspace, desktop: !!this.available.desktop, push: !!this.push?.configured, transcribeLanguage: true,
-      limits: { ...(staged ? this.uploads.limits() : LIMITS), downloadBytes: direct ? this.staging.direct : LEGACY_DOWNLOAD }, uploads: { v: 1, staged }, downloads: { v: 1, direct } };
+      workspace: !!this.available.workspace, desktop: !!this.available.desktop,
+      // X8: the Screen subset a phone may use, through routes a phone token already reaches: GET /cu/<frame> (frames named
+      // by the `cu` items of WS /events) and POST /desktop/stop. Never lease or grant; `desktop` stays as it was.
+      screen: this.available.screen ? { v: 1, frames: true, stop: true } : false, push: !!this.push?.configured, transcribeLanguage: true,
+      errors: { v: 2 }, // typed error codes (mobile-gate.js wireError); v1 = bridge_error + English text
+      readsNeverResume: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // subagents/subagentTail/modelOptions
+      replay: true, // a repeated mutation id answers its first outcome for 10 min (last 256 per device), `pending` while it runs
+      httpOps: { v: 1, ops: [...HTTP_OPS] }, // POST /mobile/op (mobile-op.js)
+      start: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // op start {profile, text, uploads?}: create + send in one
+      maskedPrompt: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // snapshot nodes `maskedPrompt: true` + event `maskedPrompts` [{sid, profile}] (X4)
+      watch: !!this.bridgeConfig && this.bridgeConfig.mode !== 'off', // ops watch/unwatch {sid, profile}: stream a session running elsewhere, read-only (X3)
+      historyProfile: !!this.available.history,
+      liveActivity: this.push?.offers?.('liveActivity') === true, // PUT/DELETE /mobile/activity; content-free liveactivity updates (X7)
+      profileHue: true, // profiles rows may carry `hue` (one of seven names) from ui_meta['hermes-deck'].hue; read-only (X6)
+      searchMessages: this.history?.hermes ? { v: 1, scanRows: search().SCAN_TOTAL, maxLimit: search().MAX_LIMIT } : false, // X5: op searchMessages // GET /session/<sid>/messages|tools|call/<id>?profile=<name> reads only that profile (G8)
+      limits: { ...(staged ? this.uploads.limits() : LIMITS), downloadBytes: direct ? this.staging.direct : LEGACY_DOWNLOAD }, uploads: { v: 1, staged }, downloads: { v: 1, direct }, ...this.notices.capabilities(this.push) };
   }
   stagedReady() { return !!this.bridgeConfig && this.bridgeConfig.mode !== 'off' && this.staging.ok === true; }
   directReady() { return !!this.bridgeConfig && this.bridgeConfig.mode !== 'off' && this.staging.direct > 0; }
@@ -256,6 +311,7 @@ class MobileRelay {
     const file = pairFile(this.tokensFile), data = readJson(file, { pairs: {} }), key = tokens.hash(code), ticket = data.pairs[key];
     if (!ticket || ticket.expires < now) throw fail('invalid_pair', 'Invalid or expired pairing code', 401);
     delete data.pairs[key];
+    markPaired(data, key, oneLine(name, 80)); // a pairing page (pair-page.js) showing this code now says "paired"
     privateWrite(file, data);
     const deviceId = `mobile-${crypto.randomBytes(10).toString('hex')}`, token = tokens.add(this.tokensFile, deviceId);
     return { token, deviceId, capabilities: this.capabilities() };
@@ -266,12 +322,13 @@ class MobileRelay {
       if (this.devices.size >= 64) throw fail('limit', 'Too many active devices', 429);
       device = { id, hash: tokens.load(this.tokensFile).devices[id]?.hash, sockets: new Set(), uploads: new Map(), inflightBytes: 0, files: new Map(),
         notifications: new Map(Object.entries(this.meta.devices[id]?.notifications || {})), ids: new Set(this.meta.devices[id]?.ids || []), receiptFloor: this.meta.devices[id]?.receiptFloor || Date.now() - MUTATION_AGE, registrationBusy: false, observePush: this.meta.devices[id]?.observePush === true, pushAttempt: this.meta.devices[id]?.pushAttempt || null, pushRemoval: this.meta.devices[id]?.pushRemoval || null, notificationOverflow: this.meta.devices[id]?.notificationOverflow || 0, pushKinds: this.meta.devices[id]?.pushKinds || null, groups: new Map(), merged: new Set(), reads: new Set(), offers: null, bridge: null };
+      this.notices.attach(device, this.meta.devices[id] || {});
       this.devices.set(id, device);
     }
     return device;
   }
   persist(device) {
-    this.meta.devices[device.id] = { ids: [...device.ids], receiptFloor: device.receiptFloor, observePush: device.observePush, pushAttempt: device.pushAttempt, pushRemoval: device.pushRemoval, notificationOverflow: device.notificationOverflow, pushKinds: device.pushKinds, notifications: Object.fromEntries(device.notifications) };
+    this.meta.devices[device.id] = { ids: [...device.ids], receiptFloor: device.receiptFloor, observePush: device.observePush, pushAttempt: device.pushAttempt, pushRemoval: device.pushRemoval, notificationOverflow: device.notificationOverflow, pushKinds: device.pushKinds, notifications: Object.fromEntries(device.notifications), ...this.notices.save(device) };
     privateWrite(this.metaFile, this.meta);
   }
   bridge(device) {
@@ -280,17 +337,50 @@ class MobileRelay {
       const bridge = device.bridge = new this.BridgeClient(this.bridgeConfig, this.bridgeOptions);
       // A (re)connected plugin may be a newer or older one: ask again whether it takes staged uploads.
       bridge.on('status', s => { if (s?.status === 'open' && device.bridge === bridge) { this.staging.at = 0; this.probeStaging(device).catch(() => {}); } });
+      bridge.on('status', s => { if (device.bridge === bridge) this.oplog.status(device, s, bridge.pending?.size || 0); });
       for (const [event, label] of [['status', 'status'], ['snapshot', 'snapshot'], ['requests', 'requests'], ['event', 'native'], ['sessions', 'sessions']]) {
         bridge.on(event, data => {
           if (this.devices.get(device.id) !== device || !tokens.stillValid(this.tokensFile, device.id, device.hash)) return;
-          if (event === 'requests') data = phoneRequests(data);
+          if (event === 'requests') { this.maskedCheck(device, data, bridge); data = phoneRequests(data); }
+          if (event === 'snapshot') data = this.markMasked(device, data);
           this.emit(device, { t: 'bridge', event: label, data });
           try { this.notify(device, label, data); } catch { this.emit(device, { t: 'bridge', event: 'status', data: { status: 'error', error: 'Notification metadata could not be saved' } }); }
+          if (event === 'requests') { this.badgeCheck(device); this.activityCheck(device); }
         });
       }
       bridge.start();
     }
     return device.bridge;
+  }
+  /**
+   * Open masked prompts (sudo, secret, vault: request kind `secret`) never reach the phone (phoneRequests); X4 tells it,
+   * content-free, that one is open on the computer: `[{sid, profile}]` (sid null while the host has not bound it).
+   * Never the prompt's text, method, kind or any field of it.
+   */
+  maskedList(device, list, bridge = device.bridge) {
+    const out = new Map();
+    for (const request of Array.isArray(list) ? list : []) {
+      if (request?.kind !== 'secret' || typeof request.profile !== 'string' || !PROFILE_NAME.test(request.profile)) continue;
+      let sid = typeof request.sid === 'string' && request.sid ? request.sid : null;
+      if (!sid) { try { sid = bridge?.nodeFor?.(request.rpcId, request.profile)?.sid || null; } catch {} }
+      out.set(JSON.stringify([request.profile, sid]), { sid, profile: request.profile });
+      if (out.size >= 64) break;
+    }
+    return out;
+  }
+  /** The request list changed: when the set of chats with an open masked prompt changed, tell the phone (X4). */
+  maskedCheck(device, list, bridge) {
+    const masked = this.maskedList(device, list, bridge);
+    const signature = JSON.stringify([...masked.keys()].sort());
+    if (signature === (device.maskedSignature || '[]')) return;
+    device.masked = masked; device.maskedSignature = signature;
+    this.emit(device, { t: 'bridge', event: 'maskedPrompts', data: [...masked.values()] });
+    if (bridge?.snapshot) this.emit(device, { t: 'bridge', event: 'snapshot', data: this.markMasked(device, bridge.snapshot) });
+  }
+  /** A snapshot for the phone: nodes of chats with an open masked prompt carry `maskedPrompt: true` (a copy; X4). */
+  markMasked(device, snapshot) {
+    if (!device.masked?.size || !snapshot || !Array.isArray(snapshot.nodes)) return snapshot;
+    return { ...snapshot, nodes: snapshot.nodes.map(node => node && device.masked.has(JSON.stringify([node.profile, node.sid])) ? { ...node, maskedPrompt: true } : node) };
   }
   emit(device, event) {
     const text = JSON.stringify(event);
@@ -302,6 +392,7 @@ class MobileRelay {
   notify(device, event, data) {
     const admission = { accepted: 0, duplicate: 0, skipped: 0, overflow: 0, available: !!this.push?.configured && device.observePush === true };
     if (!admission.available) return admission;
+    const now = this.now();
     let items = [];
     if (event === 'requests') for (const request of Array.isArray(data) ? data : []) {
       const profile = request?.profile;
@@ -329,30 +420,39 @@ class MobileRelay {
         if (text) this.rememberReply(device, profile, [sid, data.rpcId], text);
       }
       if (kind && sid) {
+        let node;
+        try { node = device.bridge?.nodeFor?.(sid, profile); } catch {}
         if (kind === 'done' || kind === 'error') {
-          let node;
-          try { node = device.bridge?.nodeFor?.(sid, profile); } catch {}
           const turn = data.payload?.turn_id;
           // Gateway counters/request IDs are not native hook turn IDs; uncorrelated terminal events defer to snapshots.
           if (typeof turn !== 'string' || !turn || node?.turnId !== turn) { admission.skipped++; return admission; }
-          items = [{ sid, profile, kind, key: JSON.stringify(['terminal', profile, sid, turn, kind]), source: { payload: data.payload }, rpcId: data.rpcId }];
-        } else items = [{ sid, profile, kind, key: JSON.stringify(['native', profile, sid, opaque()]), source: { payload: data.payload }, rpcId: data.rpcId }];
+          items = [{ sid, profile, kind, turn, key: JSON.stringify(['terminal', profile, sid, turn, kind]), source: { payload: data.payload }, rpcId: data.rpcId }];
+        } else {
+          // One banner per turn (R11): the chat's open banner takes every message of the turn (mobile-notify.js message()).
+          const turn = typeof data.payload?.turn_id === 'string' && data.payload.turn_id ? data.payload.turn_id : typeof node?.turnId === 'string' && node.turnId ? node.turnId : null;
+          items = [{ sid, profile, kind, turn, key: JSON.stringify(['native', profile, sid, opaque()]), source: { payload: data.payload }, rpcId: data.rpcId }];
+        }
       }
     }
     if (event === 'snapshot') {
       const previous = device.states;
       device.states = new Map((data.nodes || []).map(node => [JSON.stringify([node.profile, node.sid]), JSON.stringify([node.state, node.turnId])]));
       if (previous) items = (data.nodes || []).filter(node => previous.has(JSON.stringify([node.profile, node.sid])) && previous.get(JSON.stringify([node.profile, node.sid])) !== JSON.stringify([node.state, node.turnId]))
-        .map(node => ({ sid: node.sid, profile: node.profile, kind: { finished: 'done', error: 'error' }[node.state], timestamp: node.terminalAt ? Math.trunc(node.terminalAt < 1e12 ? node.terminalAt * 1000 : node.terminalAt) : undefined, key: node.turnId ? JSON.stringify(['terminal', node.profile, node.sid, node.turnId, { finished: 'done', error: 'error' }[node.state]]) : null }));
+        .map(node => ({ sid: node.sid, profile: node.profile, kind: { finished: 'done', error: 'error' }[node.state], turn: node.turnId || null, rpcId: node.rpcId, timestamp: node.terminalAt ? Math.trunc(node.terminalAt < 1e12 ? node.terminalAt * 1000 : node.terminalAt) : undefined, key: node.turnId ? JSON.stringify(['terminal', node.profile, node.sid, node.turnId, { finished: 'done', error: 'error' }[node.state]]) : null }));
     }
     this.prune(device);
-    if (items.length && this.atDesk()) { admission.atDesk = items.length; return admission; }
+    if (items.length && this.atDesk()) { admission.atDesk = items.length; for (const item of items) this.notices.log(device, 'at-desk', item); return admission; }
+    let changed = false;
     for (const item of items) {
       if (!item.key || !item.sid || typeof item.profile !== 'string' || !PROFILE_NAME.test(item.profile) || !['reply', 'done', 'approval', 'question', 'error'].includes(item.kind)) { admission.skipped++; continue; }
       const nonce = crypto.createHash('sha256').update(`${device.id}:${item.key}`).digest('hex').slice(0, 48);
       // Reuse the initial timestamp across reconnects/restarts while the local mapping is retained.
       if (device.merged.has(nonce) || [...device.notifications.keys()].some(id => id === nonce || PUSH_EVENT_ID.exec(id)?.[2] === nonce)) { admission.duplicate++; continue; }
-      const timestamp = Number.isSafeInteger(item.timestamp) && item.timestamp >= 1e12 && item.timestamp < 1e13 ? item.timestamp : Date.now();
+      // Scope (R12, D13): replies/ends only for chats a person on this device takes part in (or followed agents), never
+      // for sub-agent sessions or muted agents; approvals and questions from everyone.
+      const reason = this.notices.scope(device, item);
+      if (reason) { admission.skipped++; this.notices.log(device, reason, item); continue; }
+      const timestamp = Number.isSafeInteger(item.timestamp) && item.timestamp >= 1e12 && item.timestamp < 1e13 ? item.timestamp : now;
       const id = `e_${timestamp}_${nonce}`;
       let body = '';
       try { body = notificationBody(item.kind, item.source); } catch {}
@@ -361,43 +461,146 @@ class MobileRelay {
         try { rpcId ||= device.bridge?.nodeFor?.(item.sid, item.profile)?.rpcId; } catch {}
         body = this.recallReply(device, item.profile, [item.sid, rpcId]);
       }
-      // One banner per turn: reply and done of the same turn are merged into the first one; the text wins.
-      if (item.kind === 'reply' || item.kind === 'done') {
-        const group = device.groups.get(JSON.stringify([item.profile, item.sid])), existing = group && device.notifications.get(group.id);
-        if (existing && Date.now() - group.at < COALESCE_MS && !group.kinds.has(item.kind)) {
-          group.kinds.add(item.kind);
+      // One banner per turn (R11): messages update the chat's open banner, the turn's end closes it with its kind.
+      let kind = item.kind;
+      if (item.kind === 'reply') {
+        const step = this.notices.message(device, item, body);
+        if (step !== 'open') { admission.duplicate++; changed = true; this.notices.log(device, 'merged', item); continue; }
+        if (!this.kindEnabled(device, 'reply') && !this.kindEnabled(device, 'done')) { admission.skipped++; this.notices.log(device, 'kind-off', item); continue; }
+      } else if (item.kind === 'done' || item.kind === 'error') {
+        kind = this.terminalKind(device, item.kind);
+        const step = this.notices.terminal(device, item, kind, body);
+        if (step) {
           device.merged.add(nonce);
-          if (!existing.body && body) { existing.body = body; delete existing.hold; }
-          // Not pushed yet and its kind is switched off on the phone: carry the banner under the kind that is on.
-          if (existing.delivery === 'pending' && !this.kindEnabled(device, existing.kind) && this.kindEnabled(device, item.kind)) existing.kind = item.kind;
-          admission.duplicate++;
-          this.persist(device);
-          this.flushPush().catch(() => {});
+          while (device.merged.size > GROUP_LIMIT) device.merged.delete(device.merged.keys().next().value);
+          admission.duplicate++; changed = true;
+          if (step === 'merged') this.notices.log(device, 'merged', item);
+          this.enrichClosed(device, item);
           continue;
         }
-      }
+        if (!kind) { admission.skipped++; this.notices.log(device, 'kind-off', item); continue; }
+      } else if (!this.kindEnabled(device, item.kind)) { admission.skipped++; this.notices.log(device, 'kind-off', item); continue; }
       if (device.notifications.size >= NOTIFICATION_CAPACITY) { admission.overflow++; continue; }
       let title = '', agent = '';
       try { ({ title, agent } = this.describe(device.bridge, item.sid, item.profile)); } catch {}
-      const lookup = (item.kind === 'reply' || item.kind === 'done') && !body && typeof device.bridge?.history === 'function' && this.settleMs > 0;
-      device.notifications.set(id, { sid: item.sid, profile: item.profile, kind: item.kind, title, body, agent, expires: timestamp + 7 * 86400000, delivery: 'pending', ...(lookup ? { hold: Date.now() + this.settleMs } : {}) });
-      if (item.kind === 'reply' || item.kind === 'done') {
-        device.groups.set(JSON.stringify([item.profile, item.sid]), { id, at: Date.now(), kinds: new Set([item.kind]) });
-        while (device.groups.size > GROUP_LIMIT) device.groups.delete(device.groups.keys().next().value);
-        while (device.merged.size > GROUP_LIMIT) device.merged.delete(device.merged.keys().next().value);
-      }
+      const lookup = item.kind === 'done' && !body && typeof device.bridge?.history === 'function' && this.settleMs > 0;
+      device.notifications.set(id, { sid: item.sid, profile: item.profile, kind, title, body, agent, expires: timestamp + 7 * 86400000, delivery: 'pending', ...this.notices.recordFields(device, item), ...(lookup ? { hold: now + this.settleMs } : {}), ...(item.kind === 'reply' ? { open: true } : {}) });
+      if (item.kind === 'reply' || item.kind === 'done' || item.kind === 'error') this.notices.opened(device, item, id);
       admission.accepted++;
+      this.notices.log(device, 'admitted', { ...item, kind });
       this.persist(device);
       this.refreshNames(device.bridge).catch(() => {});
       if (lookup) this.enrich(device, id, item);
       else this.flushPush().catch(() => {});
     }
+    if (changed) { this.persist(device); this.flushPush().catch(() => {}); }
     if (admission.overflow) {
       device.notificationOverflow += admission.overflow;
       this.persist(device);
       this.emit(device, { t: 'bridge', event: 'notificationAdmission', data: { ...admission, capacity: NOTIFICATION_CAPACITY } });
     }
     return admission;
+  }
+  /** The kind a turn's end is pushed as: its own, else `reply` for a done when only replies are on, else none. */
+  terminalKind(device, kind) {
+    if (this.kindEnabled(device, kind)) return kind;
+    return kind === 'done' && this.kindEnabled(device, 'reply') ? 'reply' : null;
+  }
+  /** Sweep step per device (mobile-notify.js): quiet turns settle; the end of a quiet window yields one digest. */
+  govern(device) {
+    if (!device.observePush) return;
+    let changed = false;
+    // The settle push of a still-running turn is for clients that sent a policy (they know `reply` means that now).
+    try { changed = this.notices.settle(device, this.kindEnabled(device, 'reply') && !!device.pushPolicy); } catch {}
+    if (changed) { try { this.persist(device); } catch {} this.flushPush().catch(() => {}); }
+    let digest = null;
+    try { digest = this.notices.tick(device); } catch {}
+    if (digest) { try { this.storeDigest(device, digest); } catch {} }
+    try { this.badgeTick(device); } catch {}
+    try { this.activitySweep(device); } catch {}
+  }
+  // --- Live Activities (X7) -----------------------------------------------------------------------------------------
+  activities(device) { return device.activities ||= new Map(); }
+  activityFor(device, profile, sid) {
+    const entry = this.activities(device).get(JSON.stringify([profile, sid]));
+    return entry && entry.expires > this.now() ? entry : null;
+  }
+  /** Open approvals + questions of one chat (the activity's `waiting`). */
+  waitingIn(device, profile, sid) {
+    if (device.bridge?.status?.status !== 'open') return 0;
+    return Math.min(99, phoneRequests(this.openRequests(device)).filter(request => request.profile === profile && request.sid === sid).length);
+  }
+  /** The content-free state of a Live Activity update: enums and numbers only (no title, no tool, no text). */
+  liveState(device, entry, state, { alert = false, end = false } = {}) {
+    const at = Math.floor(this.now() / 1000);
+    return { state, waiting: this.waitingIn(device, entry.profile, entry.sid), since: entry.since, at, event: end ? 'end' : 'update', ...(alert ? { alert: true } : {}), ...(end ? { dismiss: at + ACTIVITY_DISMISS_S } : {}) };
+  }
+  forgetActivity(device, entry, { remote = true } = {}) {
+    const key = JSON.stringify([entry.profile, entry.sid]);
+    if (this.activities(device).get(key) === entry) this.activities(device).delete(key);
+    if (remote) this.push?.removeActivity?.(entry.id)?.catch?.(() => {});
+  }
+  /** Expired activities are forgotten here (the gateway expires its copy by itself). */
+  activitySweep(device) {
+    for (const entry of [...this.activities(device).values()]) if (entry.expires <= this.now()) this.forgetActivity(device, entry, { remote: false });
+  }
+  /**
+   * The request list changed: an activity showing a request that is no longer open (answered here, at the desktop,
+   * cancelled, timed out) goes back to Working with one silent update (no alert; past the breaker like the badge).
+   */
+  activityCheck(device) {
+    if (this.push?.offers?.('liveActivity') !== true || !device.observePush || device.bridge?.status?.status !== 'open') return;
+    for (const entry of this.activities(device).values()) {
+      if (!['approval', 'question'].includes(entry.state) || entry.expires <= this.now()) continue;
+      if (this.waitingIn(device, entry.profile, entry.sid) > 0) continue;
+      if (device.notifications.size >= NOTIFICATION_CAPACITY) return;
+      for (const item of device.notifications.values()) if (item.kind === 'liveactivity' && item.activity === entry.id && item.delivery === 'pending') item.delivery = 'superseded';
+      const now = this.now();
+      entry.state = 'working';
+      device.notifications.set(`e_${now}_${opaque()}`, { kind: 'liveactivity', activity: entry.id, profile: entry.profile, sid: entry.sid, live: this.liveState(device, entry, 'working'), title: '', body: '', agent: '', expires: now + 3600000, delivery: 'pending' });
+      this.notices.log(device, 'activity', { kind: 'liveactivity', sid: entry.sid, profile: entry.profile }, { state: 'working' });
+      this.persist(device);
+      this.flushPush().catch(() => {});
+    }
+  }
+  /** Open approvals + questions of the device's bridge right now, or null while the bridge is not open (unknown). */
+  badgeCount(device) {
+    if (device.bridge?.status?.status !== 'open') return null;
+    return phoneRequests(this.openRequests(device)).length;
+  }
+  /** The request list changed: look at the badge once things settle (X2). */
+  badgeCheck(device) {
+    if (!device.badgeDueAt) device.badgeDueAt = this.now() + BADGE_SETTLE_MS;
+  }
+  /**
+   * Silent badge correction (X2): when the open approvals + questions dropped below the badge the phone was last pushed
+   * (answered at the desktop, cancelled, timed out), one badge-only push sets the icon again. Only to a gateway that
+   * offers `badge`; past the breaker (it shows nothing); at most one per BADGE_INTERVAL_MS, the newest count wins.
+   * The count is never raised this way: a new approval or question brings its own banner and badge.
+   */
+  badgeTick(device) {
+    if (!device.badgeDueAt || this.now() < device.badgeDueAt) return;
+    device.badgeDueAt = 0;
+    if (this.push?.offers?.('badge') !== true || !device.observePush || typeof device.badgeSent !== 'number') return;
+    const count = this.badgeCount(device);
+    if (count === null || count >= device.badgeSent) return;
+    const wait = (device.lastBadgeAt || 0) + BADGE_INTERVAL_MS - this.now();
+    if (wait > 0) { device.badgeDueAt = this.now() + wait; return; }
+    if (device.notifications.size >= NOTIFICATION_CAPACITY) return;
+    for (const item of device.notifications.values()) if (item.kind === 'badge' && item.delivery === 'pending') item.delivery = 'superseded';
+    const now = this.now();
+    device.notifications.set(`e_${now}_${opaque()}`, this.notices.badgeRecord(device, count, now));
+    device.badgeSent = count; device.lastBadgeAt = now;
+    this.notices.log(device, 'badge', { kind: 'badge' }, { badge: count });
+    this.persist(device);
+    this.flushPush().catch(() => {});
+  }
+  /** A turn closed into its open banner without any text: read the session's last assistant message before pushing. */
+  enrichClosed(device, item) {
+    const entry = device.turns.get(JSON.stringify([item.profile, item.sid])), record = entry && device.notifications.get(entry.id);
+    if (!record || record.delivery !== 'pending' || record.open || record.body || record.hold || typeof device.bridge?.history !== 'function' || this.settleMs <= 0) return;
+    record.hold = this.now() + this.settleMs;
+    this.enrich(device, entry.id, item);
   }
   /** The user left the desk (idle, locked, asleep or gone): approvals and questions still open now reach the phone. */
   deskCheck() {
@@ -408,7 +611,28 @@ class MobileRelay {
     }
     this.wasAtDesk = at;
   }
-  kindEnabled(device, kind) { return !Array.isArray(device.pushKinds) || device.pushKinds.includes(kind); }
+  /** Open approvals/questions of the device's bridge for the badge (G5); none when the bridge is not open. */
+  openRequests(device) {
+    try { return typeof device.bridge?.listRequests === 'function' ? device.bridge.listRequests() : []; } catch { return []; }
+  }
+  setPushPolicy(device, raw) { return this.notices.setPolicy(device, raw); }
+  /** Every op of the device: stake in its chat (12 h "mine"); a mutation or `seen` resets the breaker. Returns `seen`'s result. */
+  noteOp(device, op, args) {
+    const { reply, dirty } = this.notices.noteOp(device, op, args, !READ_OPS.has(op));
+    if (dirty) { try { this.persist(device); } catch {} }
+    return reply;
+  }
+  /**
+   * A chat this device just made is "mine" as well: start, create, createBotChat, a re-created send and a branch name
+   * the new session only in their result, never in their arguments.
+   */
+  noteResult(device, op, args, result) {
+    if (!['start', 'create', 'createBotChat', 'send', 'branchSession'].includes(op) || !result || typeof result.sid !== 'string') return;
+    const profile = typeof result.profile === 'string' ? result.profile : args?.profile ?? args?.name;
+    try { if (this.notices.noteOp(device, 'send', { sid: result.sid, profile }, false).dirty) this.persist(device); } catch {}
+  }
+  // A device that never sent a kinds list gets done/approval/question/error (R14): no banner per assistant message.
+  kindEnabled(device, kind) { return kindsOf(device.pushKinds).includes(kind); }
   /** Keeps a turn's reply text under every id the session is known by (stored sid and runtime id), so a done event can find it. */
   rememberReply(device, profile, ids, text) {
     device.lastReply ||= new Map();
@@ -493,7 +717,18 @@ class MobileRelay {
     }
     return device.offers;
   }
-  async call(device, message) {
+  /** One phone op (WebSocket frame or POST /mobile/op): checks, gate, dispatch; every refusal or failure is logged. */
+  async call(device, message, meta = {}) {
+    const started = Date.now();
+    let wire = null;
+    try { return await this.callChecked(device, message, meta); }
+    catch (error) { wire = wireError(error); throw error; }
+    finally {
+      this.oplog.op({ device, op: message?.op, sid: message?.args?.sid, ms: Date.now() - started, wire, gate: device.gate?.size,
+        pending: device.bridge?.pending?.size || 0, replayed: meta.replayed === true });
+    }
+  }
+  async callChecked(device, message, meta) {
     if (!message || typeof message.id !== 'string' || !/^[A-Za-z0-9._-]{1,128}$/.test(message.id)) throw fail('bad_request', 'Invalid request ID');
     const args = message.args ?? {};
     if (!args || typeof args !== 'object' || Array.isArray(args)) throw fail('bad_request', 'Invalid arguments');
@@ -510,19 +745,49 @@ class MobileRelay {
       if (timestamp <= device.receiptFloor) throw Object.assign(fail('expired_request', 'Request expired; refresh state before a new action'), { uncertain: true });
       if (timestamp > now + MUTATION_FUTURE) throw fail('clock_skew', 'Mutation timestamp is ahead of server time');
     }
+    // Replay (R10): a repeated mutation id answers the first outcome while it is remembered (mobile-gate.js ReplayMemory).
+    const memory = device.replay ||= new ReplayMemory(this.replayOptions);
+    if (!READ_OPS.has(message.op) && !device.reads.has(message.id)) {
+      const seen = memory.get(message.id);
+      if (seen) return memory.answer(seen, meta);
+    }
     if (device.ids.has(message.id) || device.reads.has(message.id)) throw fail('duplicate', 'Request ID already used; refresh state before a new action');
-    if (READ_OPS.has(message.op)) {
+    const noted = this.noteOp(device, message.op, args); if (noted) return noted; // push bookkeeping (mobile-notify.js); answers `seen`
+    // Per-device gate (mobile-gate.js): 8 ops in flight, 32 waiting up to 10 s, then `busy`; identical reads share one
+    // bridge call. A refusal here happens before an ID is burnt or a read slot is held: nothing was accepted.
+    const gate = device.gate ||= new Gate(this.gateOptions);
+    const read = READ_OPS.has(message.op), share = read ? shareKey(message.op, args) : null;
+    if (!gate.admits(share)) throw gate.refusal();
+    const run = () => gate.run(() => foreground(() => this.dispatch(device, message.op, args)), share);
+    if (read) {
       if (device.reads.size >= 64) throw fail('limit', 'Too many active reads', 429);
       device.reads.add(message.id);
-      try { return await this.dispatch(device, message.op, args); }
+      try { return await run(); }
       finally { device.reads.delete(message.id); }
     }
     if (device.ids.size >= 10000) throw fail('limit', 'Mutation limit for the seven-day window reached; reads remain available', 429);
     device.ids.add(message.id);
     this.persist(device);
-    return this.dispatch(device, message.op, args);
+    memory.begin(message.id);
+    try {
+      const result = await run();
+      this.noteResult(device, message.op, args, result);
+      memory.settle(message.id, true, result);
+      return result;
+    } catch (error) {
+      this.noteResult(device, message.op, args, error?.session); // start with an unknown outcome names the session it made
+      // Timed out in the gate's queue: it never ran, so the ID is not burnt and the same action may be retried with it.
+      if (error?.gate === 'queued') { device.ids.delete(message.id); this.persist(device); memory.forget(message.id); }
+      else memory.settle(message.id, false, wireError(error));
+      throw error;
+    }
   }
   async dispatch(device, op, args) {
+    if (op === 'searchMessages') {
+      // Same reach as the history reads a phone already has (every session of every profile on this host), read-only.
+      if (!this.history?.hermes) throw fail('unavailable', 'Message history is not available on this relay', 503);
+      return search().searchMessages(this.history.hermes, args, { claudeProfile: this.history.claudeProfile });
+    }
     const bridge = this.bridge(device);
     switch (op) {
       case 'plan': case 'toolCalls': case 'subagents': case 'subagentTail': case 'steerSubagent': case 'interruptSubagent': case 'commands': {
@@ -531,18 +796,37 @@ class MobileRelay {
         if (op === 'commands') return bridge.commandCatalog(args.profile);
         if (typeof args.sid !== 'string' || !/^[\x21-\x7e]{1,512}$/.test(args.sid)) throw fail('bad_request', 'Invalid session ID');
         const options = { profile: args.profile };
-        if (['plan', 'toolCalls', 'subagents'].includes(op)) return bridge[op](args.sid, options);
+        // Reads never resume a session (readsNeverResume): an unbound session answers available:false / [] instead.
+        if (['plan', 'toolCalls', 'subagents'].includes(op)) return bridge[op](args.sid, op === 'subagents' ? { ...options, resume: false } : options);
         if (typeof args.id !== 'string' || !/^[\x21-\x7e]{1,128}$/.test(args.id)) throw fail('bad_request', 'Invalid sub-agent ID');
         if (op === 'steerSubagent') {
           if (typeof args.text !== 'string' || !args.text.trim() || args.text.length > 32000) throw fail('bad_request', 'Invalid guidance text');
           return bridge.steerSubagent(args.sid, args.id, args.text, options);
         }
-        return bridge[op](args.sid, args.id, options);
+        return bridge[op](args.sid, args.id, op === 'subagentTail' ? { ...options, resume: false } : options);
+      }
+      case 'watch': case 'unwatch': {
+        // One watched session per device (watching another one replaces it); it ends with the device's last live
+        // socket (upgrade(): close). Read-only: the bridge's watch binding never submits, takes over or closes.
+        if (typeof args.profile !== 'string' || !PROFILE_NAME.test(args.profile)) throw fail('bad_request', 'Explicit profile required');
+        if (typeof args.sid !== 'string' || !/^[\x21-\x7e]{1,512}$/.test(args.sid)) throw fail('bad_request', 'Invalid session ID');
+        if (typeof bridge.watch !== 'function' || typeof bridge.unwatch !== 'function') throw fail('operation', 'Watch is not available on this relay');
+        if (op === 'unwatch') {
+          bridge.unwatch(args.sid, { profile: args.profile, owner: WATCH_OWNER });
+          if (device.watching?.sid === args.sid && device.watching?.profile === args.profile) device.watching = null;
+          return { ok: true, watching: false };
+        }
+        if (![...device.sockets].some(ws => ws.mobileBridge && ws.readyState === 1)) throw fail('bad_request', 'Watch needs the live connection (WS /mobile/bridge)');
+        device.watching = { sid: args.sid, profile: args.profile };
+        const result = await bridge.watch(args.sid, { profile: args.profile, owner: WATCH_OWNER });
+        const watching = result?.watching === true;
+        if (!watching && device.watching?.sid === args.sid && device.watching?.profile === args.profile) device.watching = null;
+        return { watching, ...(typeof result?.error === 'string' && result.error ? { error: result.error.slice(0, 300) } : {}) };
       }
       case 'sessions': return bridge.sessions(args);
       case 'sessionPage': case 'sessionIndex':
         if ('archived' in args && typeof args.archived !== 'boolean' || 'force' in args && typeof args.force !== 'boolean' || 'offset' in args && (!Number.isSafeInteger(args.offset) || args.offset < 0)) throw fail('bad_request', 'Invalid session index arguments');
-        return bridge[op](args);
+        return op === 'sessionIndex' ? wireSessionIndex(await bridge.sessionIndex(args)) : bridge[op](args);
       case 'renameSession': case 'pinSession': case 'archiveSession': case 'branchSession': case 'discard': case 'setEffort': case 'takeover':
         if (!PROFILE_NAME.test(args.profile || '')) throw fail('bad_request', 'Explicit profile required');
         return bridge[op](args.sid, args);
@@ -567,10 +851,15 @@ class MobileRelay {
       case 'createBotChat': return bridge.createBotChat(args.name, args);
       case 'create': return bridge.create(args);
       case 'delete': return bridge.deleteSession(args.sid, args);
-      case 'send': {
+      case 'send': case 'start': {
+        // start (R9): create + first message in one op; send: a created-but-never-stored chat whose runtime is gone is
+        // re-created rather than resumed (the result then names the new sid: {status, sid, profile, recreated: true})
+        if (op === 'start' && !PROFILE_NAME.test(args.profile || '')) throw fail('bad_request', 'Explicit profile required');
+        const submit = extra => op === 'start' ? bridge.startChat({ profile: args.profile, text: args.text, ...extra })
+          : bridge.send(args.sid, args.text, { profile: args.profile, recreate: true, ...extra });
         const refs = args.uploads || [];
         if (!Array.isArray(refs) || refs.length > 10 || new Set(refs).size !== refs.length) throw fail('bad_request', 'Invalid uploads');
-        if (!refs.length) return bridge.send(args.sid, args.text, { profile: args.profile, files: [] });
+        if (!refs.length) return submit({ files: [] });
         // Staged (the plugin on this host takes spool ids): only ids travel, the plugin moves the files itself. Else the
         // old single-line path: each file read from the spool into base64, within the old limits.
         const staged = this.stagedReady();
@@ -581,9 +870,9 @@ class MobileRelay {
         }
         const { items, release } = this.uploads.take(device, refs);
         try {
-          if (staged) return await bridge.send(args.sid, args.text, { profile: args.profile, staged: items.map(item => ({ upload: item.id, filename: item.name })) });
+          if (staged) return await submit({ staged: items.map(item => ({ upload: item.id, filename: item.name })) });
           const files = items.map(item => ({ filename: item.name, content_base64: this.uploads.readBuffer(item, LIMITS.fileBytes).toString('base64') }));
-          return await bridge.send(args.sid, args.text, { profile: args.profile, files });
+          return await submit({ files });
         } catch (error) {
           if (staged && error?.rpcCode === -32601) this.staging = { ok: false, at: Date.now(), busy: null }; // an older plugin came back
           throw error;
@@ -595,7 +884,7 @@ class MobileRelay {
         if (!node || node.sid !== args.sid || node.profile !== args.profile) throw fail('bad_request', 'Live session profile does not match control target');
         return op === 'interrupt' ? bridge.interrupt(args.sid, args) : bridge[op](args.sid, args.text, args);
       }
-      case 'modelOptions': return bridge.modelOptions(args.sid, args);
+      case 'modelOptions': return bridge.modelOptions(args.sid, { ...args, resume: false }); // unbound: the profile's options
       case 'setModel': return bridge.setModel(args.sid, args);
       case 'answerApproval': case 'answerQuestion': {
         const requests = bridge.listRequests().filter(request => request.id === args.id);
@@ -649,7 +938,7 @@ class MobileRelay {
       const index = (start + offset) % ids.length, id = ids[index];
       if (this.devices.get(id)?.registrationBusy || this.pushTasks.has(id) || (this.pushRetryAt.get(id) || 0) > Date.now()) continue;
       const state = this.meta.devices[id];
-      if (!this.meta.revocations[id] && !state?.pushRemoval && (state?.observePush !== true || !Object.values(state.notifications || {}).some(ready))) continue;
+      if (!this.meta.revocations[id] && !state?.pushRemoval && (state?.observePush !== true || !Object.values(state.notifications || {}).some(item => ready(item, this.now())))) continue;
       this.pushCursor = (index + 1) % ids.length;
       const task = this.pushOne(id).then(() => { this.pushRetryAt.delete(id); }).catch(() => { this.pushRetryAt.set(id, Date.now() + 1000); }).finally(() => {
         this.pushTasks.delete(id);
@@ -687,14 +976,49 @@ class MobileRelay {
       return;
     }
     if (state?.observePush !== true) return;
-    const next = Object.entries(state?.notifications || {}).find(([, item]) => ready(item));
+    const next = Object.entries(state?.notifications || {}).find(([, item]) => ready(item, this.now()));
     if (!next) return;
     const [id, item] = next;
     let delivery = 'accepted';
-    if (!PUSH_EVENT_ID.test(id) || item.expires <= Date.now()) delivery = 'expired';
+    if (!PUSH_EVENT_ID.test(id) || item.expires <= this.now()) delivery = 'expired';
     else {
-      try { await this.push.notify(deviceId, { id, kind: item.kind }); }
-      catch (error) { if (error.status === 410 && error.code === 'EVENT_EXPIRED') delivery = 'expired'; else throw error; }
+      // The burst breaker (D9.3) decides when a banner is about to leave: a held banner is counted, never sent later.
+      const owner = this.devices.get(deviceId) || this.device(deviceId);
+      const verdict = this.notices.release(owner, item);
+      if (verdict.digest) this.storeDigest(owner, verdict.digest);
+      // A Live Activity for this chat takes the event instead of a banner (DESIGN §7.4: one or the other), after the
+      // same breaker verdict; its own silent updates (kind liveactivity) passed the breaker like the badge (X7).
+      const activity = item.kind === 'liveactivity' ? (this.activities(owner).get(JSON.stringify([item.profile, item.sid]))?.id === item.activity ? this.activityFor(owner, item.profile, item.sid) : null)
+        : LIVE_STATE[item.kind] && !item.test && this.push.offers?.('liveActivity') === true ? this.activityFor(owner, item.profile, item.sid) : null;
+      if (verdict.action === 'hold') delivery = 'held';
+      else if (item.kind === 'badge' && this.push.offers?.('badge') !== true) delivery = 'dropped'; // the gateway changed meanwhile
+      else if (item.kind === 'liveactivity' && (!activity || this.push.offers?.('liveActivity') !== true)) delivery = 'dropped'; // ended or replaced meanwhile
+      else if (activity) {
+        const state = item.kind === 'liveactivity' ? item.live.state : LIVE_STATE[item.kind];
+        const end = state === 'finished' || state === 'failed';
+        const live = item.kind === 'liveactivity' ? item.live : this.liveState(owner, activity, state, { alert: true, end });
+        try { await this.push.notify(deviceId, { id, kind: 'liveactivity', activity: activity.id, live }); }
+        catch (error) {
+          if (verdict.action === 'send') owner.governor.refund();
+          if (error.status === 410 && error.code === 'EVENT_EXPIRED') delivery = 'expired'; else throw error;
+        }
+        if (delivery === 'accepted') {
+          activity.state = state;
+          if (end) this.forgetActivity(owner, activity, { remote: false }); // the gateway removes it once the end went out
+          this.notices.log(owner, 'activity-sent', item, { state, ...(item.kind !== 'liveactivity' ? { instead: item.kind } : {}) });
+        }
+      }
+      else {
+        // The badge rides on the push (X2): open approvals + questions now, or the correction's own count.
+        const badge = item.kind === 'badge' ? item.badge : this.badgeCount(owner);
+        try { await this.push.notify(deviceId, gatewayEvent(this.push, id, item, badge)); }
+        catch (error) {
+          if (verdict.action === 'send') owner.governor.refund(); // not delivered: a retry must not count twice
+          if (error.status === 410 && error.code === 'EVENT_EXPIRED') delivery = 'expired'; else throw error;
+        }
+        if (delivery === 'accepted' && Number.isSafeInteger(badge) && this.push.offers?.('badge') === true) owner.badgeSent = badge;
+        if (delivery === 'accepted') this.notices.log(owner, item.kind === 'digest' ? 'digest-sent' : item.kind === 'badge' ? 'badge-sent' : 'sent', item, verdict.action === 'bypass' && !['digest', 'badge'].includes(item.kind) && !item.test ? { bypass: true } : undefined);
+      }
     }
     if (this.meta.revocations[deviceId] || !tokens.load(this.tokensFile).devices[deviceId]) return;
     const current = this.meta.devices[deviceId]?.notifications?.[id];
@@ -702,11 +1026,33 @@ class MobileRelay {
     current.delivery = delivery;
     const device = this.devices.get(deviceId);
     if (device?.notifications.has(id)) device.notifications.get(id).delivery = delivery;
-    privateWrite(this.metaFile, this.meta);
+    if (device) this.persist(device); // the breaker state travels with the device's metadata
+    else privateWrite(this.metaFile, this.meta);
+  }
+  /** One digest record ("9 updates in 3 chats · 1 needs you"; counts only, no chat text), pushed past the breaker. */
+  storeDigest(device, digest) {
+    if (device.notifications.size >= NOTIFICATION_CAPACITY) return;
+    const now = this.now();
+    device.notifications.set(`e_${now}_${opaque()}`, this.notices.digestRecord(device, digest, now));
+    this.notices.log(device, 'digest', { kind: 'digest' }, { counts: digest.counts });
+    this.persist(device);
+    this.flushPush().catch(() => {});
+  }
+  /** The person looked at the phone (G1): the breaker resets and drops what it held. `{ok, held}`. */
+  seen(device, reason) {
+    const { changed, ...reply } = this.notices.seen(device, reason);
+    if (changed) this.persist(device);
+    return reply;
+  }
+  /** A foreground presence heartbeat of a paired phone on /events (index.js) counts as seen. */
+  seenDevice(id, reason = 'presence') {
+    if (typeof id !== 'string' || (!this.devices.has(id) && !this.meta.devices[id])) return;
+    try { if (tokens.load(this.tokensFile).devices[id]) this.seen(this.device(id), reason); } catch {}
   }
   async disablePush(device) {
     if (this.devices.get(device.id) !== device || !tokens.stillValid(this.tokensFile, device.id, device.hash)) throw fail('unauthorized', 'Device revoked', 401);
     device.observePush = false;
+    device.activities?.clear(); // the gateway removes them with the device registration
     if (!device.registrationBusy) device.pushAttempt = null;
     device.pushRemoval = opaque();
     this.persist(device);
@@ -727,6 +1073,7 @@ class MobileRelay {
     tokens.revoke(this.tokensFile, device.id);
     for (const id of [...device.uploads.keys()]) this.uploads.remove(device, id); // its uploads go too, running ones aborted
     for (const ws of device.sockets) ws.terminate();
+    device.activities?.clear();
     if (!device.registrationBusy) this.devices.delete(device.id);
     await device.bridge?.stop();
     if (persistenceError) throw persistenceError;
@@ -735,11 +1082,17 @@ class MobileRelay {
   }
   sweep() {
     this.ticks++;
+    if (this.ticks % 60 === 0 && this.push?.configured) this.push.refreshFeatures?.()?.catch?.(() => {}); // cached for an hour
+    // A quiet window that outlived a restart still ends with its digest: load such devices (bounded by the pairing limit).
+    if (this.ticks % 60 === 1) for (const [id, state] of Object.entries(this.meta.devices)) {
+      if (!this.devices.has(id) && state?.observePush === true && state.pushGovernor?.quietUntil) { try { this.device(id); } catch {} }
+    }
     this.flushPush().catch(() => {});
     this.deskCheck();
     for (const device of this.devices.values()) {
       if (!tokens.stillValid(this.tokensFile, device.id, device.hash)) { if (!this.meta.revocations[device.id]) this.revoke(device).catch(() => {}); continue; }
       this.prune(device);
+      this.govern(device);
       if (this.ticks % 30 === 0) for (const ws of device.sockets) {
         if (!ws.mobileBridge) continue;
         if (ws.mobileAlive === false) ws.terminate();
@@ -757,33 +1110,45 @@ class MobileRelay {
       ws.mobileBridge = true;
       ws.mobileAlive = true;
       ws.on('pong', () => { ws.mobileAlive = true; });
-      ws.on('close', () => device.sockets.delete(ws));
+      ws.on('close', () => { device.sockets.delete(ws); this.endWatch(device); });
       ws.on('error', () => {});
       ws.on('message', async (data, binary) => {
         if (binary) return ws.close(1003);
         let message;
         try { message = JSON.parse(data); } catch { return ws.close(1007); }
+        const meta = {}; // call() sets meta.replayed when it answers a repeated mutation id from memory
         try {
           if (!tokens.stillValid(this.tokensFile, device.id, device.hash)) throw fail('unauthorized', 'Device revoked', 401);
-          const result = await this.call(device, message);
-          if (ws.readyState === 1) ws.send(JSON.stringify({ t: 'response', id: message.id, ok: true, result }));
+          const result = await this.call(device, message, meta);
+          if (ws.readyState === 1) ws.send(JSON.stringify({ t: 'response', id: message.id, ok: true, result, ...(meta.replayed ? { replayed: true } : {}) }));
         } catch (error) {
-          if (ws.readyState === 1) ws.send(JSON.stringify({ t: 'response', id: message?.id, ok: false, error: { code: error.code || 'bridge_error', message: error.message, uncertain: error.uncertain === true || !error.code } }));
+          if (ws.readyState === 1) ws.send(JSON.stringify({ t: 'response', id: message?.id, ok: false, error: wireError(error), ...(meta.replayed ? { replayed: true } : {}) }));
         }
       });
       try {
         const bridge = this.bridge(device);
         ws.send(JSON.stringify({ t: 'bridge', event: 'status', data: bridge.status }));
-        if (bridge.snapshot) ws.send(JSON.stringify({ t: 'bridge', event: 'snapshot', data: bridge.snapshot }));
-        ws.send(JSON.stringify({ t: 'bridge', event: 'requests', data: phoneRequests(bridge.listRequests()) }));
+        const listed = bridge.listRequests();
+        const masked = this.maskedList(device, listed, bridge);
+        device.masked = masked; device.maskedSignature = JSON.stringify([...masked.keys()].sort());
+        if (bridge.snapshot) ws.send(JSON.stringify({ t: 'bridge', event: 'snapshot', data: this.markMasked(device, bridge.snapshot) }));
+        ws.send(JSON.stringify({ t: 'bridge', event: 'requests', data: phoneRequests(listed) }));
+        if (masked.size) ws.send(JSON.stringify({ t: 'bridge', event: 'maskedPrompts', data: [...masked.values()] }));
       } catch (error) { ws.send(JSON.stringify({ t: 'bridge', event: 'status', data: { status: 'off', error: error.message } })); }
     });
   }
+  /** The device's last live socket closed: its watched session is disarmed (X3); the binding itself stays, as on the desktop. */
+  endWatch(device) {
+    if (!device.watching || [...device.sockets].some(ws => ws.mobileBridge && ws.readyState === 1)) return;
+    const { sid, profile } = device.watching;
+    device.watching = null;
+    try { device.bridge?.unwatch?.(sid, { profile, owner: WATCH_OWNER }); } catch {}
+  }
   onHttp(req, res, url) {
     if (!url.pathname.startsWith('/mobile/')) return false;
-    this.handle(req, res, url).catch(error => {
+    foreground(() => this.handle(req, res, url)).catch(error => { // a phone's request: not the relay's background budget
       if (res.headersSent) res.destroy();
-      else { settleBody(req, res); json(res, error.status || 500, { error: { code: error.code || 'bridge_error', message: error.message, uncertain: error.uncertain === true || !error.code } }); }
+      else { settleBody(req, res); json(res, error.status || 500, { error: wireError(error) }); }
     });
     return true;
   }
@@ -794,6 +1159,11 @@ class MobileRelay {
     if (!auth) throw fail('unauthorized', 'Mobile bearer required', 401);
     const device = this.device(auth.id);
     if (route === '/mobile/pair' && req.method === 'DELETE') return json(res, 200, await this.revoke(device));
+    if (route === '/mobile/op' && req.method === 'POST') {
+      const value = await object(req);
+      if (!tokens.stillValid(this.tokensFile, device.id, device.hash)) throw fail('unauthorized', 'Device revoked', 401);
+      return json(res, 200, await httpOp(this, device, value, { readOps: READ_OPS }));
+    }
     if (route === '/mobile/capabilities' && req.method === 'GET') {
       await this.probeStaging(device).catch(() => false);
       return json(res, 200, { ...this.capabilities(), notificationAdmission: { capacity: NOTIFICATION_CAPACITY, retained: device.notifications.size, overflow: device.notificationOverflow } });
@@ -880,6 +1250,9 @@ class MobileRelay {
         if (typeof registration.enabled !== 'boolean') throw fail('bad_request', 'Expected registration enabled boolean');
         if (registration.enabled === false) return json(res, 200, await this.disablePush(device));
         if (!this.push?.configured) throw fail('unavailable', 'Push gateway not configured', 503);
+        // G2: the device's notification policy stays on the relay; the gateway accepts exactly its four keys.
+        const { policy: rawPolicy, ...forward } = registration;
+        this.notices.checkPolicy(rawPolicy);
         if (this.devices.get(device.id) !== device || !tokens.stillValid(this.tokensFile, device.id, device.hash)) throw fail('unauthorized', 'Device revoked', 401);
         if (device.registrationBusy) throw fail('busy', 'Push registration already in flight', 409);
         device.registrationBusy = true;
@@ -896,8 +1269,10 @@ class MobileRelay {
           if (device.pushAttempt !== attempt) throw fail('superseded', 'Push registration superseded by newer intent', 409);
           let definitive = false;
           try {
-            await this.push.setDevice(device.id, registration);
+            this.push.refreshFeatures?.(true)?.catch?.(() => {}); // the gateway's features (collapse, digest), read at each registration
+            await this.push.setDevice(device.id, forward);
             if (Array.isArray(registration.kinds)) device.pushKinds = registration.kinds.filter(kind => typeof kind === 'string');
+            this.setPushPolicy(device, rawPolicy); // absent: the D9 defaults
             if (device.pushAttempt === attempt && device.pushRemoval === priorRemoval && !this.meta.revocations[device.id]) {
               device.pushRemoval = null;
               device.observePush = true;
@@ -935,7 +1310,7 @@ class MobileRelay {
             this.persist(device);
           }
           if (device.observePush && this.capabilities().bridge) this.bridge(device);
-          return json(res, 200, { ok: true });
+          return json(res, 200, { ok: true, policy: this.notices.policy(device) });
         } finally {
           device.registrationBusy = false;
           if (!tokens.stillValid(this.tokensFile, device.id, device.hash)) this.devices.delete(device.id);
@@ -943,21 +1318,83 @@ class MobileRelay {
         }
       }
     }
+    if (route === '/mobile/activity' && (req.method === 'PUT' || req.method === 'DELETE')) {
+      // A Live Activity's push token for one chat (X7). PUT {token, profile, sid, since?} -> {ok, id, expires};
+      // DELETE {profile, sid} -> {ok, removed}. At most three per device: a fourth replaces the oldest.
+      const input = await object(req);
+      const allowed = req.method === 'PUT' ? ['token', 'profile', 'sid', 'since'] : ['profile', 'sid'];
+      if (Object.keys(input).some(key => !allowed.includes(key))) throw fail('bad_request', 'Unknown field');
+      if (typeof input.profile !== 'string' || !PROFILE_NAME.test(input.profile)) throw fail('bad_request', 'Explicit profile required');
+      if (typeof input.sid !== 'string' || !/^[\x21-\x7e]{1,512}$/.test(input.sid)) throw fail('bad_request', 'Invalid session ID');
+      const key = JSON.stringify([input.profile, input.sid]), list = this.activities(device), prior = list.get(key);
+      if (req.method === 'DELETE') {
+        if (prior) { this.forgetActivity(device, prior, { remote: false }); await this.push?.removeActivity?.(prior.id)?.catch?.(() => {}); }
+        return json(res, 200, { ok: true, removed: !!prior });
+      }
+      if (typeof input.token !== 'string' || !ACTIVITY_TOKEN.test(input.token)) throw fail('bad_request', 'Invalid activity token');
+      const nowS = Math.floor(this.now() / 1000);
+      if (input.since !== undefined && (!Number.isSafeInteger(input.since) || input.since > nowS + 60 || input.since < nowS - 86400)) throw fail('bad_request', 'since must be a recent Unix time in seconds');
+      if (!this.push?.configured) throw fail('unavailable', 'Push gateway not configured', 503);
+      if (!device.observePush) throw fail('not_registered', 'Push is not enabled for this device', 409);
+      if (this.push.offers?.('liveActivity') !== true) throw fail('unsupported', 'The push gateway does not support Live Activities', 409);
+      const id = `a_${opaque()}`, expires = this.now() + ACTIVITY_TTL_MS;
+      await this.push.setActivity(id, { target: device.id, token: input.token, expires });
+      if (prior) this.forgetActivity(device, prior);
+      this.activitySweep(device);
+      while (list.size >= ACTIVITY_LIMIT) this.forgetActivity(device, [...list.values()].sort((a, b) => a.at - b.at)[0]);
+      list.set(key, { id, profile: input.profile, sid: input.sid, since: input.since ?? nowS, expires, at: this.now(), state: 'working' });
+      this.notices.log(device, 'activity-registered', { kind: 'liveactivity', sid: input.sid, profile: input.profile });
+      return json(res, 200, { ok: true, id, expires });
+    }
+    if (route === '/mobile/push/test' && req.method === 'POST') {
+      // One test banner to this device, past scope, at-desk and the burst breaker (never counted, never held); at most one
+      // per 30 s. Gateway kind `test` when the gateway offers it (delivered whatever kinds the phone picked); otherwise a
+      // kind the phone's registration has on (`done` first), so the test cannot vanish at the gateway (relay-extras X1).
+      await body(req, 4096);
+      if (!this.push?.configured) throw fail('unavailable', 'Push gateway not configured', 503);
+      if (!device.observePush) throw fail('not_registered', 'Push is not enabled for this device', 409);
+      if (device.notifications.size >= NOTIFICATION_CAPACITY) throw fail('limit', 'Notification capacity reached', 429);
+      const testKind = this.push.offers?.('test') === true;
+      const enabled = kindsOf(device.pushKinds);
+      const kind = testKind ? 'done' : ['done', 'reply', 'approval', 'question', 'error'].find(value => enabled.includes(value));
+      if (!kind) throw fail('no_kinds', 'Every notification kind is off for this device; turn one on or update the push gateway', 409);
+      if (this.notices.testWait(device) > 0) throw fail('limit', 'One test notification per 30 seconds', 429);
+      const now = this.now(), id = `e_${now}_${opaque()}`;
+      device.notifications.set(id, this.notices.testRecord(device, now, kind));
+      this.notices.log(device, 'test', { kind: testKind ? 'test' : kind });
+      this.seen(device, 'op'); // a tap in the app: the person is looking
+      this.persist(device);
+      this.flushPush().catch(() => {});
+      return json(res, 200, { ok: true, id, kind: testKind ? 'test' : kind, breaker: 'exempt' });
+    }
+    if (route === '/mobile/seen' && req.method === 'POST') {
+      // G1: the app is in the foreground or a notification was opened. Body `{reason}` (optional).
+      const raw = (await body(req, 4096)).toString().trim();
+      let args = {};
+      if (raw) { try { args = JSON.parse(raw); } catch { throw fail('bad_request', 'Expected JSON object'); } }
+      if (!args || typeof args !== 'object' || Array.isArray(args)) throw fail('bad_request', 'Expected JSON object');
+      return json(res, 200, this.seen(device, typeof args.reason === 'string' ? args.reason : 'foreground'));
+    }
     match = /^\/mobile\/notifications\/(e_\d{13}_[a-f0-9]{48}|[a-f0-9]{48})$/.exec(route);
     if (match && req.method === 'GET') {
       const item = device.notifications.get(match[1]);
       if (!item || item.expires < Date.now()) throw fail('not_found', 'Notification expired', 404);
+      // Wire additions (mobile-notify.js wire()): thread, badge, request, digest counts, test. Older builds ignore them.
+      const extra = this.notices.wire(device, item, phoneRequests(this.openRequests(device)).length);
+      if (item.kind === 'liveactivity') return json(res, 200, { kind: 'liveactivity', title: '', body: '', agent: '' });
+      if (item.kind === 'digest' || item.kind === 'badge' || item.test) return json(res, 200, extra);
       // Extra fields only: older app builds read sid/profile/kind and ignore the rest.
       await this.refreshNames(device.bridge).catch(() => {});
       // Stored labels from before the roster was known (or older relay builds: the raw profile id) are resolved now.
       const plain = !item.agent || item.agent === item.profile || item.agent === fallbackAgent(item.profile);
       const agent = plain ? this.agentLabel(item.profile, '') : item.agent;
-      return json(res, 200, { sid: item.sid, profile: item.profile, kind: item.kind, title: item.title || agent || fallbackAgent(item.profile), body: item.body || '', agent });
+      return json(res, 200, { sid: item.sid, profile: item.profile, kind: item.kind, title: item.title || agent || fallbackAgent(item.profile), body: item.body || '', agent, ...extra });
     }
     throw fail('not_found', 'Not found', 404);
   }
   async stop() {
     clearInterval(this.timer);
+    this.oplog.stop();
     this.pushStopped = true;
     if (this.ownSpool) this.uploads.stop();
     for (const device of this.devices.values()) { for (const ws of device.sockets) ws.terminate(); await device.bridge?.stop(); }

@@ -38,7 +38,7 @@ test('all work operations dispatch exact bridge arguments; reads need no mutatio
     const args = argsFor(op), id = mutations.includes(op) ? mutationID() : op;
     const method = op === 'commands' ? 'commandCatalog' : op;
     assert.deepEqual(await mobile.call(device, { id, op, args }), { method });
-    const expected = op === 'commands' ? [args.profile] : [args.sid, ...(args.id ? [args.id] : []), ...(args.text ? [args.text] : []), { profile: args.profile }];
+    const expected = op === 'commands' ? [args.profile] : [args.sid, ...(args.id ? [args.id] : []), ...(args.text ? [args.text] : []), { profile: args.profile, ...(['subagents', 'subagentTail'].includes(op) ? { resume: false } : {}) }]; // reads never resume (relay-wire W3)
     assert.deepEqual(calls.at(-1), [method, expected]);
     assert.equal(device.ids.has(id), mutations.includes(op));
   }

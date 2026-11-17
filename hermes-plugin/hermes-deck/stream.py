@@ -229,6 +229,36 @@ def enrich_child_titles(home, nodes):
             continue
 
 
+RECORD_MAX_BYTES = 2 * 1024 * 1024
+_record_cache = {}          # record file -> ((ino, size, mtime_ns), parsed record); a stream reads them every poll
+_RECORD_CACHE_MAX = 4096
+
+
+def read_record(file, alive=None):
+    """The parsed process record `<pid>.json`, or None. A dead pid is skipped before the file is even opened (the
+    name is the pid), and an unchanged file is parsed once: the stream polls every record many times a second."""
+    alive = alive or _alive
+    stem = file.name[:-5] if file.name.endswith(".json") else ""
+    if not stem.isdigit() or not alive(int(stem)):
+        _record_cache.pop(file, None)
+        return None
+    st = file.stat()
+    if st.st_size > RECORD_MAX_BYTES:
+        return None
+    stamp = (st.st_ino, st.st_size, st.st_mtime_ns)
+    hit = _record_cache.get(file)
+    if hit is None or hit[0] != stamp:
+        if file.resolve().parent != file.parent.resolve():
+            return None
+        data = json.loads(file.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or str(data.get("pid")) != stem:
+            return None
+        if len(_record_cache) >= _RECORD_CACHE_MAX:
+            _record_cache.clear()
+        hit = _record_cache[file] = (stamp, data)
+    return hit[1]
+
+
 def collect_nodes(directory, now=None, alive=None):
     alive = alive or _alive
     now = time.time() if now is None else now
@@ -236,11 +266,8 @@ def collect_nodes(directory, now=None, alive=None):
     merged = {}
     for file in directory.glob("*.json"):
         try:
-            if file.resolve().parent != directory or file.stat().st_size > 2 * 1024 * 1024:
-                continue
-            data = json.loads(file.read_text(encoding="utf-8"))
-            if (data.get("schema") != SCHEMA or str(data.get("pid")) != file.stem
-                    or not alive(data["pid"]) or now - float(data["updated_at"]) > 45):
+            data = read_record(file, alive)
+            if data is None or data.get("schema") != SCHEMA or now - float(data["updated_at"]) > 45:
                 continue
             for sid, node in data.get("nodes", {}).items():
                 if not isinstance(node, dict) or node.get("session_id") != sid:
@@ -397,28 +424,36 @@ def collect_registered_nodes(home, now=None, alive=None):
 
 
 def control_record(home, pid=None):
-    """(control socket path, process record) of the live observer endpoint() picks, else (None, None)."""
+    """(control socket path, process record) of the live observer endpoint() picks, else (None, None).
+
+    With an explicit pid, or when the gateway's own gateway_state.json names one, only that process is acceptable:
+    another live Hermes process with the plugin (a CLI started for some profile) would answer for its own profile,
+    and the persistent connection would stay there. Without a gateway at all, the default profile's base wins over
+    named ones, then the newest record."""
     home = Path(home).resolve()
     preferred = pid
     if preferred is None:
-        try: preferred = json.loads((home/"gateway_state.json").read_text())["pid"]
-        except (OSError, ValueError, KeyError): pass
+        try:
+            named = json.loads((home/"gateway_state.json").read_text())["pid"]
+            if type(named) is int and named > 0: preferred = named
+        except (OSError, ValueError, KeyError, TypeError): pass
     candidates = []
-    for _, base in observer_bases(home):
+    for profile, base in observer_bases(home):
         for file in (base/"processes").glob("*.json"):
             try:
-                if file.resolve().parent != base/"processes" or file.stat().st_size > 2*1024*1024: continue
-                data = json.loads(file.read_text())
+                if preferred is not None and file.stem != str(preferred): continue
+                data = read_record(file, lambda p: alive(p))
+                if data is None: continue
                 path = Path(data.get("control_socket", "")).resolve()
-                if (data.get("schema") != SCHEMA or str(data.get("pid")) != file.stem
-                        or not alive(data.get("pid")) or time.time()-data["updated_at"]>45
+                if (data.get("schema") != SCHEMA or time.time()-data["updated_at"]>45
                         or path.parent!=base or not path.name.startswith(f"control-{data['pid']}-") or not path.exists()):
                     continue
-                if preferred == data["pid"]: return path, data
-                candidates.append((path, data))
+                candidates.append((profile != "default", -float(data["updated_at"]), path, data))
             except (OSError, ValueError, KeyError, TypeError, RuntimeError):
                 continue
-    return candidates[0] if candidates and pid is None else (None, None)
+    if not candidates: return None, None
+    candidates.sort(key=lambda c: c[:2])
+    return candidates[0][2], candidates[0][3]
 
 
 def endpoint(home, pid=None):
@@ -614,6 +649,7 @@ def relay_requests(home, incoming, emit):
 
 ACTIVITY_SUFFIX = ".activity"      # observer.ACTIVITY_SUFFIX: each live process's recent tool calls and plans
 ACTIVITY_MAX_BYTES = 4 * 1024 * 1024
+POLL_WORKING_S, POLL_IDLE_S = .2, 1.0
 ACTIVITY_EVENTS = ("deck.plan", "deck.tools")
 
 
@@ -731,7 +767,9 @@ def serve(home, follow=False, stdin=None, stdout=None):
         # the Run / Plan tabs: each live session's recent tool calls and latest plan, as events when they change
         for frame in activity_events(collect_activity(home, cache=activity_cache), activity_sent):
             emit(frame)
-        time.sleep(.2)
+        # 5 polls a second while a session works (live tool calls, plans), once a second otherwise
+        working = any(n.get("active") or n.get("state") in ("working", "thinking") for n in nodes)
+        time.sleep(POLL_WORKING_S if working else POLL_IDLE_S)
 
 
 def main(argv=None):

@@ -183,8 +183,8 @@ class HermesStore {
   }
 
   /** Which profile's store holds this session: the hint first, then every profile. */
-  find(sid, hint) {
-    const order = [...new Set([hint, ...this.profiles()].filter((p) => p && PROFILE_RE.test(p)))];
+  find(sid, hint, only = false) {
+    const order = only ? [hint].filter((p) => p && PROFILE_RE.test(p)) : [...new Set([hint, ...this.profiles()].filter((p) => p && PROFILE_RE.test(p)))];
     for (const p of order) {
       let h;
       try {
@@ -671,8 +671,22 @@ class History {
     this.hermes.close();
   }
 
-  /** {kind: "claude", loc} | {kind: "hermes", profile} for a session id; throws 404 when nobody has it. */
-  resolve(sid) {
+  /**
+   * {kind: "claude", loc} | {kind: "hermes", profile} for a session id; throws 404 when nobody has it. With `profile`
+   * (the routes' optional `?profile=`, G8) only that profile is read: another profile's session of the same id is 404.
+   */
+  resolve(sid, profile = null) {
+    if (profile !== null) {
+      if (!PROFILE_RE.test(profile)) throw new HttpError(400, "bad profile");
+      if (profile === this.claudeProfile) {
+        const loc = this.claude.locate(sid);
+        if (loc) return { kind: "claude", loc };
+        throw new HttpError(404, "session not found");
+      }
+      if (!HERMES_SID_RE.test(sid)) throw new HttpError(400, "bad session id");
+      if (!this.hermes.find(sid, profile, true)) throw new HttpError(404, "session not found");
+      return { kind: "hermes", profile };
+    }
     const live = this.model && this.model.sessions ? this.model.sessions.get(sid) : null;
     if (!live || live.profile === this.claudeProfile) {
       const loc = this.claude.locate(sid);
@@ -680,9 +694,9 @@ class History {
       if (live) throw new HttpError(404, "transcript not found");
     }
     if (!HERMES_SID_RE.test(sid)) throw new HttpError(400, "bad session id");
-    const profile = this.hermes.find(sid, live && live.profile);
-    if (!profile) throw new HttpError(404, "session not found");
-    return { kind: "hermes", profile };
+    const found = this.hermes.find(sid, live && live.profile);
+    if (!found) throw new HttpError(404, "session not found");
+    return { kind: "hermes", profile: found };
   }
 
   messages(sid, q) {
@@ -690,7 +704,7 @@ class History {
     const rawBefore = q.get("before");
     if (rawBefore !== null && !/^\d{1,15}$/.test(rawBefore)) throw new HttpError(400, "bad cursor");
     const before = rawBefore === null ? Number.MAX_SAFE_INTEGER : Number(rawBefore);
-    const src = this.resolve(sid);
+    const src = this.resolve(sid, q.get("profile"));
     if (src.kind === "claude") return { sid, ...this.claude.page(sid, src.loc, before, limit) };
     const meta = this.hermes.meta(src.profile, sid);
     return { sid, meta, ...this.hermes.page(src.profile, sid, before, limit) };
@@ -702,7 +716,7 @@ class History {
     const rawBefore = q.get("before");
     if (rawBefore !== null && !/^\d{1,15}$/.test(rawBefore)) throw new HttpError(400, "bad cursor");
     const before = rawBefore === null ? Number.MAX_SAFE_INTEGER : Number(rawBefore);
-    const src = this.resolve(sid);
+    const src = this.resolve(sid, q.get("profile"));
     if (src.kind === "claude") return { sid, turns: [], next: null };
     const meta = this.hermes.meta(src.profile, sid);
     return { sid, meta: meta ? { tools: meta.tools, cost: meta.cost } : null, ...this.hermes.tools(src.profile, sid, before, limit) };
@@ -718,9 +732,9 @@ class History {
     return this.claude.full(m[1], loc, Number(m[2]), m[3] === undefined ? undefined : Number(m[3]));
   }
 
-  call(sid, callId) {
+  call(sid, callId, profile = null) {
     if (!CALL_RE.test(callId)) throw new HttpError(400, "bad call id");
-    const src = this.resolve(sid);
+    const src = this.resolve(sid, profile);
     return src.kind === "claude" ? this.claude.call(sid, src.loc, callId) : this.hermes.call(src.profile, sid, callId);
   }
 
@@ -741,7 +755,7 @@ class History {
       if (m) return { code: 200, body: this.tools(dec(m[1]), url.searchParams) };
       m = /^\/session\/([^/]+)\/call\/([^/]+)$/.exec(p);
       if (m) {
-        const r = this.call(dec(m[1]), dec(m[2]));
+        const r = this.call(dec(m[1]), dec(m[2]), url.searchParams.get("profile"));
         return r ? { code: 200, body: r } : { code: 404, body: { error: "call not found" } };
       }
       m = /^\/message\/([^/]+)\/full$/.exec(p);

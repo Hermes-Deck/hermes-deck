@@ -166,13 +166,11 @@ class PostToolCallHook(unittest.TestCase):
         self.env = {k: os.environ.get(k) for k in ("DECK_EVENTS_DIR",)}
         os.environ["DECK_EVENTS_DIR"] = self.tmp
         events._profile = "planprof"
-        events._fh, events._path = None, None
+        events._close_event_files()
         self.addCleanup(self.restore)
 
     def restore(self):
-        if events._fh is not None:
-            events._fh.close()
-        events._fh, events._path = None, None
+        events._close_event_files()
         for k, v in self.env.items():
             if v is None:
                 os.environ.pop(k, None)

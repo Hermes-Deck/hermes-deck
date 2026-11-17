@@ -6,6 +6,7 @@ Provides Deck's direct Hermes connection and optional relay events.
 |---|---|---|
 | `events.py` | Turn/tool/token/sub-agent events, gateway/cron snapshots, opt-in desktop fence | `~/.hermes-deck/events/`, `state/`, `cu/` |
 | `observer.py`, `stream.py` | Live sessions, history, prompts, model/turn controls, approvals, questions and masked prompts (sudo, secret, vault) | `<HERMES_HOME>/hermes-deck/processes/` and private control sockets |
+| `skills/pair-phone/SKILL.md` | Agent skill `hermes-deck:pair-phone`: when you ask to use the Deck from a phone, the agent runs the relay's `mobile-token.js page` and answers with a five-minute [pairing page](../../docs/relay.md#pairing-page) link (never the code). Registered on Hermes versions with plugin skills; older ones skip it | none (reads the relay's folder on this host) |
 
 ## Install
 

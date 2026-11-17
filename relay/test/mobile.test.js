@@ -122,7 +122,9 @@ test('loopback persistent BridgeClient, nonreplay, transfers, legacy reads and o
   assert.equal((await rpc(ws, 'bad-page-021', 'sessionPage', { archived: 'yes' })).error.code, 'bad_request');
   const created = await rpc(ws, 'create', 'create', { profile: 'default' });
   assert.equal(created.ok, true);
-  assert.equal((await rpc(ws, 'create', 'create', { profile: 'default' })).error.code, 'duplicate');
+  // relay-wire W6 (R10): a repeated mutation id answers the first outcome (replayed), it never runs twice
+  const repeated = await rpc(ws, 'create', 'create', { profile: 'default' });
+  assert.deepEqual([repeated.ok, repeated.replayed, repeated.result], [true, true, created.result]);
   const ticket = (await request('/mobile/uploads', 'POST', { name: 'a.txt', mime: 'text/plain', size: 3 }, first.token)).body;
   assert.equal((await fetch(base + '/mobile/uploads/' + ticket.id, { method: 'PUT', headers: { authorization: `Bearer ${second.token}` }, body: 'abc' })).status, 404);
   assert.equal((await fetch(base + '/mobile/uploads/' + ticket.id, { method: 'PUT', headers: { authorization: `Bearer ${first.token}` }, body: 'abc' })).status, 200);
@@ -286,6 +288,10 @@ test('timestamp mutation receipts expire safely while stale, future and legacy I
   assert.equal(executed, 0);
   const fresh = mutationID();
   assert.equal((await restarted.call(restored, { id: fresh, op: 'create' })).sid, 'fresh-session');
+  // relay-wire W6 (R10): a repeat inside the replay window answers the first result without running again
+  assert.equal((await restarted.call(restored, { id: fresh, op: 'create' })).sid, 'fresh-session');
+  assert.equal(executed, 1);
+  restored.replay.forget(fresh); // past the replay window (or after a restart): the persisted receipt answers duplicate
   await assert.rejects(restarted.call(restored, { id: fresh, op: 'create' }), error => error.code === 'duplicate');
   assert.equal(executed, 1);
   // Age cleanup also runs on normal validated calls without restarting the relay.
@@ -322,7 +328,7 @@ test('persisted expiry floor prevents replay after server clock rollback and res
 test('standalone relay imports with mobile bridge off and configured missing library fails before sockets start', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'deck-mobile-standalone-')), src = path.join(dir, 'relay', 'src');
   fs.mkdirSync(src, { recursive: true });
-  for (const name of ['mobile.js', 'devtokens.js', 'util.js', 'compat.js', 'uploads.js', 'downloads.js']) fs.copyFileSync(path.join(__dirname, '..', 'src', name), path.join(src, name));
+  for (const name of ['mobile.js', 'devtokens.js', 'util.js', 'compat.js', 'uploads.js', 'downloads.js', 'mobile-gate.js', 'oplog.js', 'mobile-op.js', ...fs.readdirSync(path.join(__dirname, '..', 'src')).filter(name => name.startsWith('mobile-notify'))]) fs.copyFileSync(path.join(__dirname, '..', 'src', name), path.join(src, name));
   fs.copyFileSync(path.join(__dirname, '..', 'package.json'), path.join(dir, 'relay', 'package.json')); // compat.js: the relay version
   fs.symlinkSync(path.resolve(__dirname, '../node_modules'), path.join(dir, 'relay', 'node_modules'), 'dir');
   const { MobileRelay: Standalone } = require(path.join(src, 'mobile.js'));
@@ -595,6 +601,7 @@ test('round9 authorized background observation restores without phone; overflow 
   await restarted.flushPush(); await restarted.flushPush();
   assert.deepEqual([...device.notifications.values()].map(item => item.sid).sort(), ['route-one', 'route-two', 'same']);
   const turn = { sid: 'same', profile: 'alpha', turnId: 'authoritative-turn', state: 'working', terminalAt: null };
+  restarted.setPushPolicy(device, { scope: 'all' }); // finished turns of a chat this phone never touched: scope `all` (D13)
   bridge.nodes.set(JSON.stringify(['alpha', 'same']), turn);
   bridge.emit('snapshot', { nodes: [turn] });
   bridge._onServerFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'turn.complete', session_id: 'same', profile_name: 'alpha', payload: { turn_id: 'authoritative-turn', counter: 99 } } });
@@ -710,7 +717,7 @@ test('review20 short terminal turn and precise request arrival identities surviv
   const push = { configured: true, removeDevice: async () => {}, notify: async (target, event) => delivered.push({ target, ...event }) };
   const mobile = new MobileRelay({ tokensFile: file, bridgeConfig: { mode: 'off' }, push });
   const paired = mobile.pair({ code: createPair(file), name: 'phone' }), device = mobile.device(paired.deviceId);
-  device.observePush = true; mobile.persist(device);
+  device.observePush = true; mobile.setPushPolicy(device, { scope: 'all' }); mobile.persist(device);
   let node = { sid: 'session', profile: 'default', state: 'finished', turnId: 'first-turn', terminalAt: Date.now() / 1000 };
   device.bridge = { nodeFor: () => node, stop: async () => {} };
   mobile.notify(device, 'snapshot', { nodes: [node] });
@@ -785,6 +792,7 @@ test('notification previews: plain-text title/body stored on the relay, served t
   const device = mobile.device(first.deviceId);
   device.observePush = true; mobile.persist(device);
   device.bridge = { nodeFor: () => ({ title: 'Trip planning', turnId: 'turn-1' }), stop: async () => {} };
+  mobile.noteOp(device, 'history', { sid: 'sid-a', profile: 'research' }); // the phone opened this chat: it is "mine" (D13)
   mobile.notify(device, 'native', { type: 'message.complete', sid: 'sid-a', profile: 'research', payload: { text: 'Your flights are booked.\nHotel next.\nThird line.' } });
   mobile.notify(device, 'native', { type: 'turn.complete', sid: 'sid-a', profile: 'research', payload: { turn_id: 'turn-1' } });
   mobile.notify(device, 'requests', [{ id: 'req-1', sid: 'sid-a', profile: 'research', kind: 'approval', at: Date.now(), command: 'git push origin main', description: 'Push the release branch' }]);
@@ -794,19 +802,23 @@ test('notification previews: plain-text title/body stored on the relay, served t
   assert.ok(!JSON.stringify(sent).includes('flights') && !JSON.stringify(sent).includes('Trip planning'));
   const get = async (id, token) => fetch(`${url}/mobile/notifications/${id}`, { headers: { authorization: `Bearer ${token}` } });
   const byKind = Object.fromEntries(sent.map(event => [event.kind, event.id]));
-  const reply = await (await get(byKind.reply, first.token)).json();
-  assert.deepEqual(reply, { sid: 'sid-a', profile: 'research', kind: 'reply', title: 'Trip planning', body: 'Your flights are booked.\nHotel next.\nThird line.', agent: 'Research' });
+  // Default kinds (no reply): the turn's one banner is its done, carrying the last reply's text.
+  const { thread, badge, ...reply } = await (await get(byKind.done, first.token)).json();
+  assert.match(thread, /^[a-f0-9]{32}$/); assert.equal(badge, 0); // wire additions (G3, G5); older apps ignore them
+  assert.deepEqual(reply, { sid: 'sid-a', profile: 'research', kind: 'done', title: 'Trip planning', body: 'Your flights are booked.\nHotel next.\nThird line.', agent: 'Research' });
   const approval = await (await get(byKind.approval, first.token)).json();
   assert.equal(approval.body, 'Push the release branch'); assert.equal(approval.kind, 'approval');
-  assert.equal((await get(byKind.reply, other.token)).status, 404); // another device cannot read it
-  assert.equal((await get(byKind.reply, 'wrong')).status, 401);
+  assert.equal((await get(byKind.done, other.token)).status, 404); // another device cannot read it
+  assert.equal((await get(byKind.done, 'wrong')).status, 401);
   // Content is stored in the owner's private state file only, never in the tokens file.
   assert.ok(!fs.readFileSync(file, 'utf8').includes('flights'));
   assert.ok(fs.readFileSync(file + '.state', 'utf8').includes('Trip planning'));
   // Old persisted items (no title/body) still serve with a safe fallback.
   const legacy = [...device.notifications.entries()].find(([, item]) => item.kind === 'approval');
   delete legacy[1].title; delete legacy[1].body; delete legacy[1].agent;
-  assert.deepEqual(await (await get(legacy[0], first.token)).json(), { sid: 'sid-a', profile: 'research', kind: 'approval', title: 'Research', body: '', agent: 'Research' });
+  const { thread: legacyThread, badge: legacyBadge, request: legacyRequest, ...legacyRecord } = await (await get(legacy[0], first.token)).json();
+  assert.deepEqual(legacyRecord, { sid: 'sid-a', profile: 'research', kind: 'approval', title: 'Research', body: '', agent: 'Research' });
+  assert.equal(legacyThread, thread); assert.equal(legacyBadge, 0); assert.equal(legacyRequest.id, 'req-1');
 });
 
 function notifyFixture(t, { bridge, settleMs = 0, kinds } = {}) {
@@ -814,7 +826,7 @@ function notifyFixture(t, { bridge, settleMs = 0, kinds } = {}) {
   const mobile = new MobileRelay({ tokensFile: file, settleMs, bridgeConfig: { mode: 'off' }, push: { configured: true, notify: async (target, event) => sent.push({ target, ...event }), removeDevice: async () => {} } });
   t.after(() => mobile.stop());
   const paired = mobile.pair({ code: createPair(file), name: 'phone' }), device = mobile.device(paired.deviceId);
-  device.observePush = true; if (kinds) device.pushKinds = kinds; mobile.persist(device);
+  device.observePush = true; if (kinds) device.pushKinds = kinds; mobile.setPushPolicy(device, { scope: 'all' }); mobile.persist(device);
   device.bridge = { stop: async () => {}, ...bridge };
   return { mobile, device, sent, paired };
 }
@@ -880,8 +892,9 @@ test('notify2: a subagent notification shows the parent conversation and its own
   const nodes = { child: { title: 'Release audit subagent', parent: 'root', subagentId: 'sa-1', role: 'subagent' }, root: { title: 'Release audit' } };
   const { mobile, device } = notifyFixture(t, { bridge: { nodeFor: sid => nodes[sid] || null, profiles: async () => [{ name: 'default', displayName: 'Atlas' }] } });
   await mobile.refreshNames(device.bridge);
-  mobile.notify(device, 'native', { type: 'message.complete', sid: 'child', profile: 'default', payload: { text: 'Audit finished.' } });
-  const item = bodyOf(device, 'reply');
+  // Sub-agent sessions push only when they need the user (D13): a question carries the same title and agent label.
+  mobile.notify(device, 'requests', [{ id: 'q-1', sid: 'child', profile: 'default', kind: 'question', at: Date.now(), questions: [{ qid: 'a', question: 'Audit finished.' }] }]);
+  const item = bodyOf(device, 'question');
   assert.deepEqual([item.title, item.agent, item.body], ['Release audit', 'Release audit subagent \u00b7 Atlas', 'Audit finished.']);
 });
 

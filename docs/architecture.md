@@ -65,6 +65,7 @@ HTTP routes (all but `/health` need `Authorization: Bearer <token>`):
 | `/bundle/...` | Encrypted browser-transfer bundles between devices. |
 | `/spaces`, `/spaces/route`, `/spaces/control`, `/spaces/mode`, `/spaces/host/view/` | Agent spaces (only with `DECK_SPACES`). |
 | `/mobile/pair`, `/mobile/...`, `WS /mobile/bridge` | iOS app: single-use pairing, then its own mobile token for a subset of routes. |
+| `GET /pair/<ticket>`, `GET /pair/<ticket>/status`; `POST /mobile/pair/page` | Phone pairing page with a QR code (no token: the ticket is the credential, five minutes or one pairing) and its state; the desktop token makes one. See [relay.md](relay.md#pairing-page). |
 | `WS /events` | Token in the `Authorization` header (`?token=` only with `DECK_RELAY_QUERY_TOKEN=1`). |
 
 ### App
@@ -417,7 +418,7 @@ Deck (Bot screen) <── viewer: loopback when the desktop is on this machine, 
 
 ### Authenticated
 
-- **Relay HTTP and WebSocket.** Every route except `/health` needs the relay token, compared in constant time. There is one token per relay. Anyone who has it sees every agent's sessions, previews, message history and full tool calls, and can call the bot-screen stop and lease routes, so it is a password. To cut someone off, change `DECK_RELAY_TOKEN` and restart the relay.
+- **Relay HTTP and WebSocket.** Every route except `/health` (and the short-lived pairing page `/pair/<ticket>`, whose ticket is its credential) needs the relay token, compared in constant time. There is one token per relay. Anyone who has it sees every agent's sessions, previews, message history and full tool calls, and can call the bot-screen stop and lease routes, so it is a password. To cut someone off, change `DECK_RELAY_TOKEN` and restart the relay.
 - **Device tokens** (bot screen). A deck must present one in its driver hello before any device session opens. Only SHA-256 hashes are stored, in `relay/devices.json`. Revoked tokens are noticed within 15 s.
 - **SSH bridge.** OpenSSH with `BatchMode=yes`: key login only, no password prompt, and the host key must already be in `known_hosts`. An `authorized_keys` line with `restrict,command="..."` limits that key to `stream.py`.
 - **Telegram.** The user's own MTProto session, from their own `api_id` and `api_hash`.
@@ -446,6 +447,7 @@ What does leave, and to where:
 
 - The relay speaks plain `ws://` and `http://`. Its confidentiality relies on the private network (Tailscale or WireGuard). Bind it with `DECK_RELAY_HOST` to a private address, never `0.0.0.0` on a reachable machine.
 - `/health` answers without a token and reveals the version, uptime and counts.
+- `/pair/<ticket>` answers without a token while a pairing page is open (five minutes or until one phone pairs): the link is as sensitive as the pairing code; see the threat notes in [relay.md](relay.md#pairing-page).
 - The relay sees Telegram chat and topic ids (from the plugin's routing context) and 300-character tool previews. The redaction patterns catch common token shapes, not every secret.
 - Screenshots of an agent browser or a bot-screen window go to the agent's model provider, like any capture.
 

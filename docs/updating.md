@@ -242,6 +242,30 @@ python hermes-plugin/hermes-deck/install.py
 
 Then restart each changed profile's gateway at a quiet moment.
 
+### One gateway serving several agents (wrong agent on a card)
+
+Before this fix, a Hermes gateway that serves several profiles in one process filed every agent's activity under the
+first profile it saw. On the Deck and the phone one agent's card showed another agent's running chat, last message,
+current tool and token use, and the other agents looked idle or empty. Restarting the gateway only changed which
+agent collected everything.
+
+After the update every new event, token count and state file names the agent that produced it, and each profile the
+gateway serves gets its own state file. While a phone or Deck is connected, the relay also corrects live sessions
+the bridge can name. Nothing rewrites the past: events already recorded under the wrong agent stay there, so token
+totals and history from before the update can still be attributed to one agent until they age out.
+
+Apply it when you choose, at a moment when no agent is working:
+
+1. Update the plugin (from the updated checkout, with Hermes' own Python):
+   `python hermes-plugin/hermes-deck/install.py --dry-run`, then the same without `--dry-run`.
+2. Restart the gateway that serves the agents: `hermes gateway restart` (or your supervisor's own command). This
+   ends running turns; the plugin takes effect only in the restarted process.
+3. Restart the relay so it reads the new state files and corrects sessions by the bridge's answer:
+   `systemctl --user restart hermes-deck-relay` on Linux, or the launchd equivalent from [relay.md](relay.md).
+4. Send one message to two different agents and check that each card shows only its own chat.
+
+No step runs by itself; nothing here is automatic.
+
 ## Updating the desktop app
 
 Use Settings › General › Updates. **Desktop app channel** has two choices:

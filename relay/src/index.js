@@ -31,6 +31,7 @@ const { BrowserTransfers } = require("./browser-transfer");
 const { loadIdentity } = require("./browser-bundle");
 
 const { MobileRelay } = require("./mobile");
+const { PairPages } = require("./pair-page");
 const { MobilePushClient } = require("./mobile-push");
 const { UploadSpool, uploadConfig } = require("./uploads"); // large attachments: disk spool shared with the plugin
 const { DownloadTickets, downloadConfig } = require("./downloads"); // large downloads: tickets the plugin grants
@@ -121,6 +122,8 @@ function config(env = process.env, mem = os.totalmem()) {
     extraHosts: list(env.DECK_RELAY_HOST).slice(1),
     port: Number(env.DECK_RELAY_PORT || 9330),
     token: env.DECK_RELAY_TOKEN || "",
+    // the https address phones reach the relay at, behind a reverse proxy (pairing page links and QR codes; pair-page.js)
+    publicUrl: env.DECK_RELAY_PUBLIC_URL || null,
     mobileDevicesFile: env.DECK_MOBILE_DEVICES_FILE || home(".hermes-deck", "mobile-devices.json"),
     mobileBridge: { mode: env.DECK_MOBILE_BRIDGE_STREAM ? "local" : "off", python: env.DECK_MOBILE_BRIDGE_PYTHON || "python3", stream: env.DECK_MOBILE_BRIDGE_STREAM || "" },
     // phone pushes stay quiet while a desktop Deck had input within this many seconds (presence.atDesk); 0 turns it off
@@ -178,7 +181,7 @@ function config(env = process.env, mem = os.totalmem()) {
  * Deck connections carry device heartbeats (presence.js), CDP tunnel frames (cdp.js), driver frames (driver.js)
  * and Workspace requests (workspace.js: host picks, the agent host's browser view).
  */
-function deckHooks(presence, gateway, driver = null, workspace = null, bundles = null, spaces = null, spaceTunnel = null) {
+function deckHooks(presence, gateway, driver = null, workspace = null, bundles = null, spaces = null, spaceTunnel = null, mobile = null) {
   return {
     // tunnelled CDP answers, driver output (screenshots) and space tunnel answers ([0xD6], viewer files, MCP) are large
     maxPayload: gateway || driver || spaces || spaceTunnel ? 64 * 1024 * 1024 : undefined,
@@ -196,6 +199,8 @@ function deckHooks(presence, gateway, driver = null, workspace = null, bundles =
         if (!m || typeof m !== "object") return true;
         if (m.t === "heartbeat") {
           presence.heartbeat(ws, { ...m, device: { id: ws.mobileDevice.id, name: m.device?.name || "iPhone" }, hosting: { browser: false, desktop: false }, driverOk: false });
+          // A phone in use (unlocked, recent input) counts as "seen" for its push breaker (mobile-notify.js, G1).
+          if (mobile && m.locked !== true && !(Number(m.idleSec) >= 60)) mobile.seenDevice(ws.mobileDevice.id, "presence");
           return true;
         }
         if (m.t === "ws-input" && workspace?.holders.get(String(m.slug || "")) !== ws) return true;
@@ -280,6 +285,28 @@ async function agentHostDesktops(cfg, dcfg) {
   return host;
 }
 
+/**
+ * The bridge class the mobile relay builds, plus one listener: each bridge snapshot's (sid, profile) pairs and its
+ * runtime -> stored bindings go to `model.reconcile`, so the bridge decides which agent owns a session. Never throws
+ * into the bridge.
+ */
+function reconcilingBridge(Base, model) {
+  return class ReconcilingBridge extends Base {
+    constructor(...args) {
+      super(...args);
+      this.on("snapshot", (snap) => {
+        try {
+          const pairs = (snap && Array.isArray(snap.nodes) ? snap.nodes : []).map((n) => ({ sid: n && n.sid, profile: n && n.profile }));
+          for (const stored of this.rpcToStored instanceof Map ? this.rpcToStored.values() : []) pairs.push(stored);
+          model.reconcile(pairs);
+        } catch {
+          /* identity repair is best effort */
+        }
+      });
+    }
+  };
+}
+
 /** Start the relay. Returns {server, port, cdpPort, model, fleet, presence, gateway, stop()} (stop saves the checkpoint). */
 async function start(cfg) {
   if (!cfg.token || cfg.token.length < 24) throw new Error("DECK_RELAY_TOKEN missing or shorter than 24 chars");
@@ -296,6 +323,11 @@ async function start(cfg) {
 
   let spaces = null; // agent spaces (set below, once the model exists)
   const ingest = (ev, live) => {
+    const owner = ev.sid ? model.profileOf(ev.sid) : undefined; // the bridge's answer beats the event's stamp (R4)
+    if (owner && owner !== ev.profile) {
+      ev.stamped = ev.profile;
+      ev.profile = owner;
+    }
     ev.agent = model.agentName(ev.profile);
     model.apply(ev, live);
     if (spaces && ev.type === "turn_end" && ev.profile) spaces.release(ev.profile); // turn over: the shared desktop is free
@@ -479,7 +511,18 @@ async function start(cfg) {
   // Large downloads (downloads.js): deck.file_grant tickets in <spool>/downloads, streamed by GET /downloads/<id> and
   // /mobile/files/<id>; DECK_DOWNLOAD_MAX caps one file on this side (default 8 GiB).
   const downloads = new DownloadTickets({ spool: uploads, ...(cfg.downloads || downloadConfig({})) });
-  const mobile = new MobileRelay({ uploads, downloads, tokensFile: cfg.mobileDevicesFile || path.join(cfg.dataDir, "mobile-devices.json"), bridgeConfig: cfg.mobileBridge, push: new MobilePushClient(), atDesk: () => presence.atDesk(cfg.pushDeskIdleS), capabilities: { history: !!history, workspace: !!workspace && !!fallback?.available, desktop: false } });
+  const mobile = new MobileRelay({ uploads, downloads, tokensFile: cfg.mobileDevicesFile || path.join(cfg.dataDir, "mobile-devices.json"), bridgeConfig: cfg.mobileBridge, push: new MobilePushClient(), atDesk: () => presence.atDesk(cfg.pushDeskIdleS), capabilities: { history: !!history, workspace: !!workspace && !!fallback?.available, desktop: false, screen: !!driver }, history });
+  // R4: every phone bridge reports which profile owns each live session; the model takes it over event stamps.
+  if (mobile.BridgeClient) mobile.BridgeClient = reconcilingBridge(mobile.BridgeClient, model);
+  // Phone pairing page (pair-page.js): GET /pair/<ticket>, no bearer; its state sits next to the mobile devices file.
+  // DECK_RELAY_PUBLIC_URL (optional) is the https address phones use; an unusable value is reported and ignored.
+  let pairPages;
+  try {
+    pairPages = new PairPages({ file: mobile.tokensFile, publicUrl: cfg.publicUrl || null });
+  } catch (e) {
+    console.warn(`deck-relay: ${e.message}; pairing pages use the request's host name instead`);
+    pairPages = new PairPages({ file: mobile.tokensFile });
+  }
   const host = { protocol: compat.PROTOCOL, plugins: compat.pluginCache(cfg.hermesRoot || null), update: () => compat.updateStatus(cfg.dataDir) };
   const { HostUpdate } = require("./host-update");
   const { Restarts } = require("./restarts");
@@ -501,7 +544,7 @@ async function start(cfg) {
   });
   let quitRelay = null; // set by the entry point below: stop, then exit so the service manager starts the relay again
   const hermesConfig = new HermesConfig({ ...(cfg.hermesConfig || hermesConfigOptions({})), root: cfg.hermesRoot || (cfg.hermesConfig || {}).root, quit: () => (quitRelay ? quitRelay() : null) });
-  const srv = createServer({ hermesConfig, hostUpdate, mobile, host, uploads, downloads, token: cfg.token, queryToken: !!cfg.queryToken, model, fleet, version: VERSION, hooks: deckHooks(presence, gateway, driver, workspace, bundles, spaces, spaceTunnel), history, plans, bundles });
+  const srv = createServer({ hermesConfig, hostUpdate, mobile, pairPages, host, uploads, downloads, token: cfg.token, queryToken: !!cfg.queryToken, model, fleet, version: VERSION, hooks: deckHooks(presence, gateway, driver, workspace, bundles, spaces, spaceTunnel, mobile), history, plans, bundles });
   broadcast = srv.broadcast;
   if (workspace) workspace.setBroadcast(srv.broadcast);
 
@@ -702,4 +745,4 @@ if (require.main === module && process.argv.includes("--self-check")) {
     });
 }
 
-module.exports = { config, desktopsConfig, start, deckHooks, selfCheck, extraListeners, VERSION };
+module.exports = { config, desktopsConfig, start, deckHooks, selfCheck, extraListeners, reconcilingBridge, VERSION };
