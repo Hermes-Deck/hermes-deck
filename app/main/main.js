@@ -676,6 +676,7 @@ ipc.handle("bridge:set-model", (e, sid, c) => {
   return needBridge(e).setModel(bSid(sid), { model: String(x.model || ""), provider: String(x.provider || ""), confirm: x.confirm === true, profile: bProfile(x) });
 });
 ipc.handle("bridge:set-effort", (e, sid, o) => needBridge(e).setEffort(bSid(sid), { effort: String(bObj(o).effort || ""), profile: bProfile(o) }));
+ipc.handle("bridge:set-fast", (e, sid, o) => needBridge(e).setFast(bSid(sid), { mode: String(bObj(o).mode || ""), profile: bProfile(o) }));
 ipc.handle("bridge:answer-approval", (e, id, choice, o) => needBridge(e).answerApproval(String(id ?? "").slice(0, 256), String(choice ?? ""), { profile: bProfile(o) }));
 ipc.handle("bridge:answer-question", (e, id, answers, o) => needBridge(e).answerQuestion(String(id ?? "").slice(0, 256), bObj(answers), { profile: bProfile(o) }));
 // a masked prompt's typed value (string, or {identifier, password} for a login): passed through once, never kept or logged

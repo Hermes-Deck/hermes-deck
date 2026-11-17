@@ -324,6 +324,13 @@ the effort. In Hermes chats they use session-scoped `config.set` over the direct
 connection (never the global config); in Telegram chats they send the bot's native chat commands. A change applies
 from your next message.
 
+**Speed.** On a model Hermes offers a fast tier for (Anthropic fast mode on the Opus models that take it, OpenAI
+priority processing), the popover also shows **Speed**: **Normal**, **Fast** and, where the provider publishes it,
+**Ultrafast**. It is Hermes' own `/fast` for this chat only: the profile-wide setting is never written, and the row is
+absent on a model without a fast tier and in Telegram chats. While a fast tier is on, the token shows it next to the
+effort. The provider bills a fast tier at a higher rate. It needs the 1.3.0 Hermes plugin on the host (reinstall,
+then restart the gateway); an older plugin refuses the change with a note.
+
 ## Usage, quotas and Fleet
 
 **What it is.** The **Usage** view, opened from the fleet panel's **Usage details** row (or **Ctrl/Cmd+J** when the

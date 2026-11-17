@@ -184,6 +184,7 @@ contextBridge.exposeInMainWorld("deck", {
     modelOptions: (sid, opts) => ipcRenderer.invoke("bridge:model-options", sid, opts),
     setModel: (sid, choice) => ipcRenderer.invoke("bridge:set-model", sid, choice),
     setEffort: (sid, opts) => ipcRenderer.invoke("bridge:set-effort", sid, opts),
+    setFast: (sid, opts) => ipcRenderer.invoke("bridge:set-fast", sid, opts),
     answerApproval: (id, choice, o) => ipcRenderer.invoke("bridge:answer-approval", id, choice, o),
     answerQuestion: (id, answers, o) => ipcRenderer.invoke("bridge:answer-question", id, answers, o),
     answerSecret: (id, value, o) => ipcRenderer.invoke("bridge:answer-secret", id, value, o), // masked prompt: value sent once

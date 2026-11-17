@@ -326,8 +326,39 @@ class ObserverTests(unittest.TestCase):
                        {"session_id": "rpc-1", "key": "reasoning", "value": "high --global"},
                        {"session_id": "rpc-1", "key": "reasoning", "value": ["high"]},
                        {"session_id": "rpc 1", "key": "reasoning", "value": "high"},
-                       {"session_id": "rpc-1", "key": "fast", "value": "fast"}):
+                       {"session_id": "rpc-1", "key": "verbose", "value": "on"}):
             self.assertFalse(observer.allowed_request("config.set", params), params)
+
+    def test_fast_mode_is_allowed_for_one_session_only(self):
+        for mode in ("normal", "fast", "ultrafast"):
+            self.assertTrue(observer.allowed_request("config.set", {"session_id": "rpc-1", "key": "fast", "value": mode}), mode)
+        for params in ({"key": "fast", "value": "fast"},                                         # no session: Hermes writes config.yaml
+                       {"session_id": "", "key": "fast", "value": "fast"},
+                       {"session_id": "rpc-1", "key": "fast", "value": "fast", "scope": "global"},
+                       {"session_id": "rpc-1", "key": "fast", "value": "fast --global"},
+                       {"session_id": "rpc-1", "key": "fast", "value": "auto"},                  # tiers the Deck does not offer
+                       {"session_id": "rpc-1", "key": "fast", "value": "cold"},
+                       {"session_id": "rpc-1", "key": "fast", "value": "toggle"},
+                       {"session_id": "rpc-1", "key": "fast", "value": ""},
+                       {"session_id": "rpc-1", "key": "fast", "value": "Fast"},
+                       {"session_id": "rpc-1", "key": "fast", "value": True},
+                       {"session_id": "rpc 1", "key": "fast", "value": "fast"}):
+            self.assertFalse(observer.allowed_request("config.set", params), params)
+
+    def test_native_snapshot_reports_the_speed_tier_of_the_agent(self):
+        def agent(**extra):
+            return types.SimpleNamespace(session_id="main", provider="p", model="m", **extra)
+        cases = ((dict(service_tier="priority"), True, "fast"), (dict(service_tier=" Ultrafast "), True, "ultrafast"),
+                 (dict(service_tier="auto"), True, "normal"), (dict(service_tier="cold"), True, "normal"),
+                 (dict(service_tier=7), True, "normal"), (dict(service_tier=None), True, "normal"), (dict(), True, "normal"),
+                 # a profile-wide tier this model or route never receives is not claimed
+                 (dict(service_tier="priority"), False, "normal"), (dict(service_tier="ultrafast"), False, "normal"))
+        for extra, applies, expected in cases:
+            live = agent(**extra)
+            self.o.agents["main"] = lambda live=live: live
+            with patch.object(observer, "fast_tier_applies", return_value=applies):
+                self.o._persist()
+            self.assertEqual(self.o.snapshot()["nodes"]["main"]["fast_mode"], expected, (extra, applies))
 
     def test_native_snapshot_reports_actual_provider_profile_and_context_without_prompt_content(self):
         class Agent:

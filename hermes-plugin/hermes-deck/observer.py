@@ -83,6 +83,9 @@ LINEAGE_MAX = 512  # remembered subagent identities (a few KB each at most)
 REASONING_LEVEL_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,23}$")
 # config.set reasoning values the Deck may send for one session (hermes_constants.parse_reasoning_effort words)
 SESSION_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max"})
+# config.set fast values the Deck may send for one session (tui_gateway _set_fast words; Hermes refuses a tier the
+# session's model does not offer). "auto"/"cold" and the toggle/status words are not offered by the Deck.
+SESSION_FAST_MODES = frozenset({"normal", "fast", "ultrafast"})
 
 
 def reasoning_effort_of(agent):
@@ -98,6 +101,35 @@ def reasoning_effort_of(agent):
         return "off"
     level = str(cfg.get("effort") or "").strip().lower()
     return level if REASONING_LEVEL_RE.match(level) else ""
+
+
+def fast_tier_applies(agent, tier):
+    """Whether Hermes sends this speed tier on the agent's model and route: the same gate its request builders and
+    its own session info ask (hermes_cli.models.resolve_fast_mode_overrides), so a profile-wide fast setting is not
+    shown on a model, proxy or local server that never receives it. Without that gate the tier is taken as set."""
+    try:
+        from hermes_cli.models import resolve_fast_mode_overrides
+    except Exception:
+        return True
+    try:
+        base_url = None
+        if getattr(agent, "api_mode", None) == "anthropic_messages":
+            base_url = getattr(agent, "_anthropic_base_url", None)
+        base_url = base_url or getattr(agent, "base_url", None)
+        return resolve_fast_mode_overrides(getattr(agent, "model", None), provider=getattr(agent, "provider", None) or None,
+                                           base_url=base_url, tier="ultrafast" if tier == "ultrafast" else None) is not None
+    except Exception:
+        return False
+
+
+def fast_mode_of(agent):
+    """The speed tier of the live agent: "fast" (OpenAI priority processing / Anthropic fast mode), "ultrafast" or
+    "normal". Hermes keeps it in ``agent.service_tier`` ("priority" / "ultrafast"); any other tier (auto, cold)
+    reads as "normal" because the Deck offers no control for it."""
+    tier = getattr(agent, "service_tier", None)
+    tier = tier.strip().lower() if isinstance(tier, str) else ""
+    mode = "ultrafast" if tier == "ultrafast" else "fast" if tier in {"priority", "fast"} else ""
+    return mode if mode and fast_tier_applies(agent, mode) else "normal"
 
 
 def submit_appshot(request, dispatch, transport):
@@ -2012,6 +2044,10 @@ def allowed_request(method, params, created=()):
         sid = params.get("session_id")          # no display word (show/hide/full/clamp write config.yaml too)
         return (set(params) == {"session_id", "key", "value"} and _sid_ok(sid)
                 and isinstance(params.get("value"), str) and params["value"] in SESSION_REASONING_EFFORTS)
+    if params.get("key") == "fast":              # one session's speed tier: same strict shape, session-scoped in Hermes
+        sid = params.get("session_id")
+        return (set(params) == {"session_id", "key", "value"} and _sid_ok(sid)
+                and isinstance(params.get("value"), str) and params["value"] in SESSION_FAST_MODES)
     if params.get("key") != "model" or not params.get("session_id") or not isinstance(params.get("value"), str):
         return False
     try:
@@ -2526,6 +2562,7 @@ def subagent_detail(observer, subagent_id, row=None, now=None):
     effort = reasoning_effort_of(agent)
     if effort:
         out["reasoning_effort"] = effort
+    out["fast_mode"] = fast_mode_of(agent)
     tokens = {}
     for key, attr in (("input", "session_input_tokens"), ("output", "session_output_tokens"),
                       ("cache_read", "session_cache_read_tokens"), ("cache_write", "session_cache_write_tokens"),
@@ -2905,6 +2942,7 @@ class Observer:
                     node["reasoning_effort"] = effort
                 else:
                     node.pop("reasoning_effort", None)
+                node["fast_mode"] = fast_mode_of(agent)
                 compressor = getattr(agent, "context_compressor", None)
                 used, maximum = getattr(compressor, "last_prompt_tokens", 0) or 0, getattr(compressor, "context_length", 0) or 0
                 if isinstance(used, (int,float)) and isinstance(maximum, (int,float)) and used > 0 and maximum > 0:

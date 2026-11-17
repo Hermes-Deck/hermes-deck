@@ -550,10 +550,14 @@ function answer(method, p) {
         ],
       });
     case "config.set": {
-      // The plugin's allowed_request: the model key (never --global / -g), or one session's reasoning effort.
+      // The plugin's allowed_request: the model key (never --global / -g), or one session's reasoning effort or speed tier.
       if (p.key === "reasoning") {
         const ok3 = Object.keys(p).sort().join() === "key,session_id,value" && ["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(p.value);
         return ok3 ? ok({ key: "reasoning", value: p.value }) : err(-32601, "Unsupported Hermes Desk control");
+      }
+      if (p.key === "fast") { // one session's speed tier, the same strict shape
+        const ok3 = Object.keys(p).sort().join() === "key,session_id,value" && ["normal", "fast", "ultrafast"].includes(p.value);
+        return ok3 ? ok({ key: "fast", value: p.value }) : err(-32601, "Unsupported Hermes Desk control");
       }
       const tokens = typeof p.value === "string" ? p.value.split(/\s+/) : [];
       if (p.key !== "model" || !p.session_id || tokens.includes("--global") || tokens.includes("-g")) return err(-32601, "Unsupported Hermes Desk control");

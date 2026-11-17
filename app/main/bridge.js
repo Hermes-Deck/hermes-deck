@@ -129,6 +129,8 @@ const SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 // reasoning levels Hermes accepts for one session (hermes_constants.parse_reasoning_effort); the display words
 // (show/hide/full/clamp) are refused: Hermes writes those to config.yaml for every surface
 const REASONING_EFFORTS = Object.freeze(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+// speed tiers the Deck may set for one session (Hermes /fast words; "auto" and "cold" are not offered)
+const FAST_MODES = Object.freeze(["normal", "fast", "ultrafast"]);
 const CONTROL_RE = /[\u0000-\u001f\u007f]/g;
 
 const MSG = {
@@ -279,6 +281,17 @@ function validReasoningSet(params) {
   const keys = Object.keys(params);
   if (keys.length !== 3 || !["session_id", "key", "value"].every((k) => keys.includes(k))) return false;
   return typeof params.session_id === "string" && SID_RE.test(params.session_id) && REASONING_EFFORTS.includes(params.value);
+}
+
+/**
+ * config.set may also set this session's speed tier: exactly {session_id, key: "fast", value: normal|fast|ultrafast}.
+ * No session would make Hermes write config.yaml (the profile-wide setting), so it is never sent without one.
+ */
+function validFastSet(params) {
+  if (!isPlainObject(params) || params.key !== "fast") return false;
+  const keys = Object.keys(params);
+  if (keys.length !== 3 || !["session_id", "key", "value"].every((k) => keys.includes(k))) return false;
+  return typeof params.session_id === "string" && SID_RE.test(params.session_id) && FAST_MODES.includes(params.value);
 }
 
 const onlyKeys = (params, keys) => Object.keys(params).every((k) => keys.includes(k));
@@ -465,7 +478,7 @@ function checkRequest(method, params) {
   if (method === FILE_METHOD && !validFileRead(params)) throw kindError(i18nText("download.invalid"), "invalid");
   if (method === GRANT_METHOD && !validFileGrant(params)) throw kindError(i18nText("download.invalid"), "invalid");
   if (method === "session.messages" && !validHistoryRead(params)) throw kindError(i18nText("U0049"), "invalid");
-  if (method === "config.set" && !validModelSet(params) && !validReasoningSet(params)) throw kindError(i18nText("U0050"), "invalid");
+  if (method === "config.set" && !validModelSet(params) && !validReasoningSet(params) && !validFastSet(params)) throw kindError(i18nText("U0050"), "invalid");
   if (method === "session.list" && !validSessionList(params)) throw kindError(i18nText("U0051"), "invalid");
   if (method === "session.create" && !validCreate(params)) throw kindError(i18nText("U0052"), "invalid");
   if (method === "session.title" && !validBotTitle(params)) throw kindError(i18nText("U0053"), "invalid");
@@ -552,6 +565,7 @@ function normalizeNode(n) {
     ctxPercent: num(n.context_percent),
     ctxEstimated: n.context_estimated === true,
     effort: typeof n.reasoning_effort === "string" && REASONING_RE.test(n.reasoning_effort) ? n.reasoning_effort : "",
+    fast: FAST_MODES.includes(n.fast_mode) ? n.fast_mode : "", // "" = a plugin that does not report the speed tier
     lastPromptTokens: num(n.last_prompt_tokens),
   };
 }
@@ -752,7 +766,8 @@ const MODEL_OPTIONS_MAX = 3000; // every provider's models; the picker filters a
  * model.options -> {current, options}. One option per (provider, model) the session may switch to: signed-in
  * providers only, built-in and user-defined (custom:<name>) alike. `current` also matches a user-defined row by
  * its aliases (Hermes reports "custom:<key>" while a providers: row carries the bare key, inventory._apply_custom_aliases).
- * `reasoning` / `canDisable` come from the row's capabilities (absent: reasoning true, disable unknown).
+ * `reasoning` / `canDisable` come from the row's capabilities (absent: reasoning true, disable unknown); `fast` /
+ * `ultrafast` too (absent: no speed control is offered).
  */
 function projectModelOptions(result) {
   const r = isPlainObject(result) ? result : {};
@@ -780,6 +795,8 @@ function projectModelOptions(result) {
         current: id === curModel && (isCurProvider || (!curProvider && p.is_current === true)),
         reasoning: cap.reasoning !== false,
         canDisable: typeof cap.can_disable_reasoning === "boolean" ? cap.can_disable_reasoning : null,
+        fast: cap.fast === true, // Hermes' own gate: this model on this provider takes a fast tier
+        ultrafast: cap.fast === true && cap.ultrafast === true,
       });
       if (options.length >= MODEL_OPTIONS_MAX) break;
     }
@@ -2678,6 +2695,15 @@ class BridgeClient extends EventEmitter {
     return { effort: REASONING_EFFORTS.includes(v) ? v : effort };
   }
 
+  /** Session-scoped speed tier (Hermes /fast for this session; config.yaml is never written). */
+  async setFast(sessionId, { mode, profile } = {}) {
+    if (!FAST_MODES.includes(mode)) throw kindError(i18nText("pick.badFast"), "invalid");
+    const rpcId = await this._bind(sessionId, this._profileOf(sessionId, profile));
+    const r = await this.request("config.set", { session_id: rpcId, key: "fast", value: mode });
+    const v = isPlainObject(r) && typeof r.value === "string" ? r.value : mode;
+    return { mode: FAST_MODES.includes(v) ? v : mode };
+  }
+
   /** A main-process notification capability bound to this arrival and connection, never an ID alone. */
   captureApproval(id) {
     const matches = [...this.openRequests.values()].filter(r => r.id === id);
@@ -2895,6 +2921,8 @@ module.exports = {
   validModelSet,
   validReasoningSet,
   REASONING_EFFORTS,
+  validFastSet,
+  FAST_MODES,
   checkRequest,
   validStaged,
   STAGED_METHOD,

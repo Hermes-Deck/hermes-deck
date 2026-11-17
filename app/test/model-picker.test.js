@@ -127,3 +127,22 @@ test("Settings: the SSH setup wizard and its main-process backend are gone; the 
   assert.ok(!/bridge:ssh-|sshsetup/.test(main) && !/bridge:ssh-/.test(preload));
   assert.match(preload, /"bridge:set-effort"/);
 });
+
+test("speed tiers: offered only where Hermes reports a fast tier; ultrafast only where it reports that too", () => {
+  assert.deepEqual([...MP.SPEEDS], ["normal", "fast", "ultrafast"]);
+  assert.deepEqual(MP.speedsFor(null), []);
+  assert.deepEqual(MP.speedsFor({ fast: false, ultrafast: true }), []);
+  assert.deepEqual(MP.speedsFor({ reasoning: true }), []);
+  assert.deepEqual(MP.speedsFor({ fast: true }), ["normal", "fast"]);
+  assert.deepEqual(MP.speedsFor({ fast: true, ultrafast: true }), ["normal", "fast", "ultrafast"]);
+  assert.deepEqual(["fast", "Ultrafast", "normal", "", undefined, "auto", "priority"].map(MP.speedKey), ["fast", "ultrafast", "normal", "", "", "", ""]);
+});
+
+test("speed tiers: the picker sets one session through the bridge and never a Telegram chat", () => {
+  const fs = require("node:fs"), path = require("node:path");
+  const src = fs.readFileSync(path.join(__dirname, "..", "renderer", "model-picker.js"), "utf8");
+  assert.match(src, /bridge\.setFast\(sid, \{ mode, profile: s\.profile \}\)/);
+  assert.match(src, /const modes = s\.telegram \? \[\] : speedsFor\(optionOf\(s\.sid\)\);/);
+  assert.match(fs.readFileSync(path.join(__dirname, "..", "main", "preload.js"), "utf8"), /"bridge:set-fast"/);
+  assert.match(fs.readFileSync(path.join(__dirname, "..", "main", "main.js"), "utf8"), /ipc\.handle\("bridge:set-fast"/);
+});

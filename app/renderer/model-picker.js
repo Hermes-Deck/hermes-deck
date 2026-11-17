@@ -64,6 +64,21 @@
     return o && o.canDisable === false ? EFFORTS.filter((e) => e !== "none") : EFFORTS.slice();
   }
 
+  /** Speed tiers Hermes offers for one session (/fast); "auto" and "cold" are profile settings the Deck leaves alone. */
+  const SPEEDS = Object.freeze(["normal", "fast", "ultrafast"]);
+
+  /** Speed tiers to offer for a model: none unless Hermes says this model on this provider takes a fast tier. */
+  function speedsFor(o) {
+    if (!o || o.fast !== true) return [];
+    return o.ultrafast === true ? SPEEDS.slice() : SPEEDS.filter((m) => m !== "ultrafast");
+  }
+
+  /** A reported speed tier as one of SPEEDS, else "" (an older plugin reports none). */
+  function speedKey(v) {
+    const m = String(v || "").toLowerCase();
+    return SPEEDS.includes(m) ? m : "";
+  }
+
   /** A reported level as one of EFFORTS ("off" is how the plugin reports a disabled level), else "". */
   function effortKey(v) {
     const e = lower(v).trim();
@@ -137,7 +152,8 @@
     const loading = new Set(); // sids with a model.options request in flight
     const chosen = new Map(); // sid -> {provider, model, was}: picked here, until the session reports a change
     const effortChosen = new Map(); // sid -> {effort, was}: picked here, until the session reports a change
-    const busy = new Set(); // `${sid}:model` | `${sid}:effort`
+    const speedChosen = new Map(); // sid -> {mode, was}: picked here, until the session reports a change
+    const busy = new Set(); // `${sid}:model` | `${sid}:effort` | `${sid}:speed`
     let open = null; // "model" | "effort" | null
     let openSid = null;
     let openKey = null;
@@ -152,8 +168,9 @@
 
     const modelLabel = h("span", { class: "pick-label" });
     const effortLabel = h("span", { class: "pick-label" });
+    const speedLabel = h("span", { class: "pick-speed-on", hidden: true }); // shown only while a fast tier is on
     const effortBars = h("span", { class: "pick-bars", "aria-hidden": "true" }, [1, 2, 3, 4].map(() => h("i")));
-    const modelChip = h("button", { class: "pick-chip pick-model", type: "button", "aria-haspopup": "dialog", "aria-expanded": "false", dataset: { fk: "pick-model" }, onclick: () => toggle("model") }, modelLabel, h("span", { class: "pick-divider", "aria-hidden": "true" }, "·"), effortBars, effortLabel, icon("chev"));
+    const modelChip = h("button", { class: "pick-chip pick-model", type: "button", "aria-haspopup": "dialog", "aria-expanded": "false", dataset: { fk: "pick-model" }, onclick: () => toggle("model") }, modelLabel, h("span", { class: "pick-divider", "aria-hidden": "true" }, "·"), effortBars, effortLabel, speedLabel, icon("chev"));
     const legacyEffortLabel = h("span", { class: "pick-label" });
     const effortChip = h("button", { class: "pick-chip pick-effort", hidden: true, type: "button", "aria-haspopup": "menu", "aria-expanded": "false", dataset: { fk: "pick-effort" }, onclick: () => toggle("effort") }, legacyEffortLabel, icon("chev"));
     const bar = h("div", { class: "pick-bar", hidden: true, onkeydown: (e) => { if (e.key === "Escape" && open) { e.preventDefault(); close(true); } } }, modelChip, effortChip);
@@ -190,6 +207,8 @@
       if (c && !c.pending && n && n.model && (n.model === c.model || n.model !== c.was)) chosen.delete(s.sid);
       const e = effortChosen.get(s.sid);
       if (e && !e.pending && n && (effortKey(n.effort) === e.effort || (n.effort || "") !== e.was)) effortChosen.delete(s.sid);
+      const f = speedChosen.get(s.sid);
+      if (f && n && (speedKey(n.fast) === f.mode || (n.fast || "") !== f.was)) speedChosen.delete(s.sid);
     }
     function modelText(s) {
       const c = chosen.get(s.sid);
@@ -203,6 +222,14 @@
     function effortNow(s) {
       const e = effortChosen.get(s.sid);
       return e ? e.effort : effortKey(s.node && s.node.effort);
+    }
+
+    /** The speed tier this chat sends next: a pick made here, else the session's report; always "normal" on a model without one. */
+    function speedNow(s) {
+      if (s.telegram || !speedsFor(optionOf(s.sid)).length) return "normal";
+      const f = speedChosen.get(s.sid);
+      const mode = f ? f.mode : speedKey(s.node && s.node.fast);
+      return speedsFor(optionOf(s.sid)).includes(mode) ? mode : "normal";
     }
 
     // ------------------------------------------------------------ chips
@@ -219,7 +246,8 @@
       settle(s);
       const m = modelText(s);
       const e = effortNow(s);
-      const key = [s.sid, m.text, m.title, e, s.switchDisabled, busy.has(`${s.sid}:model`), busy.has(`${s.sid}:effort`), open, T("pick.modelTip")].join("|"); // last: the language
+      const f = speedNow(s);
+      const key = [s.sid, m.text, m.title, e, f, s.switchDisabled, busy.has(`${s.sid}:model`), busy.has(`${s.sid}:effort`), open, T("pick.modelTip")].join("|"); // last: the language
       bar.hidden = false;
       if (key === lastKey) return;
       lastKey = key;
@@ -231,7 +259,9 @@
       effortLabel.textContent = T(`pick.effort.${e || "default"}`);
       legacyEffortLabel.textContent = effortLabel.textContent;
       effortBars.setAttribute("data-level", String(SEGMENTS.indexOf(e) + 1));
-      modelChip.setAttribute("aria-label", `${T("conv.modelEffort")}: ${m.text} · ${T(`pick.effort.${e || "default"}`)}`);
+      speedLabel.hidden = f === "normal";
+      speedLabel.textContent = f === "normal" ? "" : T(`pick.speed.${f}`);
+      modelChip.setAttribute("aria-label", `${T("conv.modelEffort")}: ${m.text} · ${T(`pick.effort.${e || "default"}`)}${f === "normal" ? "" : ` · ${T(`pick.speed.${f}`)}`}`);
       effortChip.title = s.switchDisabled || T(effortChosen.get(s.sid)?.pending ? "pick.pending" : "pick.effortTip");
       effortChip.classList.toggle("busy", busy.has(`${s.sid}:effort`) || !!effortChosen.get(s.sid)?.pending);
       effortChip.setAttribute("aria-expanded", open === "effort" ? "true" : "false");
@@ -385,7 +415,43 @@
       target.replaceChildren(
         h("div", { class: "pick-segments", role: "radiogroup", "aria-label": T("conv.reasoning") }, SEGMENTS.map(item)),
         h("div", { class: "pick-extra-efforts" }, levels.filter(e => !SEGMENTS.includes(e)).map(item)),
+        speedRow(s),
         h("button", { class: "pick-item pick-toggle pick-nav", type: "button", "aria-pressed": String(ctx.thinking.isOpen()), onclick: () => { ctx.thinking.setOpen(!ctx.thinking.isOpen()); renderSegments(); } }, T("live.showThinking")));
+    }
+
+    /** Normal / Fast (/ Ultrafast) for this chat, only on a model Hermes offers a fast tier for; null otherwise. */
+    function speedRow(s) {
+      const modes = s.telegram ? [] : speedsFor(optionOf(s.sid));
+      if (!modes.length) return null;
+      const current = speedNow(s);
+      const item = (m) => h("button", { class: `pick-item pick-nav${m === current ? " on" : ""}`, type: "button", role: "radio", "aria-checked": String(m === current), disabled: !!s.switchDisabled || busy.has(`${s.sid}:speed`), onclick: () => applySpeed(m) }, T(`pick.speed.${m}`));
+      return h("div", { class: "pick-speed", title: T("pick.speedTip") },
+        h("span", { class: "pick-speed-name" }, T("pick.speedLabel")),
+        h("div", { class: `pick-segments pick-speed-${modes.length}`, role: "radiogroup", "aria-label": T("pick.speedLabel") }, modes.map(item)));
+    }
+
+    /** The chip shows the tier at once; Hermes keeps it for this session only (its /fast, never config.yaml). */
+    async function applySpeed(mode) {
+      const s = ctx.session();
+      if (!s || s.telegram || s.sid !== openSid || s.key !== openKey || s.switchDisabled || busy.has(`${s.sid}:speed`)) return;
+      if (mode === speedNow(s)) return;
+      const sid = s.sid;
+      const before = speedChosen.get(sid);
+      speedChosen.set(sid, { mode, was: (s.node && s.node.fast) || "" });
+      busy.add(`${sid}:speed`);
+      resync();
+      if (open === "model") renderSegments();
+      try {
+        await bridge.setFast(sid, { mode, profile: s.profile });
+      } catch (e) {
+        if (before) speedChosen.set(sid, before);
+        else speedChosen.delete(sid);
+        ctx.note(T("pick.speedFailed", { e: failure(e) }), true);
+      } finally {
+        busy.delete(`${sid}:speed`);
+        resync();
+        if (open === "model" && ctx.session()?.sid === sid) renderSegments();
+      }
     }
 
     function useCustom(submit = false) {
@@ -637,7 +703,7 @@
     return { sync, close, telegramReply, isOpen: () => !!open, openModel: () => openPop("model") };
   }
 
-  const api = { EFFORTS, SEGMENTS, nextEffort, shortName, matches, buildGroups, currentOption, effortsFor, effortKey, parseCustom, modelCommand, reasoningCommand, ROWS_PER_GROUP, SEARCH_MAX, create: typeof create === "function" ? create : null };
+  const api = { EFFORTS, SEGMENTS, SPEEDS, speedsFor, speedKey, nextEffort, shortName, matches, buildGroups, currentOption, effortsFor, effortKey, parseCustom, modelCommand, reasoningCommand, ROWS_PER_GROUP, SEARCH_MAX, create: typeof create === "function" ? create : null };
   if (typeof window !== "undefined") window.DeckModelPicker = Object.freeze(api);
   if (typeof module === "object" && module.exports) module.exports = api; // Node unit tests
 })();

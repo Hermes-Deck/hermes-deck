@@ -715,12 +715,63 @@ test("config.set validation: model stays session-only; reasoning is one session 
     { session_id: "r", key: "reasoning", value: "full" },
     { session_id: "r", key: "reasoning", value: "ultra" },
     { session_id: "r", key: "reasoning", value: ["high"] },
-    { session_id: "r", key: "fast", value: "fast" },
+    { session_id: "r", key: "verbose", value: "on" },
   ]) {
     assert.equal(validReasoningSet(p), false, JSON.stringify(p));
     assert.throws(() => checkRequest("config.set", p), Error, JSON.stringify(p));
   }
   assert.doesNotThrow(() => checkRequest("config.set", { session_id: "r", key: "reasoning", value: "xhigh" }));
+});
+
+test("config.set validation: fast is one session and one of normal, fast, ultrafast", () => {
+  const { validFastSet, checkRequest } = bridge;
+  assert.deepEqual([...bridge.FAST_MODES], ["normal", "fast", "ultrafast"]);
+  for (const v of bridge.FAST_MODES) {
+    assert.equal(validFastSet({ session_id: "r", key: "fast", value: v }), true, v);
+    assert.doesNotThrow(() => checkRequest("config.set", { session_id: "r", key: "fast", value: v }));
+  }
+  for (const p of [
+    { key: "fast", value: "fast" }, // no session: Hermes would write the profile-wide setting
+    { session_id: "", key: "fast", value: "fast" },
+    { session_id: "a b", key: "fast", value: "fast" },
+    { session_id: "r", key: "fast", value: "fast", scope: "global" },
+    { session_id: "r", key: "fast", value: "fast --global" },
+    { session_id: "r", key: "fast", value: "auto" },
+    { session_id: "r", key: "fast", value: "cold" },
+    { session_id: "r", key: "fast", value: "toggle" },
+    { session_id: "r", key: "fast", value: "" },
+    { session_id: "r", key: "fast", value: true },
+  ]) {
+    assert.equal(validFastSet(p), false, JSON.stringify(p));
+    assert.throws(() => checkRequest("config.set", p), Error, JSON.stringify(p));
+  }
+});
+
+test("fast mode: one session, a known tier, nothing else", async (t) => {
+  const log = tmpLog();
+  const c = makeClient(t, ["--log", log]);
+  await startOpen(c);
+  assert.deepEqual(await c.setFast("s-main", { mode: "fast" }), { mode: "fast" });
+  assert.deepEqual(await c.setFast("s-main", { mode: "normal" }), { mode: "normal" });
+  assert.deepEqual(calls(log, "config.set").map((e) => e.params), [
+    { session_id: "rpc-s-main", key: "fast", value: "fast" },
+    { session_id: "rpc-s-main", key: "fast", value: "normal" },
+  ]);
+  for (const mode of ["auto", "cold", "on", "Fast", "fast --global", "", undefined]) {
+    await assert.rejects(c.setFast("s-main", { mode }), Error, String(mode));
+  }
+  assert.equal(calls(log, "config.set").length, 2, "refused before anything is sent");
+});
+
+test("model options: fast tiers come only from Hermes' capabilities", () => {
+  const r = bridge.projectModelOptions({
+    model: "m-fast", provider: "p",
+    providers: [{ slug: "p", name: "P", models: ["m-fast", "m-ultra", "m-plain", "m-odd", "m-none"], capabilities: {
+      "m-fast": { fast: true, reasoning: true }, "m-ultra": { fast: true, ultrafast: true },
+      "m-plain": { fast: false, ultrafast: true }, "m-odd": { fast: "yes" } } }],
+  });
+  assert.deepEqual(r.options.map((o) => [o.id, o.fast, o.ultrafast]), [
+    ["m-fast", true, false], ["m-ultra", true, true], ["m-plain", false, false], ["m-odd", false, false], ["m-none", false, false]]);
 });
 
 test("model options: custom providers kept, current matched by alias, capabilities projected, junk dropped", () => {
